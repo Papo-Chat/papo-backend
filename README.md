@@ -1,6 +1,6 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Go Version](https://img.shields.io/badge/Go-1.21%2B-00ADD8?logo=go)](https://go.dev)
-[![Release](https://img.shields.io/github/v/release/jonasslv/papo-backend)](https://github.com/jonasslv/papo-backend/releases)
+[![Release](https://img.shields.io/github/v/release/Papo-Chat/papo-backend)](https://github.com/Papo-Chat/papo-backend/releases)
 # Papo — Backend
 
 Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples, leve e sem microserviços. Um binário Go, um Postgres, um servidor por instância.
