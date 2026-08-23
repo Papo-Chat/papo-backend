@@ -1,4 +1,4 @@
-package test_services
+package services
 
 import (
 	"bytes"
@@ -27,7 +27,6 @@ import (
 
 	"papo/internal/config"
 	"papo/internal/models"
-	"papo/internal/services"
 	"papo/internal/storage"
 	"papo/internal/utils"
 
@@ -35,7 +34,7 @@ import (
 )
 
 // migrationsDir é o caminho relativo ao diretório deste pacote (backend/internal/services/test_services).
-const migrationsDir = "../../../../migrations"
+const migrationsDir = "../../../migrations"
 
 // defaultDatabaseURL corresponde aos padrões do infra/docker-compose.yml.
 const defaultDatabaseURL = "postgres://papo:papo123@localhost:5432/papo"
@@ -285,14 +284,14 @@ func timePtr(v time.Time) *time.Time {
 	return &v
 }
 
-// --- services.Register ---
+// --- Register ---
 
 func TestRegister(t *testing.T) {
 	username := newRandomUsername()
 	password := newRandomPassword()
 	ip := newRandomIP()
 
-	user, err := services.Register(testCtx(), username, password, ip)
+	user, err := Register(testCtx(), username, password, ip)
 	if err != nil {
 		t.Fatalf("Register retornou erro: %v", err)
 	}
@@ -351,8 +350,8 @@ func TestRegisterInvalidInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := services.Register(testCtx(), tc.username, tc.password, newRandomIP())
-			if !errors.Is(err, services.ErrInvalidInput) {
+			_, err := Register(testCtx(), tc.username, tc.password, newRandomIP())
+			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		})
@@ -366,7 +365,7 @@ func TestRegisterBoundaryLengths(t *testing.T) {
 	username := strings.Repeat("a", MaxUsernameLength)
 	password := strings.Repeat("b", MaxPasswordLength)
 
-	user, err := services.Register(testCtx(), username, password, newRandomIP())
+	user, err := Register(testCtx(), username, password, newRandomIP())
 	if err != nil {
 		t.Fatalf("Register com tamanhos no limite retornou erro: %v", err)
 	}
@@ -379,19 +378,19 @@ func TestRegisterUsernameTaken(t *testing.T) {
 	username := newRandomUsername()
 	ip := newRandomIP()
 
-	if _, err := services.Register(testCtx(), username, newRandomPassword(), ip); err != nil {
+	if _, err := Register(testCtx(), username, newRandomPassword(), ip); err != nil {
 		t.Fatalf("falha ao criar primeiro usuário: %v", err)
 	}
 
-	_, err := services.Register(testCtx(), username, newRandomPassword(), newRandomIP())
-	if !errors.Is(err, services.ErrUsernameTaken) {
+	_, err := Register(testCtx(), username, newRandomPassword(), newRandomIP())
+	if !errors.Is(err, ErrUsernameTaken) {
 		t.Errorf("esperava ErrUsernameTaken, obtive %v", err)
 	}
 }
 
 func TestRegisterBannedIP(t *testing.T) {
 	ip := newRandomIP()
-	bannedUser, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	bannedUser, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
 	if err != nil {
 		t.Fatalf("falha ao criar usuário para banir: %v", err)
 	}
@@ -400,24 +399,24 @@ func TestRegisterBannedIP(t *testing.T) {
 		t.Fatalf("falha ao banir usuário: %v", err)
 	}
 
-	_, err = services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
-	if !errors.Is(err, services.ErrBannedIP) {
+	_, err = Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if !errors.Is(err, ErrBannedIP) {
 		t.Errorf("esperava ErrBannedIP, obtive %v", err)
 	}
 }
 
-// --- services.Login ---
+// --- Login ---
 
 func TestLogin(t *testing.T) {
 	username := newRandomUsername()
 	password := newRandomPassword()
 	ip := newRandomIP()
 
-	if _, err := services.Register(testCtx(), username, password, ip); err != nil {
+	if _, err := Register(testCtx(), username, password, ip); err != nil {
 		t.Fatalf("falha ao criar usuário para login: %v", err)
 	}
 
-	user, err := services.Login(testCtx(), username, password, ip)
+	user, err := Login(testCtx(), username, password, ip)
 	if err != nil {
 		t.Fatalf("Login retornou erro: %v", err)
 	}
@@ -464,8 +463,8 @@ func TestLoginInvalidInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := services.Login(testCtx(), tc.username, tc.password, newRandomIP())
-			if !errors.Is(err, services.ErrInvalidInput) {
+			_, err := Login(testCtx(), tc.username, tc.password, newRandomIP())
+			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		})
@@ -479,11 +478,11 @@ func TestLoginBoundaryLengths(t *testing.T) {
 	password := strings.Repeat("b", MaxPasswordLength)
 	ip := newRandomIP()
 
-	if _, err := services.Register(testCtx(), username, password, ip); err != nil {
+	if _, err := Register(testCtx(), username, password, ip); err != nil {
 		t.Fatalf("falha ao criar usuário com tamanhos no limite: %v", err)
 	}
 
-	if _, err := services.Login(testCtx(), username, password, ip); err != nil {
+	if _, err := Login(testCtx(), username, password, ip); err != nil {
 		t.Errorf("Login com tamanhos no limite retornou erro: %v", err)
 	}
 }
@@ -492,20 +491,20 @@ func TestLoginWrongPassword(t *testing.T) {
 	username := newRandomUsername()
 	ip := newRandomIP()
 
-	if _, err := services.Register(testCtx(), username, newRandomPassword(), ip); err != nil {
+	if _, err := Register(testCtx(), username, newRandomPassword(), ip); err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	_, err := services.Login(testCtx(), username, newRandomPassword(), ip)
-	if !errors.Is(err, services.ErrInvalidCredentials) {
+	_, err := Login(testCtx(), username, newRandomPassword(), ip)
+	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("esperava ErrInvalidCredentials, obtive %v", err)
 	}
 }
 
 func TestLoginNonexistentUser(t *testing.T) {
 	ip := newRandomIP()
-	_, err := services.Login(testCtx(), newRandomUsername(), newRandomPassword(), ip)
-	if !errors.Is(err, services.ErrInvalidCredentials) {
+	_, err := Login(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("esperava ErrInvalidCredentials, obtive %v", err)
 	}
 }
@@ -515,7 +514,7 @@ func TestLoginBannedUser(t *testing.T) {
 	password := newRandomPassword()
 	ip := newRandomIP()
 
-	user, err := services.Register(testCtx(), username, password, ip)
+	user, err := Register(testCtx(), username, password, ip)
 	if err != nil {
 		t.Fatalf("falha ao criar usuário para banir: %v", err)
 	}
@@ -524,15 +523,15 @@ func TestLoginBannedUser(t *testing.T) {
 		t.Fatalf("falha ao banir usuário: %v", err)
 	}
 
-	_, err = services.Login(testCtx(), username, password, ip)
-	if !errors.Is(err, services.ErrBannedIP) {
+	_, err = Login(testCtx(), username, password, ip)
+	if !errors.Is(err, ErrBannedIP) {
 		t.Errorf("esperava ErrBannedIP, obtive %v", err)
 	}
 }
 
 func TestLoginBannedIP(t *testing.T) {
 	ip := newRandomIP()
-	bannedUser, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	bannedUser, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
 	if err != nil {
 		t.Fatalf("falha ao criar usuário para banir: %v", err)
 	}
@@ -541,25 +540,25 @@ func TestLoginBannedIP(t *testing.T) {
 		t.Fatalf("falha ao banir usuário: %v", err)
 	}
 
-	_, err = services.Login(testCtx(), newRandomUsername(), newRandomPassword(), ip)
-	if !errors.Is(err, services.ErrBannedIP) {
+	_, err = Login(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if !errors.Is(err, ErrBannedIP) {
 		t.Errorf("esperava ErrBannedIP, obtive %v", err)
 	}
 }
 
-// --- services.Whoami ---
+// --- Whoami ---
 
 func TestWhoami(t *testing.T) {
 	username := newRandomUsername()
 	password := newRandomPassword()
 	ip := newRandomIP()
 
-	created, err := services.Register(testCtx(), username, password, ip)
+	created, err := Register(testCtx(), username, password, ip)
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	user, settings, err := services.Whoami(testCtx(), created.ID)
+	user, settings, err := Whoami(testCtx(), created.ID)
 	if err != nil {
 		t.Fatalf("Whoami retornou erro: %v", err)
 	}
@@ -594,7 +593,7 @@ func TestWhoami(t *testing.T) {
 
 func TestWhoamiReflectsProfileUpdate(t *testing.T) {
 	ip := newRandomIP()
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
@@ -610,7 +609,7 @@ func TestWhoamiReflectsProfileUpdate(t *testing.T) {
 		t.Fatalf("falha ao atualizar perfil: %v", err)
 	}
 
-	got, _, err := services.Whoami(testCtx(), user.ID)
+	got, _, err := Whoami(testCtx(), user.ID)
 	if err != nil {
 		t.Fatalf("Whoami retornou erro: %v", err)
 	}
@@ -627,7 +626,7 @@ func TestWhoamiReflectsProfileUpdate(t *testing.T) {
 
 func TestWhoamiReflectsSettingsUpdate(t *testing.T) {
 	ip := newRandomIP()
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
@@ -651,7 +650,7 @@ func TestWhoamiReflectsSettingsUpdate(t *testing.T) {
 		t.Fatalf("falha ao atualizar settings: %v", err)
 	}
 
-	_, settings, err := services.Whoami(testCtx(), user.ID)
+	_, settings, err := Whoami(testCtx(), user.ID)
 	if err != nil {
 		t.Fatalf("Whoami retornou erro: %v", err)
 	}
@@ -661,32 +660,32 @@ func TestWhoamiReflectsSettingsUpdate(t *testing.T) {
 }
 
 func TestWhoamiEmptyUserID(t *testing.T) {
-	_, _, err := services.Whoami(testCtx(), "")
-	if !errors.Is(err, services.ErrUserNotFound) {
+	_, _, err := Whoami(testCtx(), "")
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
 	}
 }
 
 func TestWhoamiNonexistentUser(t *testing.T) {
-	_, _, err := services.Whoami(testCtx(), randUUID())
-	if !errors.Is(err, services.ErrUserNotFound) {
+	_, _, err := Whoami(testCtx(), randUUID())
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.Profile ---
+// --- Profile ---
 
 func TestProfile(t *testing.T) {
 	username := newRandomUsername()
 	password := newRandomPassword()
 	ip := newRandomIP()
 
-	created, err := services.Register(testCtx(), username, password, ip)
+	created, err := Register(testCtx(), username, password, ip)
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	user, err := services.Profile(testCtx(), created.ID)
+	user, err := Profile(testCtx(), created.ID)
 	if err != nil {
 		t.Fatalf("Profile retornou erro: %v", err)
 	}
@@ -714,7 +713,7 @@ func TestProfile(t *testing.T) {
 
 func TestProfileReflectsUpdate(t *testing.T) {
 	ip := newRandomIP()
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
@@ -730,7 +729,7 @@ func TestProfileReflectsUpdate(t *testing.T) {
 		t.Fatalf("falha ao atualizar perfil: %v", err)
 	}
 
-	got, err := services.Profile(testCtx(), user.ID)
+	got, err := Profile(testCtx(), user.ID)
 	if err != nil {
 		t.Fatalf("Profile retornou erro: %v", err)
 	}
@@ -746,23 +745,23 @@ func TestProfileReflectsUpdate(t *testing.T) {
 }
 
 func TestProfileEmptyUserID(t *testing.T) {
-	_, err := services.Profile(testCtx(), "")
-	if !errors.Is(err, services.ErrUserNotFound) {
+	_, err := Profile(testCtx(), "")
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
 	}
 }
 
 func TestProfileNonexistentUser(t *testing.T) {
-	_, err := services.Profile(testCtx(), randUUID())
-	if !errors.Is(err, services.ErrUserNotFound) {
+	_, err := Profile(testCtx(), randUUID())
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.UpdateUser ---
+// --- UpdateUser ---
 
 func TestUpdateUser(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
@@ -770,7 +769,7 @@ func TestUpdateUser(t *testing.T) {
 	nickname := "nick_" + randHex(4)
 	status := "disponível"
 
-	if err := services.UpdateUser(testCtx(), user.ID, nickname, status); err != nil {
+	if err := UpdateUser(testCtx(), user.ID, nickname, status); err != nil {
 		t.Fatalf("UpdateUser retornou erro: %v", err)
 	}
 
@@ -791,7 +790,7 @@ func TestUpdateUser(t *testing.T) {
 	// uma segunda atualização substitui os valores anteriores
 	updatedNickname := "nick_" + randHex(4)
 	updatedStatus := "ausente"
-	if err := services.UpdateUser(testCtx(), user.ID, updatedNickname, updatedStatus); err != nil {
+	if err := UpdateUser(testCtx(), user.ID, updatedNickname, updatedStatus); err != nil {
 		t.Fatalf("UpdateUser (segunda atualização) retornou erro: %v", err)
 	}
 	stored, err = storage.GetUserByID(testCtx(), user.ID)
@@ -807,20 +806,20 @@ func TestUpdateUser(t *testing.T) {
 }
 
 func TestUpdateUserEmptyUserID(t *testing.T) {
-	err := services.UpdateUser(testCtx(), "", "nick", "status")
-	if !errors.Is(err, services.ErrUserNotFound) {
+	err := UpdateUser(testCtx(), "", "nick", "status")
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
 	}
 }
 
 func TestUpdateUserNonexistentUser(t *testing.T) {
-	err := services.UpdateUser(testCtx(), randUUID(), "nick", "status")
-	if !errors.Is(err, services.ErrUserNotFound) {
+	err := UpdateUser(testCtx(), randUUID(), "nick", "status")
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.UpdateAvatar ---
+// --- UpdateAvatar ---
 
 // pngAvatarBytes gera um PNG válido de verdade, nas dimensões dadas,
 // pra testar validação de tamanho/dimensão.
@@ -874,7 +873,7 @@ func gifAvatarBytes(width, height int) []byte {
 }
 
 func TestUpdateAvatar(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
@@ -892,7 +891,7 @@ func TestUpdateAvatar(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			avatar := base64.StdEncoding.EncodeToString(tc.avatar)
-			if err := services.UpdateAvatar(testCtx(), user.ID, avatar, tc.format); err != nil {
+			if err := UpdateAvatar(testCtx(), user.ID, avatar, tc.format); err != nil {
 				t.Fatalf("UpdateAvatar retornou erro: %v", err)
 			}
 
@@ -911,19 +910,19 @@ func TestUpdateAvatar(t *testing.T) {
 }
 
 func TestUpdateAvatarRemovesWhenEmpty(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
 	// define um avatar inicialmente
 	avatar := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
-	if err := services.UpdateAvatar(testCtx(), user.ID, avatar, "PNG"); err != nil {
+	if err := UpdateAvatar(testCtx(), user.ID, avatar, "PNG"); err != nil {
 		t.Fatalf("falha ao definir avatar inicial: %v", err)
 	}
 
 	// avatar e formato vazios devem remover o avatar
-	if err := services.UpdateAvatar(testCtx(), user.ID, "", ""); err != nil {
+	if err := UpdateAvatar(testCtx(), user.ID, "", ""); err != nil {
 		t.Fatalf("UpdateAvatar (remoção) retornou erro: %v", err)
 	}
 
@@ -940,7 +939,7 @@ func TestUpdateAvatarRemovesWhenEmpty(t *testing.T) {
 }
 
 func TestUpdateAvatarInvalidInput(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
@@ -959,8 +958,8 @@ func TestUpdateAvatarInvalidInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := services.UpdateAvatar(testCtx(), user.ID, tc.avatar, tc.avatarFormat)
-			if !errors.Is(err, services.ErrInvalidInput) {
+			err := UpdateAvatar(testCtx(), user.ID, tc.avatar, tc.avatarFormat)
+			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		})
@@ -968,7 +967,7 @@ func TestUpdateAvatarInvalidInput(t *testing.T) {
 }
 
 func TestUpdateAvatarExceedsMaxSize(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
@@ -978,32 +977,32 @@ func TestUpdateAvatarExceedsMaxSize(t *testing.T) {
 	copy(oversized, pngAvatarBytes(100, 100))
 	avatar := base64.StdEncoding.EncodeToString(oversized)
 
-	err = services.UpdateAvatar(testCtx(), user.ID, avatar, "PNG")
-	if !errors.Is(err, services.ErrInvalidInput) {
+	err = UpdateAvatar(testCtx(), user.ID, avatar, "PNG")
+	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para avatar acima de 2MB, obtive %v", err)
 	}
 }
 
 func TestUpdateAvatarEmptyUserID(t *testing.T) {
 	avatar := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
-	err := services.UpdateAvatar(testCtx(), "", avatar, "PNG")
-	if !errors.Is(err, services.ErrUserNotFound) {
+	err := UpdateAvatar(testCtx(), "", avatar, "PNG")
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
 	}
 }
 
 func TestUpdateAvatarNonexistentUser(t *testing.T) {
 	avatar := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
-	err := services.UpdateAvatar(testCtx(), randUUID(), avatar, "PNG")
-	if !errors.Is(err, services.ErrUserNotFound) {
+	err := UpdateAvatar(testCtx(), randUUID(), avatar, "PNG")
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.UpdateSettings ---
+// --- UpdateSettings ---
 
 func TestUpdateSettings(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
@@ -1024,7 +1023,7 @@ func TestUpdateSettings(t *testing.T) {
 		},
 	}
 
-	settings, err := services.UpdateSettings(testCtx(), user.ID, config)
+	settings, err := UpdateSettings(testCtx(), user.ID, config)
 	if err != nil {
 		t.Fatalf("UpdateSettings retornou erro: %v", err)
 	}
@@ -1055,7 +1054,7 @@ func TestUpdateSettings(t *testing.T) {
 	updated.Theme = "light"
 	updated.Display.ShowAvatars = true
 
-	again, err := services.UpdateSettings(testCtx(), user.ID, updated)
+	again, err := UpdateSettings(testCtx(), user.ID, updated)
 	if err != nil {
 		t.Fatalf("UpdateSettings (segunda atualização) retornou erro: %v", err)
 	}
@@ -1072,7 +1071,7 @@ func TestUpdateSettings(t *testing.T) {
 }
 
 func TestUpdateSettingsInvalidConfig(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
@@ -1097,19 +1096,19 @@ func TestUpdateSettingsInvalidConfig(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := services.UpdateSettings(testCtx(), user.ID, tc.config)
-			if !errors.Is(err, services.ErrInvalidInput) {
+			_, err := UpdateSettings(testCtx(), user.ID, tc.config)
+			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		})
 	}
 
 	// configurações inválidas não devem alterar o config persistido
-	if _, err := services.UpdateSettings(testCtx(), user.ID, valid); err != nil {
+	if _, err := UpdateSettings(testCtx(), user.ID, valid); err != nil {
 		t.Fatalf("falha ao salvar config válido: %v", err)
 	}
-	_, err = services.UpdateSettings(testCtx(), user.ID, cases[0].config)
-	if !errors.Is(err, services.ErrInvalidInput) {
+	_, err = UpdateSettings(testCtx(), user.ID, cases[0].config)
+	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("esperava ErrInvalidInput, obtive %v", err)
 	}
 	stored, err := storage.GetUserSettings(testCtx(), user.ID)
@@ -1129,8 +1128,8 @@ func TestUpdateSettingsEmptyUserID(t *testing.T) {
 			MessageDensity: "normal",
 		},
 	}
-	_, err := services.UpdateSettings(testCtx(), "", config)
-	if !errors.Is(err, services.ErrUserNotFound) {
+	_, err := UpdateSettings(testCtx(), "", config)
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
 	}
 }
@@ -1143,21 +1142,21 @@ func TestUpdateSettingsNonexistentUser(t *testing.T) {
 			MessageDensity: "normal",
 		},
 	}
-	_, err := services.UpdateSettings(testCtx(), randUUID(), config)
-	if !errors.Is(err, services.ErrUserNotFound) {
+	_, err := UpdateSettings(testCtx(), randUUID(), config)
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.BanUser ---
+// --- BanUser ---
 
 func TestBanUser(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	if err := services.BanUser(testCtx(), user.ID, true); err != nil {
+	if err := BanUser(testCtx(), user.ID, true); err != nil {
 		t.Fatalf("BanUser(true) retornou erro: %v", err)
 	}
 	stored, err := storage.GetUserByID(testCtx(), user.ID)
@@ -1168,7 +1167,7 @@ func TestBanUser(t *testing.T) {
 		t.Error("esperava banned = true")
 	}
 
-	if err := services.BanUser(testCtx(), user.ID, false); err != nil {
+	if err := BanUser(testCtx(), user.ID, false); err != nil {
 		t.Fatalf("BanUser(false) retornou erro: %v", err)
 	}
 	stored, err = storage.GetUserByID(testCtx(), user.ID)
@@ -1182,7 +1181,7 @@ func TestBanUser(t *testing.T) {
 
 // O dono do servidor NÃO PODE ser banível
 func TestBanServerOwner(t *testing.T) {
-	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
 	}
@@ -1190,40 +1189,40 @@ func TestBanServerOwner(t *testing.T) {
 	name := newRandomServerName()
 	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
 
-	_, err = services.CreateServerWithIcon(testCtx(), name, icon, "png", true, nil, &owner.ID)
+	_, err = CreateServerWithIcon(testCtx(), name, icon, "png", true, nil, &owner.ID)
 
 	if err != nil {
 		t.Fatalf("CreateServerWithIcon retornou erro: %v", err)
 	}
-	err = services.BanUser(testCtx(), owner.ID, true)
+	err = BanUser(testCtx(), owner.ID, true)
 
-	if !errors.Is(err, services.ErrServerOwner) {
+	if !errors.Is(err, ErrServerOwner) {
 		t.Errorf("esperava ErrServerOwner para tentar banir dono do servidor, obtive %v", err)
 	}
 
 }
 
 func TestBanUserEmptyUserID(t *testing.T) {
-	if err := services.BanUser(testCtx(), "", true); !errors.Is(err, services.ErrUserNotFound) {
+	if err := BanUser(testCtx(), "", true); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id vazio, obtive %v", err)
 	}
 }
 
 func TestBanUserNonexistentUser(t *testing.T) {
-	if err := services.BanUser(testCtx(), randUUID(), true); !errors.Is(err, services.ErrUserNotFound) {
+	if err := BanUser(testCtx(), randUUID(), true); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.ResetUserPassword ---
+// --- ResetUserPassword ---
 
 func TestResetUserPassword(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	if err := services.ResetUserPassword(testCtx(), user.ID); err != nil {
+	if err := ResetUserPassword(testCtx(), user.ID); err != nil {
 		t.Fatalf("ResetUserPassword retornou erro: %v", err)
 	}
 	stored, err := storage.GetUserByID(testCtx(), user.ID)
@@ -1236,26 +1235,26 @@ func TestResetUserPassword(t *testing.T) {
 }
 
 func TestResetUserPasswordEmptyUserID(t *testing.T) {
-	if err := services.ResetUserPassword(testCtx(), ""); !errors.Is(err, services.ErrUserNotFound) {
+	if err := ResetUserPassword(testCtx(), ""); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id vazio, obtive %v", err)
 	}
 }
 
 func TestResetUserPasswordNonexistentUser(t *testing.T) {
-	if err := services.ResetUserPassword(testCtx(), randUUID()); !errors.Is(err, services.ErrUserNotFound) {
+	if err := ResetUserPassword(testCtx(), randUUID()); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.ListUsers ---
+// --- ListUsers ---
 
 func TestListUsers(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	users, err := services.ListUsers(testCtx(), nil, "")
+	users, err := ListUsers(testCtx(), nil, "")
 	if err != nil {
 		t.Fatalf("ListUsers retornou erro: %v", err)
 	}
@@ -1276,21 +1275,21 @@ func TestListUsers(t *testing.T) {
 	}
 }
 
-// --- services.ChangePassword ---
+// --- ChangePassword ---
 
 func TestChangePassword(t *testing.T) {
 	password := newRandomPassword()
-	user, err := services.Register(testCtx(), newRandomUsername(), password, newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), password, newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	if err := services.ResetUserPassword(testCtx(), user.ID); err != nil {
+	if err := ResetUserPassword(testCtx(), user.ID); err != nil {
 		t.Fatalf("ResetUserPassword retornou erro: %v", err)
 	}
 
 	newPassword := newRandomPassword()
-	if err := services.ChangePassword(testCtx(), user.ID, newPassword); err != nil {
+	if err := ChangePassword(testCtx(), user.ID, newPassword); err != nil {
 		t.Fatalf("ChangePassword retornou erro: %v", err)
 	}
 
@@ -1313,7 +1312,7 @@ func TestChangePasswordBoundaryLengths(t *testing.T) {
 	MaxPasswordLength, _ := getMaxLenFields()
 
 	password := newRandomPassword()
-	user, err := services.Register(testCtx(), newRandomUsername(), password, newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), password, newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
@@ -1332,7 +1331,7 @@ func TestChangePasswordBoundaryLengths(t *testing.T) {
 		t.Fatalf("SetUserResetPassword retornou erro: %v", err)
 	}
 
-	if err := services.ChangePassword(testCtx(), user.ID, boundaryPassword); err != nil {
+	if err := ChangePassword(testCtx(), user.ID, boundaryPassword); err != nil {
 		t.Fatalf("ChangePassword com senha no limite retornou erro: %v", err)
 	}
 
@@ -1349,7 +1348,7 @@ func TestChangePasswordInvalidInput(t *testing.T) {
 	MaxPasswordLength, _ := getMaxLenFields()
 
 	password := newRandomPassword()
-	user, err := services.Register(testCtx(), newRandomUsername(), password, newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), password, newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
@@ -1360,7 +1359,7 @@ func TestChangePasswordInvalidInput(t *testing.T) {
 		t.Fatalf("SetUserResetPassword retornou erro: %v", err)
 	}
 
-	if err := services.ChangePassword(testCtx(), user.ID, ""); !errors.Is(err, services.ErrInvalidInput) {
+	if err := ChangePassword(testCtx(), user.ID, ""); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para senha vazia, obtive %v", err)
 	}
 
@@ -1371,7 +1370,7 @@ func TestChangePasswordInvalidInput(t *testing.T) {
 	}
 
 	longPassword := strings.Repeat("a", MaxPasswordLength+1)
-	if err := services.ChangePassword(testCtx(), user.ID, longPassword); !errors.Is(err, services.ErrInvalidInput) {
+	if err := ChangePassword(testCtx(), user.ID, longPassword); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para senha acima do limite, obtive %v", err)
 	}
 
@@ -1386,29 +1385,29 @@ func TestChangePasswordInvalidInput(t *testing.T) {
 func TestChangePasswordNoReset(t *testing.T) {
 
 	password := newRandomPassword()
-	user, err := services.Register(testCtx(), newRandomUsername(), password, newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), password, newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	if err := services.ChangePassword(testCtx(), user.ID, newRandomPassword()); !errors.Is(err, services.ErrUserNotReset) {
+	if err := ChangePassword(testCtx(), user.ID, newRandomPassword()); !errors.Is(err, ErrUserNotReset) {
 		t.Errorf("esperava ErrUserNotReset para não reset_password, obtive %v", err)
 	}
 }
 
 func TestChangePasswordEmptyUserID(t *testing.T) {
-	if err := services.ChangePassword(testCtx(), "", newRandomPassword()); !errors.Is(err, services.ErrUserNotFound) {
+	if err := ChangePassword(testCtx(), "", newRandomPassword()); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id vazio, obtive %v", err)
 	}
 }
 
 func TestChangePasswordNonexistentUser(t *testing.T) {
-	if err := services.ChangePassword(testCtx(), randUUID(), newRandomPassword()); !errors.Is(err, services.ErrUserNotFound) {
+	if err := ChangePassword(testCtx(), randUUID(), newRandomPassword()); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.CreateServer ---
+// --- CreateServer ---
 
 // newRandomServerName gera um nome de servidor único (a constraint UNIQUE de
 // servers.name é global).
@@ -1418,13 +1417,13 @@ func newRandomServerName() string {
 
 func TestCreateServer(t *testing.T) {
 	cleanServers(testCtx())
-	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
 	}
 
 	name := newRandomServerName()
-	server, err := services.CreateServer(testCtx(), name, &owner.ID)
+	server, err := CreateServer(testCtx(), name, &owner.ID)
 	if err != nil {
 		t.Fatalf("CreateServer retornou erro: %v", err)
 	}
@@ -1457,7 +1456,7 @@ func TestCreateServer(t *testing.T) {
 
 func TestCreateServerWithoutOwner(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("CreateServer retornou erro: %v", err)
 	}
@@ -1477,14 +1476,14 @@ func TestCreateServerWithoutOwner(t *testing.T) {
 
 func TestCreateServerEmptyName(t *testing.T) {
 	cleanServers(testCtx())
-	_, err := services.CreateServer(testCtx(), "", nil)
-	if !errors.Is(err, services.ErrInvalidInput) {
+	_, err := CreateServer(testCtx(), "", nil)
+	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para nome vazio, obtive %v", err)
 	}
 }
 
 func TestCreateServerWithIcon(t *testing.T) {
-	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
 	}
@@ -1492,7 +1491,7 @@ func TestCreateServerWithIcon(t *testing.T) {
 	name := newRandomServerName()
 	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
 
-	server, err := services.CreateServerWithIcon(testCtx(), name, icon, "png", true, nil, &owner.ID)
+	server, err := CreateServerWithIcon(testCtx(), name, icon, "png", true, nil, &owner.ID)
 	if err != nil {
 		t.Fatalf("CreateServerWithIcon retornou erro: %v", err)
 	}
@@ -1548,7 +1547,7 @@ func TestCreateServerWithIconAllFormats(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cleanServers(testCtx())
 			icon := base64.StdEncoding.EncodeToString(tc.icon)
-			server, err := services.CreateServerWithIcon(testCtx(), newRandomServerName(), icon, tc.format, true, nil, nil)
+			server, err := CreateServerWithIcon(testCtx(), newRandomServerName(), icon, tc.format, true, nil, nil)
 			if err != nil {
 				t.Fatalf("CreateServerWithIcon retornou erro: %v", err)
 			}
@@ -1588,8 +1587,8 @@ func TestCreateServerWithIconInvalidInput(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cleanServers(testCtx())
-			_, err := services.CreateServerWithIcon(testCtx(), tc.serverName, tc.icon, tc.iconFormat, true, nil, nil)
-			if !errors.Is(err, services.ErrInvalidInput) {
+			_, err := CreateServerWithIcon(testCtx(), tc.serverName, tc.icon, tc.iconFormat, true, nil, nil)
+			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		})
@@ -1599,7 +1598,7 @@ func TestCreateServerWithIconInvalidInput(t *testing.T) {
 func TestCreateServerWithIconBoundaryNameLength(t *testing.T) {
 	// 32 caracteres multibyte (64 bytes) estão dentro do limite
 	name := strings.Repeat("ç", 32)
-	server, err := services.CreateServerWithIcon(testCtx(), name, "", "", true, nil, nil)
+	server, err := CreateServerWithIcon(testCtx(), name, "", "", true, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateServerWithIcon com nome de 32 caracteres retornou erro: %v", err)
 	}
@@ -1620,8 +1619,8 @@ func TestCreateServerWithIconExceedsMaxSize(t *testing.T) {
 	copy(oversized, pngAvatarBytes(100, 100))
 	icon := base64.StdEncoding.EncodeToString(oversized)
 
-	_, err := services.CreateServerWithIcon(testCtx(), newRandomServerName(), icon, "PNG", true, nil, nil)
-	if !errors.Is(err, services.ErrInvalidInput) {
+	_, err := CreateServerWithIcon(testCtx(), newRandomServerName(), icon, "PNG", true, nil, nil)
+	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para ícone acima de 2MB, obtive %v", err)
 	}
 }
@@ -1633,7 +1632,7 @@ func TestCreateServerWithIconBoundarySize(t *testing.T) {
 	copy(exact, pngAvatarBytes(100, 100))
 	icon := base64.StdEncoding.EncodeToString(exact)
 
-	server, err := services.CreateServerWithIcon(testCtx(), newRandomServerName(), icon, "PNG", true, nil, nil)
+	server, err := CreateServerWithIcon(testCtx(), newRandomServerName(), icon, "PNG", true, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateServerWithIcon com ícone de exatamente 2MB retornou erro: %v", err)
 	}
@@ -1647,16 +1646,16 @@ func TestCreateServerWithIconBoundarySize(t *testing.T) {
 	}
 }
 
-// --- services.GetServer ---
+// --- GetServer ---
 
 func TestGetServer(t *testing.T) {
 	cleanServers(testCtx())
-	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
 	}
 
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	server, err := CreateServer(testCtx(), newRandomServerName(), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -1667,13 +1666,13 @@ func TestGetServer(t *testing.T) {
 	}
 
 	// member_count é o total de usuários (storage)
-	users, err := services.ListUsers(testCtx(), nil, "")
+	users, err := ListUsers(testCtx(), nil, "")
 	if err != nil {
 		t.Fatalf("ListUsers retornou erro: %v", err)
 	}
 	wantMembers := len(users.Users)
 
-	summary, err := services.GetServer(testCtx(), server.ID)
+	summary, err := GetServer(testCtx(), server.ID)
 	if err != nil {
 		t.Fatalf("GetServer retornou erro: %v", err)
 	}
@@ -1711,34 +1710,34 @@ func TestGetServer(t *testing.T) {
 }
 
 func TestGetServerEmptyID(t *testing.T) {
-	_, err := services.GetServer(testCtx(), "")
-	if !errors.Is(err, services.ErrServerNotFound) {
+	_, err := GetServer(testCtx(), "")
+	if !errors.Is(err, ErrServerNotFound) {
 		t.Errorf("esperava ErrServerNotFound para id vazio, obtive %v", err)
 	}
 }
 
 func TestGetServerNonexistent(t *testing.T) {
-	_, err := services.GetServer(testCtx(), randUUID())
-	if !errors.Is(err, services.ErrServerNotFound) {
+	_, err := GetServer(testCtx(), randUUID())
+	if !errors.Is(err, ErrServerNotFound) {
 		t.Errorf("esperava ErrServerNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.ListServers ---
+// --- ListServers ---
 
 func TestListServers(t *testing.T) {
 	cleanServers(testCtx())
-	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
 	}
 
 	nameA := newRandomServerName()
-	serverA, err := services.CreateServer(testCtx(), nameA, &owner.ID)
+	serverA, err := CreateServer(testCtx(), nameA, &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor A: %v", err)
 	}
-	summaries, err := services.ListServers(testCtx())
+	summaries, err := ListServers(testCtx())
 	if err != nil {
 		t.Fatalf("ListServers retornou erro: %v", err)
 	}
@@ -1763,11 +1762,11 @@ func TestListServers(t *testing.T) {
 	}
 }
 
-// --- services.UpdateServer ---
+// --- UpdateServer ---
 
 func TestUpdateServer(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -1775,7 +1774,7 @@ func TestUpdateServer(t *testing.T) {
 	newName := newRandomServerName()
 	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
 
-	if err := services.UpdateServer(testCtx(), server.ID, newName, icon, "png", nil, nil); err != nil {
+	if err := UpdateServer(testCtx(), server.ID, newName, icon, "png", nil, nil); err != nil {
 		t.Fatalf("UpdateServer retornou erro: %v", err)
 	}
 
@@ -1797,7 +1796,7 @@ func TestUpdateServer(t *testing.T) {
 
 func TestUpdateServerAllFormats(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -1815,7 +1814,7 @@ func TestUpdateServerAllFormats(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			icon := base64.StdEncoding.EncodeToString(tc.icon)
-			if err := services.UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, tc.format, nil, nil); err != nil {
+			if err := UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, tc.format, nil, nil); err != nil {
 				t.Fatalf("UpdateServer retornou erro: %v", err)
 			}
 
@@ -1835,19 +1834,19 @@ func TestUpdateServerAllFormats(t *testing.T) {
 
 func TestUpdateServerRemovesIconWhenEmpty(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
 
 	// define um ícone inicialmente
 	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
-	if err := services.UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, "PNG", nil, nil); err != nil {
+	if err := UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, "PNG", nil, nil); err != nil {
 		t.Fatalf("falha ao definir ícone inicial: %v", err)
 	}
 
 	// ícone e formato vazios devem remover o ícone
-	if err := services.UpdateServer(testCtx(), server.ID, newRandomServerName(), "", "", nil, nil); err != nil {
+	if err := UpdateServer(testCtx(), server.ID, newRandomServerName(), "", "", nil, nil); err != nil {
 		t.Fatalf("UpdateServer (remoção) retornou erro: %v", err)
 	}
 
@@ -1865,7 +1864,7 @@ func TestUpdateServerRemovesIconWhenEmpty(t *testing.T) {
 
 func TestUpdateServerInvalidInput(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -1889,8 +1888,8 @@ func TestUpdateServerInvalidInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := services.UpdateServer(testCtx(), server.ID, tc.serverName, tc.icon, tc.iconFormat, nil, nil)
-			if !errors.Is(err, services.ErrInvalidInput) {
+			err := UpdateServer(testCtx(), server.ID, tc.serverName, tc.icon, tc.iconFormat, nil, nil)
+			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		})
@@ -1914,14 +1913,14 @@ func TestUpdateServerInvalidInput(t *testing.T) {
 
 func TestUpdateServerBoundaryNameLength(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
 
 	// 32 caracteres multibyte (64 bytes) estão dentro do limite
 	name := strings.Repeat("ç", 32)
-	if err := services.UpdateServer(testCtx(), server.ID, name, "", "", nil, nil); err != nil {
+	if err := UpdateServer(testCtx(), server.ID, name, "", "", nil, nil); err != nil {
 		t.Fatalf("UpdateServer com nome de 32 caracteres retornou erro: %v", err)
 	}
 
@@ -1936,7 +1935,7 @@ func TestUpdateServerBoundaryNameLength(t *testing.T) {
 
 func TestUpdateServerExceedsMaxSize(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -1946,15 +1945,15 @@ func TestUpdateServerExceedsMaxSize(t *testing.T) {
 	copy(oversized, pngAvatarBytes(100, 100))
 	icon := base64.StdEncoding.EncodeToString(oversized)
 
-	err = services.UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, "PNG", nil, nil)
-	if !errors.Is(err, services.ErrInvalidInput) {
+	err = UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, "PNG", nil, nil)
+	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para ícone acima de 2MB, obtive %v", err)
 	}
 }
 
 func TestUpdateServerBoundarySize(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -1964,7 +1963,7 @@ func TestUpdateServerBoundarySize(t *testing.T) {
 	copy(exact, pngAvatarBytes(100, 100))
 	icon := base64.StdEncoding.EncodeToString(exact)
 
-	if err := services.UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, "PNG", nil, nil); err != nil {
+	if err := UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, "PNG", nil, nil); err != nil {
 		t.Fatalf("UpdateServer com ícone de exatamente 2MB retornou erro: %v", err)
 	}
 
@@ -1979,21 +1978,21 @@ func TestUpdateServerBoundarySize(t *testing.T) {
 
 func TestUpdateServerEmptyID(t *testing.T) {
 	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
-	err := services.UpdateServer(testCtx(), "", newRandomServerName(), icon, "PNG", nil, nil)
-	if !errors.Is(err, services.ErrServerNotFound) {
+	err := UpdateServer(testCtx(), "", newRandomServerName(), icon, "PNG", nil, nil)
+	if !errors.Is(err, ErrServerNotFound) {
 		t.Errorf("esperava ErrServerNotFound para id vazio, obtive %v", err)
 	}
 }
 
 func TestUpdateServerNonexistent(t *testing.T) {
 	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
-	err := services.UpdateServer(testCtx(), randUUID(), newRandomServerName(), icon, "PNG", nil, nil)
-	if !errors.Is(err, services.ErrServerNotFound) {
+	err := UpdateServer(testCtx(), randUUID(), newRandomServerName(), icon, "PNG", nil, nil)
+	if !errors.Is(err, ErrServerNotFound) {
 		t.Errorf("esperava ErrServerNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.ListChannels ---
+// --- ListChannels ---
 
 // newRandomChannelName gera um nome de canal único (a constraint UNIQUE de
 // channels.name é global).
@@ -2014,26 +2013,26 @@ func newRandomRoleName() string {
 
 func TestListChannels(t *testing.T) {
 	cleanServers(testCtx())
-	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
 	}
 
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	server, err := CreateServer(testCtx(), newRandomServerName(), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
 
-	channelA, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channelA, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal A: %v", err)
 	}
-	channelB, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channelB, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal B: %v", err)
 	}
 
-	channels, err := services.ListChannels(testCtx(), nil)
+	channels, err := ListChannels(testCtx(), nil)
 	if err != nil {
 		t.Fatalf("ListChannels retornou erro: %v", err)
 	}
@@ -2071,22 +2070,22 @@ func TestListChannels(t *testing.T) {
 
 func TestListChannelsFilterByServer(t *testing.T) {
 	cleanServers(testCtx())
-	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
 	}
 
-	serverA, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	serverA, err := CreateServer(testCtx(), newRandomServerName(), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor A: %v", err)
 	}
 
 	nameA := newRandomChannelName()
-	if _, err := services.CreateChannel(testCtx(), serverA.ID, nameA); err != nil {
+	if _, err := CreateChannel(testCtx(), serverA.ID, nameA); err != nil {
 		t.Fatalf("falha ao criar canal A: %v", err)
 	}
 
-	channels, err := services.ListChannels(testCtx(), &serverA.ID)
+	channels, err := ListChannels(testCtx(), &serverA.ID)
 	if err != nil {
 		t.Fatalf("ListChannels retornou erro: %v", err)
 	}
@@ -2104,19 +2103,19 @@ func TestListChannelsFilterByServer(t *testing.T) {
 
 func TestListChannelsEmptyServerID(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
 
 	name := newRandomChannelName()
-	if _, err := services.CreateChannel(testCtx(), server.ID, name); err != nil {
+	if _, err := CreateChannel(testCtx(), server.ID, name); err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
 	// serverID vazia (apontando para "") deve se comportar como sem filtro
 	empty := ""
-	channels, err := services.ListChannels(testCtx(), &empty)
+	channels, err := ListChannels(testCtx(), &empty)
 	if err != nil {
 		t.Fatalf("ListChannels retornou erro: %v", err)
 	}
@@ -2134,20 +2133,20 @@ func TestListChannelsEmptyServerID(t *testing.T) {
 
 func TestListChannelsLastMessage(t *testing.T) {
 	cleanServers(testCtx())
-	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
 	}
-	author, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	author, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário autor: %v", err)
 	}
 
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	server, err := CreateServer(testCtx(), newRandomServerName(), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -2157,7 +2156,7 @@ func TestListChannelsLastMessage(t *testing.T) {
 		t.Fatalf("falha ao criar primeira mensagem: %v", err)
 	}
 
-	channels, err := services.ListChannels(testCtx(), &server.ID)
+	channels, err := ListChannels(testCtx(), &server.ID)
 	if err != nil {
 		t.Fatalf("ListChannels retornou erro: %v", err)
 	}
@@ -2196,7 +2195,7 @@ func TestListChannelsLastMessage(t *testing.T) {
 		t.Fatalf("falha ao criar segunda mensagem: %v", err)
 	}
 
-	channels, err = services.ListChannels(testCtx(), &server.ID)
+	channels, err = ListChannels(testCtx(), &server.ID)
 	if err != nil {
 		t.Fatalf("ListChannels retornou erro: %v", err)
 	}
@@ -2220,11 +2219,11 @@ func TestListChannelsLastMessage(t *testing.T) {
 
 func TestListChannelsPermissionsExpanded(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -2240,14 +2239,14 @@ func TestListChannelsPermissionsExpanded(t *testing.T) {
 
 	permA := models.ChannelPermission{ReadChannel: true, SendMessages: true, DeleteMessages: false}
 	permB := models.ChannelPermission{ReadChannel: false, SendMessages: false, DeleteMessages: true}
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleA.ID, permA); err != nil {
+	if _, err := UpdateChannelPermissions(testCtx(), channel.ID, roleA.ID, permA); err != nil {
 		t.Fatalf("falha ao atualizar permissões da role A: %v", err)
 	}
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleB.ID, permB); err != nil {
+	if _, err := UpdateChannelPermissions(testCtx(), channel.ID, roleB.ID, permB); err != nil {
 		t.Fatalf("falha ao atualizar permissões da role B: %v", err)
 	}
 
-	channels, err := services.ListChannels(testCtx(), &server.ID)
+	channels, err := ListChannels(testCtx(), &server.ID)
 	if err != nil {
 		t.Fatalf("ListChannels retornou erro: %v", err)
 	}
@@ -2277,21 +2276,21 @@ func TestListChannelsPermissionsExpanded(t *testing.T) {
 	}
 }
 
-// --- services.CreateChannel ---
+// --- CreateChannel ---
 
 func TestCreateChannel(t *testing.T) {
 	cleanServers(testCtx())
-	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
 	}
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	server, err := CreateServer(testCtx(), newRandomServerName(), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
 
 	name := newRandomChannelName()
-	summary, err := services.CreateChannel(testCtx(), server.ID, name)
+	summary, err := CreateChannel(testCtx(), server.ID, name)
 	if err != nil {
 		t.Fatalf("CreateChannel retornou erro: %v", err)
 	}
@@ -2339,7 +2338,7 @@ func TestCreateChannel(t *testing.T) {
 
 func TestCreateChannelInvalidInput(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -2356,8 +2355,8 @@ func TestCreateChannelInvalidInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := services.CreateChannel(testCtx(), tc.serverID, tc.channel)
-			if !errors.Is(err, services.ErrInvalidInput) {
+			_, err := CreateChannel(testCtx(), tc.serverID, tc.channel)
+			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		})
@@ -2366,14 +2365,14 @@ func TestCreateChannelInvalidInput(t *testing.T) {
 
 func TestCreateChannelBoundaryNameLength(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
 
 	// 32 caracteres (runes) com conteúdo multibyte estão dentro do limite
 	name := newBoundaryChannelName()
-	summary, err := services.CreateChannel(testCtx(), server.ID, name)
+	summary, err := CreateChannel(testCtx(), server.ID, name)
 	if err != nil {
 		t.Fatalf("CreateChannel com nome de 32 caracteres retornou erro: %v", err)
 	}
@@ -2383,26 +2382,26 @@ func TestCreateChannelBoundaryNameLength(t *testing.T) {
 }
 
 func TestCreateChannelNonexistentServer(t *testing.T) {
-	_, err := services.CreateChannel(testCtx(), randUUID(), newRandomChannelName())
-	if !errors.Is(err, services.ErrServerNotFound) {
+	_, err := CreateChannel(testCtx(), randUUID(), newRandomChannelName())
+	if !errors.Is(err, ErrServerNotFound) {
 		t.Errorf("esperava ErrServerNotFound para servidor inexistente, obtive %v", err)
 	}
 }
 
 func TestCreateChannelNameTaken(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
 
 	name := newRandomChannelName()
-	if _, err := services.CreateChannel(testCtx(), server.ID, name); err != nil {
+	if _, err := CreateChannel(testCtx(), server.ID, name); err != nil {
 		t.Fatalf("falha ao criar primeiro canal: %v", err)
 	}
 
-	_, err = services.CreateChannel(testCtx(), server.ID, name)
-	if !errors.Is(err, services.ErrChannelNameTaken) {
+	_, err = CreateChannel(testCtx(), server.ID, name)
+	if !errors.Is(err, ErrChannelNameTaken) {
 		t.Errorf("esperava ErrChannelNameTaken, obtive %v", err)
 	}
 
@@ -2422,15 +2421,15 @@ func TestCreateChannelNameTaken(t *testing.T) {
 	}
 }
 
-// --- services.UpdateChannel ---
+// --- UpdateChannel ---
 
 func TestUpdateChannel(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -2439,12 +2438,12 @@ func TestUpdateChannel(t *testing.T) {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 	permission := models.ChannelPermission{ReadChannel: true, SendMessages: true}
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission); err != nil {
+	if _, err := UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission); err != nil {
 		t.Fatalf("falha ao atualizar permissões: %v", err)
 	}
 
 	newName := newRandomChannelName()
-	summary, err := services.UpdateChannel(testCtx(), channel.ID, newName)
+	summary, err := UpdateChannel(testCtx(), channel.ID, newName)
 	if err != nil {
 		t.Fatalf("UpdateChannel retornou erro: %v", err)
 	}
@@ -2493,60 +2492,60 @@ func TestUpdateChannel(t *testing.T) {
 }
 
 func TestUpdateChannelEmptyID(t *testing.T) {
-	_, err := services.UpdateChannel(testCtx(), "", newRandomChannelName())
-	if !errors.Is(err, services.ErrChannelNotFound) {
+	_, err := UpdateChannel(testCtx(), "", newRandomChannelName())
+	if !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para id vazio, obtive %v", err)
 	}
 }
 
 func TestUpdateChannelEmptyName(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
-	_, err = services.UpdateChannel(testCtx(), channel.ID, "")
-	if !errors.Is(err, services.ErrInvalidInput) {
+	_, err = UpdateChannel(testCtx(), channel.ID, "")
+	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para nome vazio, obtive %v", err)
 	}
 }
 
 func TestUpdateChannelNameTooLong(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
-	_, err = services.UpdateChannel(testCtx(), channel.ID, strings.Repeat("a", 33))
-	if !errors.Is(err, services.ErrInvalidInput) {
+	_, err = UpdateChannel(testCtx(), channel.ID, strings.Repeat("a", 33))
+	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para nome acima de 32 caracteres, obtive %v", err)
 	}
 }
 
 func TestUpdateChannelBoundaryNameLength(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
 	// 32 caracteres (runes) com conteúdo multibyte estão dentro do limite
 	name := newBoundaryChannelName()
-	summary, err := services.UpdateChannel(testCtx(), channel.ID, name)
+	summary, err := UpdateChannel(testCtx(), channel.ID, name)
 	if err != nil {
 		t.Fatalf("UpdateChannel com nome de 32 caracteres retornou erro: %v", err)
 	}
@@ -2556,29 +2555,29 @@ func TestUpdateChannelBoundaryNameLength(t *testing.T) {
 }
 
 func TestUpdateChannelNonexistent(t *testing.T) {
-	_, err := services.UpdateChannel(testCtx(), randUUID(), newRandomChannelName())
-	if !errors.Is(err, services.ErrChannelNotFound) {
+	_, err := UpdateChannel(testCtx(), randUUID(), newRandomChannelName())
+	if !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para id inexistente, obtive %v", err)
 	}
 }
 
 func TestUpdateChannelNameTaken(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar primeiro canal: %v", err)
 	}
 	takenName := newRandomChannelName()
-	if _, err := services.CreateChannel(testCtx(), server.ID, takenName); err != nil {
+	if _, err := CreateChannel(testCtx(), server.ID, takenName); err != nil {
 		t.Fatalf("falha ao criar segundo canal: %v", err)
 	}
 
-	_, err = services.UpdateChannel(testCtx(), channel.ID, takenName)
-	if !errors.Is(err, services.ErrChannelNameTaken) {
+	_, err = UpdateChannel(testCtx(), channel.ID, takenName)
+	if !errors.Is(err, ErrChannelNameTaken) {
 		t.Errorf("esperava ErrChannelNameTaken, obtive %v", err)
 	}
 
@@ -2592,24 +2591,24 @@ func TestUpdateChannelNameTaken(t *testing.T) {
 	}
 }
 
-// --- services.DeleteChannel ---
+// --- DeleteChannel ---
 
 func TestDeleteChannel(t *testing.T) {
 	cleanServers(testCtx())
-	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
 	}
-	author, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	author, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário autor: %v", err)
 	}
 
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	server, err := CreateServer(testCtx(), newRandomServerName(), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -2617,7 +2616,7 @@ func TestDeleteChannel(t *testing.T) {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
 
-	if _, err := services.DeleteChannel(testCtx(), channel.ID); err != nil {
+	if _, err := DeleteChannel(testCtx(), channel.ID); err != nil {
 		t.Fatalf("DeleteChannel retornou erro: %v", err)
 	}
 
@@ -2636,41 +2635,41 @@ func TestDeleteChannel(t *testing.T) {
 }
 
 func TestDeleteChannelEmptyID(t *testing.T) {
-	_, err := services.DeleteChannel(testCtx(), "")
-	if !errors.Is(err, services.ErrChannelNotFound) {
+	_, err := DeleteChannel(testCtx(), "")
+	if !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para id vazio, obtive %v", err)
 	}
 }
 
 func TestDeleteChannelNonexistent(t *testing.T) {
-	_, err := services.DeleteChannel(testCtx(), randUUID())
-	if !errors.Is(err, services.ErrChannelNotFound) {
+	_, err := DeleteChannel(testCtx(), randUUID())
+	if !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.ChangeChannelPosition (tarefa 8.4) ---
+// --- ChangeChannelPosition (tarefa 8.4) ---
 
 func TestChangeChannelPosition(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	c1, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	c1, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar primeiro canal: %v", err)
 	}
-	c2, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	c2, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar segundo canal: %v", err)
 	}
-	c3, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	c3, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar terceiro canal: %v", err)
 	}
 
-	summary, err := services.ChangeChannelPosition(testCtx(), c1.ID, 1, 3)
+	summary, err := ChangeChannelPosition(testCtx(), c1.ID, 1, 3)
 	if err != nil {
 		t.Fatalf("ChangeChannelPosition retornou erro: %v", err)
 	}
@@ -2692,24 +2691,24 @@ func TestChangeChannelPosition(t *testing.T) {
 
 func TestChangeChannelPositionMoveUp(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	_, err = services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	_, err = CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar primeiro canal: %v", err)
 	}
-	_, err = services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	_, err = CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar segundo canal: %v", err)
 	}
-	c3, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	c3, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar terceiro canal: %v", err)
 	}
 
-	summary, err := services.ChangeChannelPosition(testCtx(), c3.ID, 3, 1)
+	summary, err := ChangeChannelPosition(testCtx(), c3.ID, 3, 1)
 	if err != nil {
 		t.Fatalf("ChangeChannelPosition retornou erro: %v", err)
 	}
@@ -2720,20 +2719,20 @@ func TestChangeChannelPositionMoveUp(t *testing.T) {
 
 func TestChangeChannelPositionSamePosition(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	_, err = services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	_, err = CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar primeiro canal: %v", err)
 	}
-	c2, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	c2, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar segundo canal: %v", err)
 	}
 
-	summary, err := services.ChangeChannelPosition(testCtx(), c2.ID, 2, 2)
+	summary, err := ChangeChannelPosition(testCtx(), c2.ID, 2, 2)
 	if err != nil {
 		t.Fatalf("ChangeChannelPosition retornou erro: %v", err)
 	}
@@ -2744,11 +2743,11 @@ func TestChangeChannelPositionSamePosition(t *testing.T) {
 
 func TestChangeChannelPositionInvalidInput(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	c1, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	c1, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -2766,7 +2765,7 @@ func TestChangeChannelPositionInvalidInput(t *testing.T) {
 		{"new_position muito acima", 1, 10},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := services.ChangeChannelPosition(testCtx(), c1.ID, tc.old, tc.new); !errors.Is(err, services.ErrInvalidInput) {
+			if _, err := ChangeChannelPosition(testCtx(), c1.ID, tc.old, tc.new); !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		})
@@ -2782,34 +2781,34 @@ func TestChangeChannelPositionInvalidInput(t *testing.T) {
 }
 
 func TestChangeChannelPositionNotFound(t *testing.T) {
-	if _, err := services.ChangeChannelPosition(testCtx(), "", 1, 1); !errors.Is(err, services.ErrChannelNotFound) {
+	if _, err := ChangeChannelPosition(testCtx(), "", 1, 1); !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para id vazio, obtive %v", err)
 	}
-	if _, err := services.ChangeChannelPosition(testCtx(), randUUID(), 1, 1); !errors.Is(err, services.ErrChannelNotFound) {
+	if _, err := ChangeChannelPosition(testCtx(), randUUID(), 1, 1); !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para id inexistente, obtive %v", err)
 	}
 }
 
 func TestChangeChannelPositionConflict(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	c1, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	c1, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar primeiro canal: %v", err)
 	}
-	c2, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	c2, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar segundo canal: %v", err)
 	}
-	c3, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	c3, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar terceiro canal: %v", err)
 	}
 
-	if _, err := services.ChangeChannelPosition(testCtx(), c1.ID, 2, 3); !errors.Is(err, services.ErrChannelPositionConflict) {
+	if _, err := ChangeChannelPosition(testCtx(), c1.ID, 2, 3); !errors.Is(err, ErrChannelPositionConflict) {
 		t.Fatalf("esperava ErrChannelPositionConflict, obtive %v", err)
 	}
 
@@ -2825,15 +2824,15 @@ func TestChangeChannelPositionConflict(t *testing.T) {
 	}
 }
 
-// --- services.GetChannelPermissions ---
+// --- GetChannelPermissions ---
 
 func TestGetChannelPermissions(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -2849,14 +2848,14 @@ func TestGetChannelPermissions(t *testing.T) {
 
 	permA := models.ChannelPermission{ReadChannel: true, SendMessages: true, DeleteMessages: false}
 	permB := models.ChannelPermission{ReadChannel: false, SendMessages: false, DeleteMessages: true}
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleA.ID, permA); err != nil {
+	if _, err := UpdateChannelPermissions(testCtx(), channel.ID, roleA.ID, permA); err != nil {
 		t.Fatalf("falha ao atualizar permissões da role A: %v", err)
 	}
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleB.ID, permB); err != nil {
+	if _, err := UpdateChannelPermissions(testCtx(), channel.ID, roleB.ID, permB); err != nil {
 		t.Fatalf("falha ao atualizar permissões da role B: %v", err)
 	}
 
-	permissions, err := services.GetChannelPermissions(testCtx(), channel.ID)
+	permissions, err := GetChannelPermissions(testCtx(), channel.ID)
 	if err != nil {
 		t.Fatalf("GetChannelPermissions retornou erro: %v", err)
 	}
@@ -2883,16 +2882,16 @@ func TestGetChannelPermissions(t *testing.T) {
 
 func TestGetChannelPermissionsEmpty(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
-	permissions, err := services.GetChannelPermissions(testCtx(), channel.ID)
+	permissions, err := GetChannelPermissions(testCtx(), channel.ID)
 	if err != nil {
 		t.Fatalf("GetChannelPermissions retornou erro: %v", err)
 	}
@@ -2902,28 +2901,28 @@ func TestGetChannelPermissionsEmpty(t *testing.T) {
 }
 
 func TestGetChannelPermissionsEmptyID(t *testing.T) {
-	_, err := services.GetChannelPermissions(testCtx(), "")
-	if !errors.Is(err, services.ErrChannelNotFound) {
+	_, err := GetChannelPermissions(testCtx(), "")
+	if !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para id vazio, obtive %v", err)
 	}
 }
 
 func TestGetChannelPermissionsNonexistent(t *testing.T) {
-	_, err := services.GetChannelPermissions(testCtx(), randUUID())
-	if !errors.Is(err, services.ErrChannelNotFound) {
+	_, err := GetChannelPermissions(testCtx(), randUUID())
+	if !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.UpdateChannelPermissions ---
+// --- UpdateChannelPermissions ---
 
 func TestUpdateChannelPermissions(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -2934,7 +2933,7 @@ func TestUpdateChannelPermissions(t *testing.T) {
 
 	permission := models.ChannelPermission{ReadChannel: true, SendMessages: false, DeleteMessages: true}
 
-	got, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission)
+	got, err := UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission)
 	if err != nil {
 		t.Fatalf("UpdateChannelPermissions retornou erro: %v", err)
 	}
@@ -2953,11 +2952,11 @@ func TestUpdateChannelPermissions(t *testing.T) {
 
 func TestUpdateChannelPermissionsReplacesExisting(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -2969,10 +2968,10 @@ func TestUpdateChannelPermissionsReplacesExisting(t *testing.T) {
 	first := models.ChannelPermission{ReadChannel: true, SendMessages: true, DeleteMessages: true}
 	second := models.ChannelPermission{ReadChannel: true, SendMessages: false, DeleteMessages: false}
 
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, first); err != nil {
+	if _, err := UpdateChannelPermissions(testCtx(), channel.ID, role.ID, first); err != nil {
 		t.Fatalf("falha ao atualizar permissões (primeira): %v", err)
 	}
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, second); err != nil {
+	if _, err := UpdateChannelPermissions(testCtx(), channel.ID, role.ID, second); err != nil {
 		t.Fatalf("falha ao atualizar permissões (segunda): %v", err)
 	}
 
@@ -2987,11 +2986,11 @@ func TestUpdateChannelPermissionsReplacesExisting(t *testing.T) {
 
 func TestUpdateChannelPermissionsMultipleRoles(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -3008,10 +3007,10 @@ func TestUpdateChannelPermissionsMultipleRoles(t *testing.T) {
 	permA := models.ChannelPermission{ReadChannel: true, SendMessages: true, DeleteMessages: false}
 	permB := models.ChannelPermission{ReadChannel: true, SendMessages: false, DeleteMessages: true}
 
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleA.ID, permA); err != nil {
+	if _, err := UpdateChannelPermissions(testCtx(), channel.ID, roleA.ID, permA); err != nil {
 		t.Fatalf("falha ao atualizar permissões da role A: %v", err)
 	}
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleB.ID, permB); err != nil {
+	if _, err := UpdateChannelPermissions(testCtx(), channel.ID, roleB.ID, permB); err != nil {
 		t.Fatalf("falha ao atualizar permissões da role B: %v", err)
 	}
 
@@ -3032,24 +3031,24 @@ func TestUpdateChannelPermissionsMultipleRoles(t *testing.T) {
 
 func TestUpdateChannelPermissionsNonexistentRole(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
-	_, err = services.UpdateChannelPermissions(testCtx(), channel.ID, randUUID(), models.ChannelPermission{ReadChannel: true})
-	if !errors.Is(err, services.ErrRoleNotFound) {
+	_, err = UpdateChannelPermissions(testCtx(), channel.ID, randUUID(), models.ChannelPermission{ReadChannel: true})
+	if !errors.Is(err, ErrRoleNotFound) {
 		t.Errorf("esperava ErrRoleNotFound para role inexistente, obtive %v", err)
 	}
 }
 
 func TestUpdateChannelPermissionsEmptyChannelID(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -3058,32 +3057,32 @@ func TestUpdateChannelPermissionsEmptyChannelID(t *testing.T) {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
-	_, err = services.UpdateChannelPermissions(testCtx(), "", role.ID, models.ChannelPermission{})
-	if !errors.Is(err, services.ErrChannelNotFound) {
+	_, err = UpdateChannelPermissions(testCtx(), "", role.ID, models.ChannelPermission{})
+	if !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para channel_id vazio, obtive %v", err)
 	}
 }
 
 func TestUpdateChannelPermissionsEmptyRoleID(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
-	_, err = services.UpdateChannelPermissions(testCtx(), channel.ID, "", models.ChannelPermission{})
-	if !errors.Is(err, services.ErrRoleNotFound) {
+	_, err = UpdateChannelPermissions(testCtx(), channel.ID, "", models.ChannelPermission{})
+	if !errors.Is(err, ErrRoleNotFound) {
 		t.Errorf("esperava ErrRoleNotFound para role_id vazio, obtive %v", err)
 	}
 }
 
 func TestUpdateChannelPermissionsNonexistentChannel(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -3092,8 +3091,8 @@ func TestUpdateChannelPermissionsNonexistentChannel(t *testing.T) {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
-	_, err = services.UpdateChannelPermissions(testCtx(), randUUID(), role.ID, models.ChannelPermission{})
-	if !errors.Is(err, services.ErrChannelNotFound) {
+	_, err = UpdateChannelPermissions(testCtx(), randUUID(), role.ID, models.ChannelPermission{})
+	if !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para canal inexistente, obtive %v", err)
 	}
 }
@@ -3102,25 +3101,25 @@ func strPtr(s string) *string {
 	return &s
 }
 
-// --- services.ListRoles ---
+// --- ListRoles ---
 func TestListRoles(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
 
 	permsA := models.RolePermissions{ManageRoles: true, BanMembers: true}
-	roleA, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), strPtr("#FF0000"), permsA)
+	roleA, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), strPtr("#FF0000"), permsA)
 	if err != nil {
 		t.Fatalf("falha ao criar role A: %v", err)
 	}
-	roleB, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	roleB, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role B: %v", err)
 	}
 
-	roles, err := services.ListRoles(testCtx(), server.ID)
+	roles, err := ListRoles(testCtx(), server.ID)
 	if err != nil {
 		t.Fatalf("ListRoles retornou erro: %v", err)
 	}
@@ -3157,24 +3156,24 @@ func TestListRoles(t *testing.T) {
 }
 
 func TestListRolesEmptyServerID(t *testing.T) {
-	_, err := services.ListRoles(testCtx(), "")
-	if !errors.Is(err, services.ErrServerNotFound) {
+	_, err := ListRoles(testCtx(), "")
+	if !errors.Is(err, ErrServerNotFound) {
 		t.Errorf("esperava ErrServerNotFound para server_id vazio, obtive %v", err)
 	}
 }
 
 func TestListRolesNonexistentServer(t *testing.T) {
-	_, err := services.ListRoles(testCtx(), randUUID())
-	if !errors.Is(err, services.ErrServerNotFound) {
+	_, err := ListRoles(testCtx(), randUUID())
+	if !errors.Is(err, ErrServerNotFound) {
 		t.Errorf("esperava ErrServerNotFound para servidor inexistente, obtive %v", err)
 	}
 }
 
-// --- services.CreateRole ---
+// --- CreateRole ---
 
 func TestCreateRole(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -3182,7 +3181,7 @@ func TestCreateRole(t *testing.T) {
 	name := newRandomRoleName()
 	color := "#FF0000"
 	perms := models.RolePermissions{ManageRoles: true, BanMembers: true, EveryoneMessage: true}
-	role, err := services.CreateRole(testCtx(), server.ID, name, &color, perms)
+	role, err := CreateRole(testCtx(), server.ID, name, &color, perms)
 	if err != nil {
 		t.Fatalf("CreateRole retornou erro: %v", err)
 	}
@@ -3224,12 +3223,12 @@ func TestCreateRole(t *testing.T) {
 
 func TestCreateRoleWithoutColor(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
 
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("CreateRole sem color retornou erro: %v", err)
 	}
@@ -3248,7 +3247,7 @@ func TestCreateRoleWithoutColor(t *testing.T) {
 
 func TestCreateRoleInvalidInput(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -3269,8 +3268,8 @@ func TestCreateRoleInvalidInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := services.CreateRole(testCtx(), server.ID, tc.roleName, tc.color, models.RolePermissions{})
-			if !errors.Is(err, services.ErrInvalidInput) {
+			_, err := CreateRole(testCtx(), server.ID, tc.roleName, tc.color, models.RolePermissions{})
+			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		})
@@ -3279,14 +3278,14 @@ func TestCreateRoleInvalidInput(t *testing.T) {
 
 func TestCreateRoleBoundaryNameLength(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
 
 	// 32 caracteres multibyte (64 bytes) estão dentro do limite
 	name := strings.Repeat("ç", 32)
-	role, err := services.CreateRole(testCtx(), server.ID, name, nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, name, nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("CreateRole com nome de 32 caracteres retornou erro: %v", err)
 	}
@@ -3296,21 +3295,21 @@ func TestCreateRoleBoundaryNameLength(t *testing.T) {
 }
 
 func TestCreateRoleNonexistentServer(t *testing.T) {
-	_, err := services.CreateRole(testCtx(), randUUID(), newRandomRoleName(), nil, models.RolePermissions{})
-	if !errors.Is(err, services.ErrServerNotFound) {
+	_, err := CreateRole(testCtx(), randUUID(), newRandomRoleName(), nil, models.RolePermissions{})
+	if !errors.Is(err, ErrServerNotFound) {
 		t.Errorf("esperava ErrServerNotFound para servidor inexistente, obtive %v", err)
 	}
 }
 
-// --- services.UpdateRole ---
+// --- UpdateRole ---
 
 func TestUpdateRole(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), strPtr("#FF0000"), models.RolePermissions{ManageRoles: true})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), strPtr("#FF0000"), models.RolePermissions{ManageRoles: true})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -3318,7 +3317,7 @@ func TestUpdateRole(t *testing.T) {
 	newName := newRandomRoleName()
 	newColor := "#00FF00"
 	newPerms := models.RolePermissions{BanMembers: true, EveryoneMessage: true}
-	updated, err := services.UpdateRole(testCtx(), role.ID, newName, &newColor, newPerms)
+	updated, err := UpdateRole(testCtx(), role.ID, newName, &newColor, newPerms)
 	if err != nil {
 		t.Fatalf("UpdateRole retornou erro: %v", err)
 	}
@@ -3360,16 +3359,16 @@ func TestUpdateRole(t *testing.T) {
 
 func TestUpdateRoleClearsColor(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), strPtr("#FF0000"), models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), strPtr("#FF0000"), models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
-	if _, err := services.UpdateRole(testCtx(), role.ID, newRandomRoleName(), nil, models.RolePermissions{}); err != nil {
+	if _, err := UpdateRole(testCtx(), role.ID, newRandomRoleName(), nil, models.RolePermissions{}); err != nil {
 		t.Fatalf("UpdateRole com color nula retornou erro: %v", err)
 	}
 
@@ -3383,19 +3382,19 @@ func TestUpdateRoleClearsColor(t *testing.T) {
 }
 
 func TestUpdateRoleEmptyID(t *testing.T) {
-	_, err := services.UpdateRole(testCtx(), "", newRandomRoleName(), nil, models.RolePermissions{})
-	if !errors.Is(err, services.ErrRoleNotFound) {
+	_, err := UpdateRole(testCtx(), "", newRandomRoleName(), nil, models.RolePermissions{})
+	if !errors.Is(err, ErrRoleNotFound) {
 		t.Errorf("esperava ErrRoleNotFound para id vazio, obtive %v", err)
 	}
 }
 
 func TestUpdateRoleInvalidInput(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -3414,8 +3413,8 @@ func TestUpdateRoleInvalidInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := services.UpdateRole(testCtx(), role.ID, tc.roleName, tc.color, models.RolePermissions{})
-			if !errors.Is(err, services.ErrInvalidInput) {
+			_, err := UpdateRole(testCtx(), role.ID, tc.roleName, tc.color, models.RolePermissions{})
+			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		})
@@ -3423,29 +3422,29 @@ func TestUpdateRoleInvalidInput(t *testing.T) {
 }
 
 func TestUpdateRoleNonexistent(t *testing.T) {
-	_, err := services.UpdateRole(testCtx(), randUUID(), newRandomRoleName(), nil, models.RolePermissions{})
-	if !errors.Is(err, services.ErrRoleNotFound) {
+	_, err := UpdateRole(testCtx(), randUUID(), newRandomRoleName(), nil, models.RolePermissions{})
+	if !errors.Is(err, ErrRoleNotFound) {
 		t.Errorf("esperava ErrRoleNotFound para id inexistente, obtive %v", err)
 	}
 }
 
 func TestUpdateRoleNameTaken(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar primeira role: %v", err)
 	}
 	takenName := newRandomRoleName()
-	if _, err := services.CreateRole(testCtx(), server.ID, takenName, nil, models.RolePermissions{}); err != nil {
+	if _, err := CreateRole(testCtx(), server.ID, takenName, nil, models.RolePermissions{}); err != nil {
 		t.Fatalf("falha ao criar segunda role: %v", err)
 	}
 
-	_, err = services.UpdateRole(testCtx(), role.ID, takenName, nil, models.RolePermissions{})
-	if !errors.Is(err, services.ErrRoleNameTaken) {
+	_, err = UpdateRole(testCtx(), role.ID, takenName, nil, models.RolePermissions{})
+	if !errors.Is(err, ErrRoleNameTaken) {
 		t.Errorf("esperava ErrRoleNameTaken, obtive %v", err)
 	}
 
@@ -3459,35 +3458,35 @@ func TestUpdateRoleNameTaken(t *testing.T) {
 	}
 }
 
-// --- services.DeleteRole ---
+// --- DeleteRole ---
 
 func TestDeleteRole(t *testing.T) {
 	cleanServers(testCtx())
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{ManageRoles: true})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{ManageRoles: true})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
-	if _, err := services.AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
+	if _, err := AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
 		t.Fatalf("falha ao atribuir role ao usuário: %v", err)
 	}
 	permission := models.ChannelPermission{ReadChannel: true, SendMessages: true}
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission); err != nil {
+	if _, err := UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission); err != nil {
 		t.Fatalf("falha ao atualizar permissões: %v", err)
 	}
 
-	if err := services.DeleteRole(testCtx(), role.ID); err != nil {
+	if err := DeleteRole(testCtx(), role.ID); err != nil {
 		t.Fatalf("DeleteRole retornou erro: %v", err)
 	}
 
@@ -3511,37 +3510,37 @@ func TestDeleteRole(t *testing.T) {
 }
 
 func TestDeleteRoleEmptyID(t *testing.T) {
-	err := services.DeleteRole(testCtx(), "")
-	if !errors.Is(err, services.ErrRoleNotFound) {
+	err := DeleteRole(testCtx(), "")
+	if !errors.Is(err, ErrRoleNotFound) {
 		t.Errorf("esperava ErrRoleNotFound para id vazio, obtive %v", err)
 	}
 }
 
 func TestDeleteRoleNonexistent(t *testing.T) {
-	err := services.DeleteRole(testCtx(), randUUID())
-	if !errors.Is(err, services.ErrRoleNotFound) {
+	err := DeleteRole(testCtx(), randUUID())
+	if !errors.Is(err, ErrRoleNotFound) {
 		t.Errorf("esperava ErrRoleNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-// --- services.AssignUserRole ---
+// --- AssignUserRole ---
 
 func TestAssignUserRole(t *testing.T) {
 	cleanServers(testCtx())
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
-	userRole, err := services.AssignUserRole(testCtx(), user.ID, role.ID)
+	userRole, err := AssignUserRole(testCtx(), user.ID, role.ID)
 	if err != nil {
 		t.Fatalf("AssignUserRole retornou erro: %v", err)
 	}
@@ -3576,26 +3575,26 @@ func TestAssignUserRole(t *testing.T) {
 
 func TestAssignUserRoleAlreadyAssigned(t *testing.T) {
 	cleanServers(testCtx())
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
-	first, err := services.AssignUserRole(testCtx(), user.ID, role.ID)
+	first, err := AssignUserRole(testCtx(), user.ID, role.ID)
 	if err != nil {
 		t.Fatalf("primeira AssignUserRole retornou erro: %v", err)
 	}
 
 	// atribuir a mesma role novamente é idempotente
-	second, err := services.AssignUserRole(testCtx(), user.ID, role.ID)
+	second, err := AssignUserRole(testCtx(), user.ID, role.ID)
 	if err != nil {
 		t.Fatalf("segunda AssignUserRole retornou erro: %v", err)
 	}
@@ -3618,83 +3617,83 @@ func TestAssignUserRoleAlreadyAssigned(t *testing.T) {
 
 func TestAssignUserRoleEmptyUserID(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
-	_, err = services.AssignUserRole(testCtx(), "", role.ID)
-	if !errors.Is(err, services.ErrUserNotFound) {
+	_, err = AssignUserRole(testCtx(), "", role.ID)
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para user_id vazio, obtive %v", err)
 	}
 }
 
 func TestAssignUserRoleEmptyRoleID(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	_, err = services.AssignUserRole(testCtx(), user.ID, "")
-	if !errors.Is(err, services.ErrRoleNotFound) {
+	_, err = AssignUserRole(testCtx(), user.ID, "")
+	if !errors.Is(err, ErrRoleNotFound) {
 		t.Errorf("esperava ErrRoleNotFound para role_id vazio, obtive %v", err)
 	}
 }
 
 func TestAssignUserRoleNonexistentUser(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
-	_, err = services.AssignUserRole(testCtx(), randUUID(), role.ID)
-	if !errors.Is(err, services.ErrUserNotFound) {
+	_, err = AssignUserRole(testCtx(), randUUID(), role.ID)
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para usuário inexistente, obtive %v", err)
 	}
 }
 
 func TestAssignUserRoleNonexistentRole(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	_, err = services.AssignUserRole(testCtx(), user.ID, randUUID())
-	if !errors.Is(err, services.ErrRoleNotFound) {
+	_, err = AssignUserRole(testCtx(), user.ID, randUUID())
+	if !errors.Is(err, ErrRoleNotFound) {
 		t.Errorf("esperava ErrRoleNotFound para role inexistente, obtive %v", err)
 	}
 }
 
-// --- services.RemoveUserRole ---
+// --- RemoveUserRole ---
 
 func TestRemoveUserRole(t *testing.T) {
 	cleanServers(testCtx())
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
-	if _, err := services.AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
+	if _, err := AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
 		t.Fatalf("falha ao atribuir role ao usuário: %v", err)
 	}
 
-	if err := services.RemoveUserRole(testCtx(), user.ID, role.ID); err != nil {
+	if err := RemoveUserRole(testCtx(), user.ID, role.ID); err != nil {
 		t.Fatalf("RemoveUserRole retornou erro: %v", err)
 	}
 
@@ -3705,84 +3704,84 @@ func TestRemoveUserRole(t *testing.T) {
 
 func TestRemoveUserRoleEmptyUserID(t *testing.T) {
 	cleanServers(testCtx())
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
-	err = services.RemoveUserRole(testCtx(), "", role.ID)
-	if !errors.Is(err, services.ErrUserNotFound) {
+	err = RemoveUserRole(testCtx(), "", role.ID)
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para user_id vazio, obtive %v", err)
 	}
 }
 
 func TestRemoveUserRoleEmptyRoleID(t *testing.T) {
 	cleanServers(testCtx())
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	err = services.RemoveUserRole(testCtx(), user.ID, "")
-	if !errors.Is(err, services.ErrRoleNotFound) {
+	err = RemoveUserRole(testCtx(), user.ID, "")
+	if !errors.Is(err, ErrRoleNotFound) {
 		t.Errorf("esperava ErrRoleNotFound para role_id vazio, obtive %v", err)
 	}
 }
 
 func TestRemoveUserRoleNonexistentUser(t *testing.T) {
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
-	err = services.RemoveUserRole(testCtx(), randUUID(), role.ID)
-	if !errors.Is(err, services.ErrUserNotFound) {
+	err = RemoveUserRole(testCtx(), randUUID(), role.ID)
+	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para usuário inexistente, obtive %v", err)
 	}
 }
 
 func TestRemoveUserRoleNonexistentRole(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	err = services.RemoveUserRole(testCtx(), user.ID, randUUID())
-	if !errors.Is(err, services.ErrRoleNotFound) {
+	err = RemoveUserRole(testCtx(), user.ID, randUUID())
+	if !errors.Is(err, ErrRoleNotFound) {
 		t.Errorf("esperava ErrRoleNotFound para role inexistente, obtive %v", err)
 	}
 }
 
 func TestRemoveUserRoleNotAssigned(t *testing.T) {
 	cleanServers(testCtx())
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	server, err := CreateServer(testCtx(), newRandomServerName(), nil)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	role, err := CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
-	err = services.RemoveUserRole(testCtx(), user.ID, role.ID)
-	if !errors.Is(err, services.ErrUserRoleNotFound) {
+	err = RemoveUserRole(testCtx(), user.ID, role.ID)
+	if !errors.Is(err, ErrUserRoleNotFound) {
 		t.Errorf("esperava ErrUserRoleNotFound para role não atribuída, obtive %v", err)
 	}
 }
 
-// --- services.LoginServer / RequireServerAccess ---
+// --- LoginServer / RequireServerAccess ---
 
 // removeAllServersTest limpa a tabela servers (as dependências são removidas
 // em cascata) para isolar os testes que dependem do estado do servidor do
@@ -3828,8 +3827,8 @@ func TestLoginServerInvalidInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := services.LoginServer(testCtx(), tc.password, newRandomIP())
-			if !errors.Is(err, services.ErrInvalidInput) {
+			err := LoginServer(testCtx(), tc.password, newRandomIP())
+			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		})
@@ -3838,7 +3837,7 @@ func TestLoginServerInvalidInput(t *testing.T) {
 
 func TestLoginServerBannedIP(t *testing.T) {
 	ip := newRandomIP()
-	bannedUser, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	bannedUser, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
 	if err != nil {
 		t.Fatalf("falha ao criar usuário para banir: %v", err)
 	}
@@ -3846,8 +3845,8 @@ func TestLoginServerBannedIP(t *testing.T) {
 		t.Fatalf("falha ao banir usuário: %v", err)
 	}
 
-	err = services.LoginServer(testCtx(), "qualquer_senha", ip)
-	if !errors.Is(err, services.ErrBannedIP) {
+	err = LoginServer(testCtx(), "qualquer_senha", ip)
+	if !errors.Is(err, ErrBannedIP) {
 		t.Errorf("esperava ErrBannedIP, obtive %v", err)
 	}
 }
@@ -3855,8 +3854,8 @@ func TestLoginServerBannedIP(t *testing.T) {
 func TestLoginServerNotFound(t *testing.T) {
 	removeAllServersTest(t)
 
-	err := services.LoginServer(testCtx(), "qualquer_senha", newRandomIP())
-	if !errors.Is(err, services.ErrServerNotFound) {
+	err := LoginServer(testCtx(), "qualquer_senha", newRandomIP())
+	if !errors.Is(err, ErrServerNotFound) {
 		t.Errorf("esperava ErrServerNotFound, obtive %v", err)
 	}
 }
@@ -3866,12 +3865,12 @@ func TestLoginServerSuccessNonPublic(t *testing.T) {
 	removeAllServersTest(t)
 	createNonPublicServerTest(t, password)
 
-	if err := services.LoginServer(testCtx(), password, newRandomIP()); err != nil {
+	if err := LoginServer(testCtx(), password, newRandomIP()); err != nil {
 		t.Errorf("LoginServer com a senha correta retornou erro: %v", err)
 	}
 
-	err := services.LoginServer(testCtx(), "senha_incorreta_"+randHex(4), newRandomIP())
-	if !errors.Is(err, services.ErrInvalidCredentials) {
+	err := LoginServer(testCtx(), "senha_incorreta_"+randHex(4), newRandomIP())
+	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("esperava ErrInvalidCredentials para senha incorreta, obtive %v", err)
 	}
 }
@@ -3880,7 +3879,7 @@ func TestLoginServerSuccessPublic(t *testing.T) {
 	removeAllServersTest(t)
 	createPublicServerTest(t)
 
-	if err := services.LoginServer(testCtx(), "qualquer_senha", newRandomIP()); err != nil {
+	if err := LoginServer(testCtx(), "qualquer_senha", newRandomIP()); err != nil {
 		t.Errorf("LoginServer em servidor público retornou erro: %v", err)
 	}
 }
@@ -3890,7 +3889,7 @@ func TestRequireServerAccess(t *testing.T) {
 
 	t.Run("bootstrap sem servidor", func(t *testing.T) {
 		removeAllServersTest(t)
-		if err := services.RequireServerAccess(testCtx(), ""); err != nil {
+		if err := RequireServerAccess(testCtx(), ""); err != nil {
 			t.Errorf("esperava sem erro no bootstrap, obtive %v", err)
 		}
 	})
@@ -3898,7 +3897,7 @@ func TestRequireServerAccess(t *testing.T) {
 	t.Run("servidor público", func(t *testing.T) {
 		removeAllServersTest(t)
 		createPublicServerTest(t)
-		if err := services.RequireServerAccess(testCtx(), ""); err != nil {
+		if err := RequireServerAccess(testCtx(), ""); err != nil {
 			t.Errorf("esperava sem erro em servidor público, obtive %v", err)
 		}
 	})
@@ -3906,7 +3905,7 @@ func TestRequireServerAccess(t *testing.T) {
 	t.Run("servidor não público sem cookie", func(t *testing.T) {
 		removeAllServersTest(t)
 		createNonPublicServerTest(t, "server_pw_"+randHex(4))
-		if err := services.RequireServerAccess(testCtx(), ""); !errors.Is(err, services.ErrServerAccessRequired) {
+		if err := RequireServerAccess(testCtx(), ""); !errors.Is(err, ErrServerAccessRequired) {
 			t.Errorf("esperava ErrServerAccessRequired, obtive %v", err)
 		}
 	})
@@ -3914,7 +3913,7 @@ func TestRequireServerAccess(t *testing.T) {
 	t.Run("servidor não público com cookie inválido", func(t *testing.T) {
 		removeAllServersTest(t)
 		createNonPublicServerTest(t, "server_pw_"+randHex(4))
-		if err := services.RequireServerAccess(testCtx(), "token-invalido"); !errors.Is(err, services.ErrServerAccessRequired) {
+		if err := RequireServerAccess(testCtx(), "token-invalido"); !errors.Is(err, ErrServerAccessRequired) {
 			t.Errorf("esperava ErrServerAccessRequired, obtive %v", err)
 		}
 	})
@@ -3926,7 +3925,7 @@ func TestRequireServerAccess(t *testing.T) {
 		if err != nil {
 			t.Fatalf("falha ao gerar token de sessão: %v", err)
 		}
-		if err := services.RequireServerAccess(testCtx(), sessionToken); !errors.Is(err, services.ErrServerAccessRequired) {
+		if err := RequireServerAccess(testCtx(), sessionToken); !errors.Is(err, ErrServerAccessRequired) {
 			t.Errorf("token de sessão não deveria conceder acesso, obtive %v", err)
 		}
 	})
@@ -3938,18 +3937,18 @@ func TestRequireServerAccess(t *testing.T) {
 		if err != nil {
 			t.Fatalf("falha ao gerar token temporário: %v", err)
 		}
-		if err := services.RequireServerAccess(testCtx(), tempToken); err != nil {
+		if err := RequireServerAccess(testCtx(), tempToken); err != nil {
 			t.Errorf("esperava sem erro com token temporário válido, obtive %v", err)
 		}
 	})
 }
 
-// --- services.ListMessages ---
+// --- ListMessages ---
 
 // newTestMessageUser registra um usuário de apoio para os testes de mensagem.
 func newTestMessageUser(t *testing.T) models.User {
 	t.Helper()
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário de apoio: %v", err)
 	}
@@ -3959,11 +3958,11 @@ func newTestMessageUser(t *testing.T) models.User {
 // newTestMessageChannel cria servidor e canal de apoio para os testes de mensagem.
 func newTestMessageChannel(t *testing.T, ownerID *string) (models.Server, models.ChannelSummary) {
 	t.Helper()
-	server, err := services.CreateServer(testCtx(), newRandomServerName(), ownerID)
+	server, err := CreateServer(testCtx(), newRandomServerName(), ownerID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor de apoio: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	channel, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal de apoio: %v", err)
 	}
@@ -3978,7 +3977,7 @@ func grantChannelPermission(t *testing.T, server models.Server, channel models.C
 	if err != nil {
 		t.Fatalf("falha ao criar role de apoio: %v", err)
 	}
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission); err != nil {
+	if _, err := UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission); err != nil {
 		t.Fatalf("falha ao vincular permissão ao canal: %v", err)
 	}
 	if _, err := storage.AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
@@ -3994,16 +3993,16 @@ func TestListMessages(t *testing.T) {
 	server, channel := newTestMessageChannel(t, &owner.ID)
 	grantChannelPermission(t, server, channel, reader, models.ChannelPermission{ReadChannel: true})
 
-	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "primeira mensagem", nil); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "primeira mensagem", nil); err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "segunda mensagem", nil); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "segunda mensagem", nil); err != nil {
 		t.Fatalf("falha ao criar segunda mensagem de apoio: %v", err)
 	}
 
 	// dono do servidor: sempre pode ler
-	list, err := services.ListMessages(testCtx(), channel.ID, owner.ID, nil, "")
+	list, err := ListMessages(testCtx(), channel.ID, owner.ID, nil, "")
 	if err != nil {
 		t.Fatalf("ListMessages do dono retornou erro: %v", err)
 	}
@@ -4018,22 +4017,22 @@ func TestListMessages(t *testing.T) {
 	}
 
 	// usuário com read_channel: pode ler
-	if _, err := services.ListMessages(testCtx(), channel.ID, reader.ID, nil, ""); err != nil {
+	if _, err := ListMessages(testCtx(), channel.ID, reader.ID, nil, ""); err != nil {
 		t.Errorf("ListMessages do leitor retornou erro: %v", err)
 	}
 
 	// usuário sem permissão no canal do servidor: negado
-	if _, err := services.ListMessages(testCtx(), channel.ID, stranger.ID, nil, ""); !errors.Is(err, services.ErrPermissionDenied) {
+	if _, err := ListMessages(testCtx(), channel.ID, stranger.ID, nil, ""); !errors.Is(err, ErrPermissionDenied) {
 		t.Errorf("esperava ErrPermissionDenied para usuário sem permissão, obtive %v", err)
 	}
 
 	// canal inexistente
-	if _, err := services.ListMessages(testCtx(), randUUID(), owner.ID, nil, ""); !errors.Is(err, services.ErrChannelNotFound) {
+	if _, err := ListMessages(testCtx(), randUUID(), owner.ID, nil, ""); !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para canal inexistente, obtive %v", err)
 	}
 
 	// channel_id vazio
-	if _, err := services.ListMessages(testCtx(), "", owner.ID, nil, ""); !errors.Is(err, services.ErrChannelNotFound) {
+	if _, err := ListMessages(testCtx(), "", owner.ID, nil, ""); !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para channel_id vazio, obtive %v", err)
 	}
 }
@@ -4043,18 +4042,18 @@ func TestListMessagesSince(t *testing.T) {
 	owner := newTestMessageUser(t)
 	_, channel := newTestMessageChannel(t, &owner.ID)
 
-	first, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", nil)
+	first, err := CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar primeira mensagem: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", nil); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", nil); err != nil {
 		t.Fatalf("falha ao criar segunda mensagem: %v", err)
 	}
 
 	// since após a primeira mensagem: só a segunda
 	since := first.CreatedAt
-	list, err := services.ListMessages(testCtx(), channel.ID, owner.ID, timePtr(since), "")
+	list, err := ListMessages(testCtx(), channel.ID, owner.ID, timePtr(since), "")
 	if err != nil {
 		t.Fatalf("ListMessages com since retornou erro: %v", err)
 	}
@@ -4069,12 +4068,12 @@ func TestListMessagesHasMore(t *testing.T) {
 	_, channel := newTestMessageChannel(t, &owner.ID)
 
 	for i := 0; i < 101; i++ {
-		if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem "+randHex(2), nil); err != nil {
+		if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem "+randHex(2), nil); err != nil {
 			t.Fatalf("falha ao criar mensagem de apoio %d: %v", i, err)
 		}
 	}
 
-	list, err := services.ListMessages(testCtx(), channel.ID, owner.ID, nil, "")
+	list, err := ListMessages(testCtx(), channel.ID, owner.ID, nil, "")
 	if err != nil {
 		t.Fatalf("ListMessages retornou erro: %v", err)
 	}
@@ -4086,7 +4085,7 @@ func TestListMessagesHasMore(t *testing.T) {
 	}
 }
 
-// --- services.CreateMessage ---
+// --- CreateMessage ---
 
 func TestCreateMessage(t *testing.T) {
 	cleanServers(testCtx())
@@ -4097,7 +4096,7 @@ func TestCreateMessage(t *testing.T) {
 	grantChannelPermission(t, server, channel, writer, models.ChannelPermission{SendMessages: true})
 
 	// dono do servidor: sempre pode enviar
-	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "olá mundo", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "olá mundo", nil)
 	if err != nil {
 		t.Fatalf("CreateMessage do dono retornou erro: %v", err)
 	}
@@ -4121,12 +4120,12 @@ func TestCreateMessage(t *testing.T) {
 	}
 
 	// usuário com send_messages: pode enviar
-	if _, err := services.CreateMessage(testCtx(), channel.ID, writer.ID, "mensagem do writer", nil); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, writer.ID, "mensagem do writer", nil); err != nil {
 		t.Errorf("CreateMessage do writer retornou erro: %v", err)
 	}
 
 	// usuário sem permissão no canal: negado
-	if _, err := services.CreateMessage(testCtx(), channel.ID, stranger.ID, "mensagem do estranho", nil); !errors.Is(err, services.ErrPermissionDenied) {
+	if _, err := CreateMessage(testCtx(), channel.ID, stranger.ID, "mensagem do estranho", nil); !errors.Is(err, ErrPermissionDenied) {
 		t.Errorf("esperava ErrPermissionDenied para usuário sem send_messages, obtive %v", err)
 	}
 }
@@ -4137,37 +4136,37 @@ func TestCreateMessageInvalidInput(t *testing.T) {
 	_, channel := newTestMessageChannel(t, &owner.ID)
 
 	// channel_id vazio
-	if _, err := services.CreateMessage(testCtx(), "", owner.ID, "conteúdo", nil); !errors.Is(err, services.ErrChannelNotFound) {
+	if _, err := CreateMessage(testCtx(), "", owner.ID, "conteúdo", nil); !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para channel_id vazio, obtive %v", err)
 	}
 
 	// canal inexistente
-	if _, err := services.CreateMessage(testCtx(), randUUID(), owner.ID, "conteúdo", nil); !errors.Is(err, services.ErrChannelNotFound) {
+	if _, err := CreateMessage(testCtx(), randUUID(), owner.ID, "conteúdo", nil); !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para canal inexistente, obtive %v", err)
 	}
 
 	// author_id vazio
-	if _, err := services.CreateMessage(testCtx(), channel.ID, "", "conteúdo", nil); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := CreateMessage(testCtx(), channel.ID, "", "conteúdo", nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para author_id vazio, obtive %v", err)
 	}
 
 	// content acima do limite (8192 caracteres)
-	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, strings.Repeat("a", 8193), nil); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, strings.Repeat("a", 8193), nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para content acima do limite, obtive %v", err)
 	}
 
 	// content vazio sem attachments
-	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "", nil); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para content vazio sem attachments, obtive %v", err)
 	}
 
 	// nome de attachment vazio
-	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "", []services.AttachmentInput{{OriginalFileName: "", Content: strings.NewReader("x")}}); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", []AttachmentInput{{OriginalFileName: "", Content: strings.NewReader("x")}}); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para nome de attachment vazio, obtive %v", err)
 	}
 
 	// nome de attachment acima do limite (128 caracteres)
-	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "", []services.AttachmentInput{{OriginalFileName: strings.Repeat("a", 129) + ".txt", Content: strings.NewReader("x")}}); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", []AttachmentInput{{OriginalFileName: strings.Repeat("a", 129) + ".txt", Content: strings.NewReader("x")}}); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para nome de attachment acima do limite, obtive %v", err)
 	}
 }
@@ -4178,13 +4177,13 @@ func TestCreateMessageBoundary(t *testing.T) {
 	_, channel := newTestMessageChannel(t, &owner.ID)
 
 	// content exatamente no limite (8192 caracteres): aceito
-	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, strings.Repeat("a", 8192), nil); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, strings.Repeat("a", 8192), nil); err != nil {
 		t.Errorf("CreateMessage com content no limite retornou erro: %v", err)
 	}
 
 	// nome de attachment exatamente no limite (128 caracteres): aceito
 	name := strings.Repeat("a", 127) + "b"
-	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "", []services.AttachmentInput{{OriginalFileName: name, Content: strings.NewReader("conteúdo")}}); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", []AttachmentInput{{OriginalFileName: name, Content: strings.NewReader("conteúdo")}}); err != nil {
 		t.Errorf("CreateMessage com nome de attachment no limite retornou erro: %v", err)
 	}
 }
@@ -4194,10 +4193,10 @@ func TestCreateMessageMaxAttachments(t *testing.T) {
 	owner := newTestMessageUser(t)
 	_, channel := newTestMessageChannel(t, &owner.ID)
 
-	inputs := func(n int) []services.AttachmentInput {
-		list := make([]services.AttachmentInput, 0, n)
+	inputs := func(n int) []AttachmentInput {
+		list := make([]AttachmentInput, 0, n)
 		for i := 0; i < n; i++ {
-			list = append(list, services.AttachmentInput{
+			list = append(list, AttachmentInput{
 				OriginalFileName: fmt.Sprintf("arquivo-%d.txt", i),
 				Content:          strings.NewReader(fmt.Sprintf("conteúdo %d", i)),
 			})
@@ -4206,7 +4205,7 @@ func TestCreateMessageMaxAttachments(t *testing.T) {
 	}
 
 	// exatamente no limite (10 attachments): aceito
-	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "no limite", inputs(10))
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "no limite", inputs(10))
 	if err != nil {
 		t.Fatalf("CreateMessage com 10 attachments retornou erro: %v", err)
 	}
@@ -4215,7 +4214,7 @@ func TestCreateMessageMaxAttachments(t *testing.T) {
 	}
 
 	// acima do limite (11 attachments): ErrTooManyAttachments
-	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "acima do limite", inputs(11)); !errors.Is(err, services.ErrTooManyAttachments) {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "acima do limite", inputs(11)); !errors.Is(err, ErrTooManyAttachments) {
 		t.Errorf("esperava ErrTooManyAttachments para 11 attachments, obtive %v", err)
 	}
 }
@@ -4239,7 +4238,7 @@ func TestCreateMessageWithAttachments(t *testing.T) {
 	}
 
 	// dono: pode enviar com attachments
-	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "com arquivo", []services.AttachmentInput{
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "com arquivo", []AttachmentInput{
 		{OriginalFileName: "documento.txt", Content: strings.NewReader("conteúdo do documento")},
 	})
 	if err != nil {
@@ -4277,16 +4276,16 @@ func TestCreateMessageWithAttachments(t *testing.T) {
 	}
 
 	// writer com send_messages + send_attachment: pode enviar
-	if _, err := services.CreateMessage(testCtx(), channel.ID, writer.ID, "com arquivo do writer", []services.AttachmentInput{
+	if _, err := CreateMessage(testCtx(), channel.ID, writer.ID, "com arquivo do writer", []AttachmentInput{
 		{OriginalFileName: "outro.txt", Content: strings.NewReader("outro conteúdo")},
 	}); err != nil {
 		t.Errorf("CreateMessage do writer com attachment retornou erro: %v", err)
 	}
 
 	// noAttachment com send_messages mas sem send_attachment: negado
-	if _, err := services.CreateMessage(testCtx(), channel.ID, noAttachment.ID, "com arquivo negado", []services.AttachmentInput{
+	if _, err := CreateMessage(testCtx(), channel.ID, noAttachment.ID, "com arquivo negado", []AttachmentInput{
 		{OriginalFileName: "negado.txt", Content: strings.NewReader("não deve passar")},
-	}); !errors.Is(err, services.ErrPermissionDenied) {
+	}); !errors.Is(err, ErrPermissionDenied) {
 		t.Errorf("esperava ErrPermissionDenied para usuário sem send_attachment, obtive %v", err)
 	}
 }
@@ -4297,7 +4296,7 @@ func TestCreateMessageAttachmentSanitization(t *testing.T) {
 	_, channel := newTestMessageChannel(t, &owner.ID)
 
 	// nome com componentes de caminho é sanitizado para o último segmento
-	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "sanitizado", []services.AttachmentInput{
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "sanitizado", []AttachmentInput{
 		{OriginalFileName: "campos/sub/pasta/arquivo.txt", Content: strings.NewReader("conteúdo")},
 	})
 	if err != nil {
@@ -4317,15 +4316,15 @@ func TestCreateMessageAttachmentDeduplication(t *testing.T) {
 	_, channel := newTestMessageChannel(t, &owner.ID)
 
 	content := "conteúdo duplicado"
-	input := func() services.AttachmentInput {
-		return services.AttachmentInput{OriginalFileName: "dup.txt", Content: strings.NewReader(content)}
+	input := func() AttachmentInput {
+		return AttachmentInput{OriginalFileName: "dup.txt", Content: strings.NewReader(content)}
 	}
 
-	first, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", []services.AttachmentInput{input()})
+	first, err := CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", []AttachmentInput{input()})
 	if err != nil {
 		t.Fatalf("CreateMessage da primeira mensagem retornou erro: %v", err)
 	}
-	second, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", []services.AttachmentInput{input()})
+	second, err := CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", []AttachmentInput{input()})
 	if err != nil {
 		t.Fatalf("CreateMessage da segunda mensagem retornou erro: %v", err)
 	}
@@ -4357,7 +4356,7 @@ func TestCreateMessageAttachmentDeduplication(t *testing.T) {
 	}
 }
 
-// --- services.EditMessage ---
+// --- EditMessage ---
 
 func TestEditMessage(t *testing.T) {
 	cleanServers(testCtx())
@@ -4365,13 +4364,13 @@ func TestEditMessage(t *testing.T) {
 	other := newTestMessageUser(t)
 	_, channel := newTestMessageChannel(t, &owner.ID)
 
-	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "original", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "original", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
 
 	// autor: pode editar
-	edited, err := services.EditMessage(testCtx(), message.ID, owner.ID, "editado")
+	edited, err := EditMessage(testCtx(), message.ID, owner.ID, "editado")
 	if err != nil {
 		t.Fatalf("EditMessage do autor retornou erro: %v", err)
 	}
@@ -4383,7 +4382,7 @@ func TestEditMessage(t *testing.T) {
 	}
 
 	// não autor: negado
-	if _, err := services.EditMessage(testCtx(), message.ID, other.ID, "invadido"); !errors.Is(err, services.ErrPermissionDenied) {
+	if _, err := EditMessage(testCtx(), message.ID, other.ID, "invadido"); !errors.Is(err, ErrPermissionDenied) {
 		t.Errorf("esperava ErrPermissionDenied para não autor, obtive %v", err)
 	}
 }
@@ -4393,13 +4392,13 @@ func TestEditMessageClearsContent(t *testing.T) {
 	owner := newTestMessageUser(t)
 	_, channel := newTestMessageChannel(t, &owner.ID)
 
-	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "vai ser limpo", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "vai ser limpo", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
 
 	// content vazio limpa o texto da mensagem (NULL)
-	edited, err := services.EditMessage(testCtx(), message.ID, owner.ID, "")
+	edited, err := EditMessage(testCtx(), message.ID, owner.ID, "")
 	if err != nil {
 		t.Fatalf("EditMessage com content vazio retornou erro: %v", err)
 	}
@@ -4412,46 +4411,46 @@ func TestEditMessageInvalidInput(t *testing.T) {
 	cleanServers(testCtx())
 	owner := newTestMessageUser(t)
 	_, channel := newTestMessageChannel(t, &owner.ID)
-	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
 
 	// message_id vazio
-	if _, err := services.EditMessage(testCtx(), "", owner.ID, "x"); !errors.Is(err, services.ErrMessageNotFound) {
+	if _, err := EditMessage(testCtx(), "", owner.ID, "x"); !errors.Is(err, ErrMessageNotFound) {
 		t.Errorf("esperava ErrMessageNotFound para message_id vazio, obtive %v", err)
 	}
 
 	// mensagem inexistente
-	if _, err := services.EditMessage(testCtx(), randUUID(), owner.ID, "x"); !errors.Is(err, services.ErrMessageNotFound) {
+	if _, err := EditMessage(testCtx(), randUUID(), owner.ID, "x"); !errors.Is(err, ErrMessageNotFound) {
 		t.Errorf("esperava ErrMessageNotFound para mensagem inexistente, obtive %v", err)
 	}
 
 	// author_id vazio
-	if _, err := services.EditMessage(testCtx(), message.ID, "", "x"); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := EditMessage(testCtx(), message.ID, "", "x"); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para author_id vazio, obtive %v", err)
 	}
 
 	// content acima do limite
-	if _, err := services.EditMessage(testCtx(), message.ID, owner.ID, strings.Repeat("a", 8193)); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := EditMessage(testCtx(), message.ID, owner.ID, strings.Repeat("a", 8193)); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para content acima do limite, obtive %v", err)
 	}
 }
 
-// --- services.DeleteMessage ---
+// --- DeleteMessage ---
 
 func TestDeleteMessage(t *testing.T) {
 	cleanServers(testCtx())
 	owner := newTestMessageUser(t)
 	_, channel := newTestMessageChannel(t, &owner.ID)
 
-	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "vai ser apagada", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "vai ser apagada", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
 
 	// autor: pode excluir
-	if _, err := services.DeleteMessage(testCtx(), message.ID, owner.ID); err != nil {
+	if _, err := DeleteMessage(testCtx(), message.ID, owner.ID); err != nil {
 		t.Fatalf("DeleteMessage do autor retornou erro: %v", err)
 	}
 	if _, err := storage.GetMessageByID(testCtx(), message.ID); !errors.Is(err, storage.ErrNotFound) {
@@ -4467,13 +4466,13 @@ func TestDeleteMessageByModerator(t *testing.T) {
 	server, channel := newTestMessageChannel(t, &owner.ID)
 	grantChannelPermission(t, server, channel, moderator, models.ChannelPermission{DeleteMessages: true})
 
-	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem do dono", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem do dono", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
 
 	// usuário com delete_messages: pode excluir mensagem de outro autor
-	if _, err := services.DeleteMessage(testCtx(), message.ID, moderator.ID); err != nil {
+	if _, err := DeleteMessage(testCtx(), message.ID, moderator.ID); err != nil {
 		t.Fatalf("DeleteMessage do moderador retornou erro: %v", err)
 	}
 	if _, err := storage.GetMessageByID(testCtx(), message.ID); !errors.Is(err, storage.ErrNotFound) {
@@ -4481,11 +4480,11 @@ func TestDeleteMessageByModerator(t *testing.T) {
 	}
 
 	// usuário sem permissão: negado
-	other, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "outra mensagem", nil)
+	other, err := CreateMessage(testCtx(), channel.ID, owner.ID, "outra mensagem", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
-	if _, err := services.DeleteMessage(testCtx(), other.ID, stranger.ID); !errors.Is(err, services.ErrPermissionDenied) {
+	if _, err := DeleteMessage(testCtx(), other.ID, stranger.ID); !errors.Is(err, ErrPermissionDenied) {
 		t.Errorf("esperava ErrPermissionDenied para usuário sem delete_messages, obtive %v", err)
 	}
 }
@@ -4494,33 +4493,33 @@ func TestDeleteMessageInvalidInput(t *testing.T) {
 	cleanServers(testCtx())
 	owner := newTestMessageUser(t)
 	_, channel := newTestMessageChannel(t, &owner.ID)
-	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
 
 	// message_id vazio
-	if _, err := services.DeleteMessage(testCtx(), "", owner.ID); !errors.Is(err, services.ErrMessageNotFound) {
+	if _, err := DeleteMessage(testCtx(), "", owner.ID); !errors.Is(err, ErrMessageNotFound) {
 		t.Errorf("esperava ErrMessageNotFound para message_id vazio, obtive %v", err)
 	}
 
 	// mensagem inexistente
-	if _, err := services.DeleteMessage(testCtx(), randUUID(), owner.ID); !errors.Is(err, services.ErrMessageNotFound) {
+	if _, err := DeleteMessage(testCtx(), randUUID(), owner.ID); !errors.Is(err, ErrMessageNotFound) {
 		t.Errorf("esperava ErrMessageNotFound para mensagem inexistente, obtive %v", err)
 	}
 
 	// author_id vazio
-	if _, err := services.DeleteMessage(testCtx(), message.ID, ""); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := DeleteMessage(testCtx(), message.ID, ""); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para author_id vazio, obtive %v", err)
 	}
 }
 
-// --- services.UploadAttachment ---
+// --- UploadAttachment ---
 
 func TestUploadAttachment(t *testing.T) {
 	user := newTestMessageUser(t)
 
-	attachment, err := services.UploadAttachment(testCtx(), "documento.txt", strings.NewReader("conteúdo do documento"), user.ID)
+	attachment, err := UploadAttachment(testCtx(), "documento.txt", strings.NewReader("conteúdo do documento"), user.ID)
 	if err != nil {
 		t.Fatalf("UploadAttachment retornou erro: %v", err)
 	}
@@ -4568,7 +4567,7 @@ func TestUploadAttachmentMimeDetection(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			attachment, err := services.UploadAttachment(testCtx(), "arquivo_"+randHex(4), bytes.NewReader(tc.content), user.ID)
+			attachment, err := UploadAttachment(testCtx(), "arquivo_"+randHex(4), bytes.NewReader(tc.content), user.ID)
 			if err != nil {
 				t.Fatalf("UploadAttachment retornou erro: %v", err)
 			}
@@ -4583,17 +4582,17 @@ func TestUploadAttachmentInvalidInput(t *testing.T) {
 	user := newTestMessageUser(t)
 
 	// nome vazio
-	if _, err := services.UploadAttachment(testCtx(), "", strings.NewReader("x"), user.ID); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := UploadAttachment(testCtx(), "", strings.NewReader("x"), user.ID); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para nome vazio, obtive %v", err)
 	}
 
 	// nome apenas com separadores de caminho (sanitização resultou vazio)
-	if _, err := services.UploadAttachment(testCtx(), "///", strings.NewReader("x"), user.ID); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := UploadAttachment(testCtx(), "///", strings.NewReader("x"), user.ID); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para nome com apenas separadores, obtive %v", err)
 	}
 
 	// nome acima do limite (128 caracteres)
-	if _, err := services.UploadAttachment(testCtx(), strings.Repeat("a", 129), strings.NewReader("x"), user.ID); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := UploadAttachment(testCtx(), strings.Repeat("a", 129), strings.NewReader("x"), user.ID); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para nome acima do limite, obtive %v", err)
 	}
 }
@@ -4603,7 +4602,7 @@ func TestUploadAttachmentTooLarge(t *testing.T) {
 
 	// conteúdo acima de 100MB: recusado
 	reader := &largeReader{total: 100*1024*1024 + 1}
-	if _, err := services.UploadAttachment(testCtx(), "grande.bin", reader, user.ID); !errors.Is(err, services.ErrAttachmentTooLarge) {
+	if _, err := UploadAttachment(testCtx(), "grande.bin", reader, user.ID); !errors.Is(err, ErrAttachmentTooLarge) {
 		t.Errorf("esperava ErrAttachmentTooLarge para arquivo acima de 100MB, obtive %v", err)
 	}
 }
@@ -4647,7 +4646,7 @@ func TestDownloadAttachment(t *testing.T) {
 	stranger := newTestMessageUser(t)
 	server, channel := newTestMessageChannel(t, &owner.ID)
 
-	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "com anexo", []services.AttachmentInput{
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "com anexo", []AttachmentInput{
 		{OriginalFileName: "documento.txt", Content: strings.NewReader("conteúdo do documento")},
 	})
 	if err != nil {
@@ -4659,7 +4658,7 @@ func TestDownloadAttachment(t *testing.T) {
 	attachment := message.Attachments[0]
 
 	// canal aberto (nenhuma role com permissões definidas): qualquer usuário baixa
-	downloaded, err := services.DownloadAttachment(testCtx(), attachment.ID, stranger.ID)
+	downloaded, err := DownloadAttachment(testCtx(), attachment.ID, stranger.ID)
 	if err != nil {
 		t.Fatalf("DownloadAttachment em canal aberto retornou erro: %v", err)
 	}
@@ -4686,32 +4685,32 @@ func TestDownloadAttachment(t *testing.T) {
 	grantChannelPermission(t, server, channel, reader, models.ChannelPermission{ReadChannel: true})
 
 	// dono do servidor: sempre pode baixar
-	if _, err := services.DownloadAttachment(testCtx(), attachment.ID, owner.ID); err != nil {
+	if _, err := DownloadAttachment(testCtx(), attachment.ID, owner.ID); err != nil {
 		t.Errorf("DownloadAttachment do dono retornou erro: %v", err)
 	}
 
 	// usuário com read_channel: pode baixar
-	if _, err := services.DownloadAttachment(testCtx(), attachment.ID, reader.ID); err != nil {
+	if _, err := DownloadAttachment(testCtx(), attachment.ID, reader.ID); err != nil {
 		t.Errorf("DownloadAttachment do leitor retornou erro: %v", err)
 	}
 
 	// usuário sem permissão em canal fechado: negado
-	if _, err := services.DownloadAttachment(testCtx(), attachment.ID, stranger.ID); !errors.Is(err, services.ErrPermissionDenied) {
+	if _, err := DownloadAttachment(testCtx(), attachment.ID, stranger.ID); !errors.Is(err, ErrPermissionDenied) {
 		t.Errorf("esperava ErrPermissionDenied para usuário sem permissão, obtive %v", err)
 	}
 
 	// attachment inexistente
-	if _, err := services.DownloadAttachment(testCtx(), randUUID(), owner.ID); !errors.Is(err, services.ErrAttachmentNotFound) {
+	if _, err := DownloadAttachment(testCtx(), randUUID(), owner.ID); !errors.Is(err, ErrAttachmentNotFound) {
 		t.Errorf("esperava ErrAttachmentNotFound para attachment inexistente, obtive %v", err)
 	}
 
 	// file_id vazio
-	if _, err := services.DownloadAttachment(testCtx(), "", owner.ID); !errors.Is(err, services.ErrAttachmentNotFound) {
+	if _, err := DownloadAttachment(testCtx(), "", owner.ID); !errors.Is(err, ErrAttachmentNotFound) {
 		t.Errorf("esperava ErrAttachmentNotFound para file_id vazio, obtive %v", err)
 	}
 
 	// user_id vazio
-	if _, err := services.DownloadAttachment(testCtx(), attachment.ID, ""); !errors.Is(err, services.ErrInvalidInput) {
+	if _, err := DownloadAttachment(testCtx(), attachment.ID, ""); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para user_id vazio, obtive %v", err)
 	}
 }
@@ -4722,7 +4721,7 @@ func TestDownloadAttachment(t *testing.T) {
 func TestDownloadAttachmentOrphan(t *testing.T) {
 	user := newTestMessageUser(t)
 
-	attachment, err := services.UploadAttachment(testCtx(), "orfa.txt", strings.NewReader("conteúdo órfão"), user.ID)
+	attachment, err := UploadAttachment(testCtx(), "orfa.txt", strings.NewReader("conteúdo órfão"), user.ID)
 	if err != nil {
 		t.Fatalf("UploadAttachment retornou erro: %v", err)
 	}
@@ -4730,14 +4729,14 @@ func TestDownloadAttachmentOrphan(t *testing.T) {
 		t.Fatalf("esperava messages_id nil para upload avulso, obtive %v", attachment.MessagesID)
 	}
 
-	if _, err := services.DownloadAttachment(testCtx(), attachment.ID, user.ID); !errors.Is(err, services.ErrAttachmentNotFound) {
+	if _, err := DownloadAttachment(testCtx(), attachment.ID, user.ID); !errors.Is(err, ErrAttachmentNotFound) {
 		t.Errorf("esperava ErrAttachmentNotFound para attachment órfão, obtive %v", err)
 	}
 }
 
 // --- services (attachments) fim ---
 
-// --- services.Emojis (tarefa 7.4) ---
+// --- Emojis (tarefa 7.4) ---
 
 func TestListEmojisPagination(t *testing.T) {
 	cleanServers(testCtx())
@@ -4752,7 +4751,7 @@ func TestListEmojisPagination(t *testing.T) {
 	}
 
 	// primeira página: 25 emojis (limite) e has_more
-	list, err := services.ListEmojis(testCtx(), &server.ID, nil, "")
+	list, err := ListEmojis(testCtx(), &server.ID, nil, "")
 	if err != nil {
 		t.Fatalf("ListEmojis retornou erro: %v", err)
 	}
@@ -4770,7 +4769,7 @@ func TestListEmojisPagination(t *testing.T) {
 
 	// segunda página via cursor (created_at, id): retorna o emoji restante
 	last := list.Emojis[24]
-	page2, err := services.ListEmojis(testCtx(), &server.ID, &last.CreatedAt, last.ID)
+	page2, err := ListEmojis(testCtx(), &server.ID, &last.CreatedAt, last.ID)
 	if err != nil {
 		t.Fatalf("ListEmojis da segunda página retornou erro: %v", err)
 	}
@@ -4799,7 +4798,7 @@ func TestListEmojisPagination(t *testing.T) {
 			t.Fatalf("falha ao criar emoji: %v", err)
 		}
 
-		list, err := services.ListEmojis(testCtx(), &server.ID, nil, "")
+		list, err := ListEmojis(testCtx(), &server.ID, nil, "")
 		if err != nil {
 			t.Fatalf("ListEmojis retornou erro: %v", err)
 		}
@@ -4820,7 +4819,7 @@ func TestCreateEmoji(t *testing.T) {
 	server, _ := newTestMessageChannel(t, &owner.ID)
 	png := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
 
-	emoji, err := services.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "png", png, owner.ID)
+	emoji, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "png", png, owner.ID)
 	if err != nil {
 		t.Fatalf("CreateEmoji retornou erro: %v", err)
 	}
@@ -4866,7 +4865,7 @@ func TestCreateEmojiInvalidInput(t *testing.T) {
 		{"emoji acima de 256kb", server.ID, name, "PNG", base64.StdEncoding.EncodeToString(append(pngAvatarBytes(100, 100), make([]byte, 257*1024)...)), owner.ID},
 	}
 	for _, tc := range cases {
-		if _, err := services.CreateEmoji(testCtx(), tc.serverID, tc.name, tc.format, tc.blob, tc.userID); !errors.Is(err, services.ErrInvalidInput) {
+		if _, err := CreateEmoji(testCtx(), tc.serverID, tc.name, tc.format, tc.blob, tc.userID); !errors.Is(err, ErrInvalidInput) {
 			t.Errorf("%s: esperava ErrInvalidInput, obtive %v", tc.desc, err)
 		}
 	}
@@ -4879,10 +4878,10 @@ func TestCreateEmojiNameTaken(t *testing.T) {
 	png := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
 	name := "emoji_" + randHex(8)
 
-	if _, err := services.CreateEmoji(testCtx(), server.ID, name, "PNG", png, owner.ID); err != nil {
+	if _, err := CreateEmoji(testCtx(), server.ID, name, "PNG", png, owner.ID); err != nil {
 		t.Fatalf("falha ao criar primeiro emoji: %v", err)
 	}
-	if _, err := services.CreateEmoji(testCtx(), server.ID, name, "PNG", png, owner.ID); !errors.Is(err, services.ErrEmojiNameTaken) {
+	if _, err := CreateEmoji(testCtx(), server.ID, name, "PNG", png, owner.ID); !errors.Is(err, ErrEmojiNameTaken) {
 		t.Errorf("esperava ErrEmojiNameTaken, obtive %v", err)
 	}
 }
@@ -4891,7 +4890,7 @@ func TestCreateEmojiServerNotFound(t *testing.T) {
 	owner := newTestMessageUser(t)
 	png := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
 
-	if _, err := services.CreateEmoji(testCtx(), randUUID(), "emoji_"+randHex(8), "PNG", png, owner.ID); !errors.Is(err, services.ErrServerNotFound) {
+	if _, err := CreateEmoji(testCtx(), randUUID(), "emoji_"+randHex(8), "PNG", png, owner.ID); !errors.Is(err, ErrServerNotFound) {
 		t.Errorf("esperava ErrServerNotFound, obtive %v", err)
 	}
 }
@@ -4909,7 +4908,7 @@ func TestCreateEmojiLimitReached(t *testing.T) {
 	}
 
 	png := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
-	if _, err := services.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", png, owner.ID); !errors.Is(err, services.ErrEmojiLimitReached) {
+	if _, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", png, owner.ID); !errors.Is(err, ErrEmojiLimitReached) {
 		t.Errorf("esperava ErrEmojiLimitReached, obtive %v", err)
 	}
 }
@@ -4927,12 +4926,12 @@ func TestDeleteEmoji(t *testing.T) {
 	}
 
 	// usuário sem permissão: negado
-	if err := services.DeleteEmoji(testCtx(), emoji.ID, stranger.ID); !errors.Is(err, services.ErrPermissionDenied) {
+	if err := DeleteEmoji(testCtx(), emoji.ID, stranger.ID); !errors.Is(err, ErrPermissionDenied) {
 		t.Errorf("esperava ErrPermissionDenied para usuário sem permissão, obtive %v", err)
 	}
 
 	// autor: pode excluir
-	if err := services.DeleteEmoji(testCtx(), emoji.ID, author.ID); err != nil {
+	if err := DeleteEmoji(testCtx(), emoji.ID, author.ID); err != nil {
 		t.Fatalf("DeleteEmoji do autor retornou erro: %v", err)
 	}
 	if _, err := storage.GetEmojiByID(testCtx(), emoji.ID); !errors.Is(err, storage.ErrNotFound) {
@@ -4951,7 +4950,7 @@ func TestDeleteEmojiByServerOwner(t *testing.T) {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 
-	if err := services.DeleteEmoji(testCtx(), emoji.ID, owner.ID); err != nil {
+	if err := DeleteEmoji(testCtx(), emoji.ID, owner.ID); err != nil {
 		t.Fatalf("DeleteEmoji do dono retornou erro: %v", err)
 	}
 	if _, err := storage.GetEmojiByID(testCtx(), emoji.ID); !errors.Is(err, storage.ErrNotFound) {
@@ -4979,7 +4978,7 @@ func TestDeleteEmojiByManageServerRole(t *testing.T) {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 
-	if err := services.DeleteEmoji(testCtx(), emoji.ID, mod.ID); err != nil {
+	if err := DeleteEmoji(testCtx(), emoji.ID, mod.ID); err != nil {
 		t.Fatalf("DeleteEmoji do usuário com manage_server retornou erro: %v", err)
 	}
 	if _, err := storage.GetEmojiByID(testCtx(), emoji.ID); !errors.Is(err, storage.ErrNotFound) {
@@ -4990,10 +4989,10 @@ func TestDeleteEmojiByManageServerRole(t *testing.T) {
 func TestDeleteEmojiInvalidInput(t *testing.T) {
 	owner := newTestMessageUser(t)
 
-	if err := services.DeleteEmoji(testCtx(), "", owner.ID); !errors.Is(err, services.ErrEmojiNotFound) {
+	if err := DeleteEmoji(testCtx(), "", owner.ID); !errors.Is(err, ErrEmojiNotFound) {
 		t.Errorf("esperava ErrEmojiNotFound para emoji_id vazio, obtive %v", err)
 	}
-	if err := services.DeleteEmoji(testCtx(), randUUID(), ""); !errors.Is(err, services.ErrInvalidInput) {
+	if err := DeleteEmoji(testCtx(), randUUID(), ""); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para user_id vazio, obtive %v", err)
 	}
 }
@@ -5001,12 +5000,12 @@ func TestDeleteEmojiInvalidInput(t *testing.T) {
 func TestDeleteEmojiNotFound(t *testing.T) {
 	owner := newTestMessageUser(t)
 
-	if err := services.DeleteEmoji(testCtx(), randUUID(), owner.ID); !errors.Is(err, services.ErrEmojiNotFound) {
+	if err := DeleteEmoji(testCtx(), randUUID(), owner.ID); !errors.Is(err, ErrEmojiNotFound) {
 		t.Errorf("esperava ErrEmojiNotFound para emoji inexistente, obtive %v", err)
 	}
 }
 
-// --- services.SearchMessages ---
+// --- SearchMessages ---
 
 // searchResultIDs retorna os ids dos resultados da busca ordenados (comparação por conjunto).
 func searchResultIDs(results []models.SearchResult) []string {
@@ -5061,35 +5060,35 @@ func TestSearchMessages(t *testing.T) {
 	reader := newTestMessageUser(t)
 	stranger := newTestMessageUser(t)
 	server, channel := newTestMessageChannel(t, &owner.ID)
-	restricted, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	restricted, err := CreateChannel(testCtx(), server.ID, newRandomChannelName())
 	if err != nil {
 		t.Fatalf("falha ao criar canal restrito de apoio: %v", err)
 	}
 	grantChannelPermission(t, server, restricted, reader, models.ChannelPermission{ReadChannel: true})
 
-	m1, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "zebra borboleta", nil)
+	m1, err := CreateMessage(testCtx(), channel.ID, owner.ID, "zebra borboleta", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 1: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m2, err := services.CreateMessage(testCtx(), channel.ID, reader.ID, "borboleta vagalume", nil)
+	m2, err := CreateMessage(testCtx(), channel.ID, reader.ID, "borboleta vagalume", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 2: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m3, err := services.CreateMessage(testCtx(), channel.ID, stranger.ID, "vagalume", nil)
+	m3, err := CreateMessage(testCtx(), channel.ID, stranger.ID, "vagalume", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 3: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m4, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "peixe", []services.AttachmentInput{
+	m4, err := CreateMessage(testCtx(), channel.ID, owner.ID, "peixe", []AttachmentInput{
 		{OriginalFileName: "peixe.txt", Content: strings.NewReader("conteúdo do peixe")},
 	})
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 4 com attachment: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m5, err := services.CreateMessage(testCtx(), restricted.ID, owner.ID, "zebra secreta", nil)
+	m5, err := CreateMessage(testCtx(), restricted.ID, owner.ID, "zebra secreta", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 5 no canal restrito: %v", err)
 	}
@@ -5101,7 +5100,7 @@ func TestSearchMessages(t *testing.T) {
 	withoutAttachment := false
 
 	t.Run("apenas texto", func(t *testing.T) {
-		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "zebra"}, "", nil, "", owner.ID)
+		res, err := SearchMessages(testCtx(), models.SearchRequest{Text: "zebra"}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com texto retornou erro: %v", err)
 		}
@@ -5128,7 +5127,7 @@ func TestSearchMessages(t *testing.T) {
 			t.Errorf("esperava author_username %q, obtive %v", owner.Username, byID[m1.ID].AuthorUsername)
 		}
 
-		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Text: "borboleta"}, "", nil, "", owner.ID)
+		res, err = SearchMessages(testCtx(), models.SearchRequest{Text: "borboleta"}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com borboleta retornou erro: %v", err)
 		}
@@ -5136,7 +5135,7 @@ func TestSearchMessages(t *testing.T) {
 	})
 
 	t.Run("apenas autor", func(t *testing.T) {
-		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Author: reader.ID}, "", nil, "", owner.ID)
+		res, err := SearchMessages(testCtx(), models.SearchRequest{Author: reader.ID}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com autor retornou erro: %v", err)
 		}
@@ -5150,13 +5149,13 @@ func TestSearchMessages(t *testing.T) {
 	})
 
 	t.Run("apenas intervalo de datas", func(t *testing.T) {
-		res, err := services.SearchMessages(testCtx(), models.SearchRequest{DateStart: dateStart, DateEnd: dateEnd}, "", nil, "", owner.ID)
+		res, err := SearchMessages(testCtx(), models.SearchRequest{DateStart: dateStart, DateEnd: dateEnd}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com datas retornou erro: %v", err)
 		}
 		assertSearchSet(t, res.Results, m1.ID, m2.ID, m3.ID, m4.ID, m5.ID)
 
-		res, err = services.SearchMessages(testCtx(), models.SearchRequest{DateEnd: yesterday}, "", nil, "", owner.ID)
+		res, err = SearchMessages(testCtx(), models.SearchRequest{DateEnd: yesterday}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com date_end no passado retornou erro: %v", err)
 		}
@@ -5166,13 +5165,13 @@ func TestSearchMessages(t *testing.T) {
 	})
 
 	t.Run("apenas contains_attachment", func(t *testing.T) {
-		res, err := services.SearchMessages(testCtx(), models.SearchRequest{ContainsAttachment: &withAttachment}, "", nil, "", owner.ID)
+		res, err := SearchMessages(testCtx(), models.SearchRequest{ContainsAttachment: &withAttachment}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com contains_attachment true retornou erro: %v", err)
 		}
 		assertSearchSet(t, res.Results, m4.ID)
 
-		res, err = services.SearchMessages(testCtx(), models.SearchRequest{ContainsAttachment: &withoutAttachment}, "", nil, "", owner.ID)
+		res, err = SearchMessages(testCtx(), models.SearchRequest{ContainsAttachment: &withoutAttachment}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com contains_attachment false retornou erro: %v", err)
 		}
@@ -5180,7 +5179,7 @@ func TestSearchMessages(t *testing.T) {
 	})
 
 	t.Run("texto + autor", func(t *testing.T) {
-		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "borboleta", Author: owner.ID}, "", nil, "", owner.ID)
+		res, err := SearchMessages(testCtx(), models.SearchRequest{Text: "borboleta", Author: owner.ID}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com texto + autor retornou erro: %v", err)
 		}
@@ -5188,13 +5187,13 @@ func TestSearchMessages(t *testing.T) {
 	})
 
 	t.Run("texto + intervalo de datas", func(t *testing.T) {
-		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "zebra", DateStart: dateStart, DateEnd: dateEnd}, "", nil, "", owner.ID)
+		res, err := SearchMessages(testCtx(), models.SearchRequest{Text: "zebra", DateStart: dateStart, DateEnd: dateEnd}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com texto + datas retornou erro: %v", err)
 		}
 		assertSearchSet(t, res.Results, m1.ID, m5.ID)
 
-		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Text: "zebra", DateEnd: yesterday}, "", nil, "", owner.ID)
+		res, err = SearchMessages(testCtx(), models.SearchRequest{Text: "zebra", DateEnd: yesterday}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com texto + date_end no passado retornou erro: %v", err)
 		}
@@ -5204,7 +5203,7 @@ func TestSearchMessages(t *testing.T) {
 	})
 
 	t.Run("autor + contains_attachment", func(t *testing.T) {
-		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID, ContainsAttachment: &withAttachment}, "", nil, "", owner.ID)
+		res, err := SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID, ContainsAttachment: &withAttachment}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com autor + contains_attachment retornou erro: %v", err)
 		}
@@ -5212,13 +5211,13 @@ func TestSearchMessages(t *testing.T) {
 	})
 
 	t.Run("filtro por server_id", func(t *testing.T) {
-		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID}, server.ID, nil, "", owner.ID)
+		res, err := SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID}, server.ID, nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com server_id retornou erro: %v", err)
 		}
 		assertSearchSet(t, res.Results, m1.ID, m4.ID, m5.ID)
 
-		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID}, randUUID(), nil, "", owner.ID)
+		res, err = SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID}, randUUID(), nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com server_id inexistente retornou erro: %v", err)
 		}
@@ -5228,7 +5227,7 @@ func TestSearchMessages(t *testing.T) {
 	})
 
 	t.Run("todos os filtros combinados", func(t *testing.T) {
-		res, err := services.SearchMessages(testCtx(), models.SearchRequest{
+		res, err := SearchMessages(testCtx(), models.SearchRequest{
 			Text:               "peixe",
 			Author:             owner.ID,
 			DateStart:          dateStart,
@@ -5242,20 +5241,20 @@ func TestSearchMessages(t *testing.T) {
 	})
 
 	t.Run("ordem", func(t *testing.T) {
-		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID, Order: "asc"}, "", nil, "", owner.ID)
+		res, err := SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID, Order: "asc"}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com order asc retornou erro: %v", err)
 		}
 		assertSearchOrder(t, res.Results, m1.ID, m4.ID, m5.ID)
 
-		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID, Order: "desc"}, "", nil, "", owner.ID)
+		res, err = SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID, Order: "desc"}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages com order desc retornou erro: %v", err)
 		}
 		assertSearchOrder(t, res.Results, m5.ID, m4.ID, m1.ID)
 
 		// padrão (order ausente): desc
-		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID}, "", nil, "", owner.ID)
+		res, err = SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages sem order retornou erro: %v", err)
 		}
@@ -5264,20 +5263,20 @@ func TestSearchMessages(t *testing.T) {
 
 	t.Run("autorização", func(t *testing.T) {
 		// reader: lê o canal aberto e o restrito (read_channel via role)
-		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "zebra"}, "", nil, "", reader.ID)
+		res, err := SearchMessages(testCtx(), models.SearchRequest{Text: "zebra"}, "", nil, "", reader.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages do reader retornou erro: %v", err)
 		}
 		assertSearchSet(t, res.Results, m1.ID, m5.ID)
 
 		// stranger: sem roles, não vê o canal restrito
-		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Text: "vagalume"}, "", nil, "", stranger.ID)
+		res, err = SearchMessages(testCtx(), models.SearchRequest{Text: "vagalume"}, "", nil, "", stranger.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages do stranger retornou erro: %v", err)
 		}
 		assertSearchSet(t, res.Results, m2.ID, m3.ID)
 
-		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Text: "secreta"}, "", nil, "", stranger.ID)
+		res, err = SearchMessages(testCtx(), models.SearchRequest{Text: "secreta"}, "", nil, "", stranger.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages do stranger no restrito retornou erro: %v", err)
 		}
@@ -5286,7 +5285,7 @@ func TestSearchMessages(t *testing.T) {
 		}
 
 		// owner: vê tudo
-		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Text: "secreta"}, "", nil, "", owner.ID)
+		res, err = SearchMessages(testCtx(), models.SearchRequest{Text: "secreta"}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages do owner retornou erro: %v", err)
 		}
@@ -5295,12 +5294,12 @@ func TestSearchMessages(t *testing.T) {
 
 	t.Run("paginação", func(t *testing.T) {
 		for i := 0; i < 101; i++ {
-			if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "pagina "+randHex(2), nil); err != nil {
+			if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "pagina "+randHex(2), nil); err != nil {
 				t.Fatalf("falha ao criar mensagem de paginação %d: %v", i, err)
 			}
 		}
 
-		page1, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "pagina"}, "", nil, "", owner.ID)
+		page1, err := SearchMessages(testCtx(), models.SearchRequest{Text: "pagina"}, "", nil, "", owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages da primeira página retornou erro: %v", err)
 		}
@@ -5312,7 +5311,7 @@ func TestSearchMessages(t *testing.T) {
 		}
 
 		last := page1.Results[len(page1.Results)-1]
-		page2, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "pagina"}, "", timePtr(last.CreatedAt), last.ID, owner.ID)
+		page2, err := SearchMessages(testCtx(), models.SearchRequest{Text: "pagina"}, "", timePtr(last.CreatedAt), last.ID, owner.ID)
 		if err != nil {
 			t.Fatalf("SearchMessages da segunda página retornou erro: %v", err)
 		}
@@ -5337,7 +5336,7 @@ func TestSearchMessages(t *testing.T) {
 
 	t.Run("validação", func(t *testing.T) {
 		expectInvalid := func(req models.SearchRequest, serverID string, since *time.Time, lastID string) {
-			if _, err := services.SearchMessages(testCtx(), req, serverID, since, lastID, owner.ID); !errors.Is(err, services.ErrInvalidInput) {
+			if _, err := SearchMessages(testCtx(), req, serverID, since, lastID, owner.ID); !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
 		}
@@ -5350,14 +5349,14 @@ func TestSearchMessages(t *testing.T) {
 		expectInvalid(models.SearchRequest{Text: "palavra"}, "", timePtr(time.Now()), "")                // since sem last_id
 		expectInvalid(models.SearchRequest{Text: "palavra"}, "", nil, randUUID())                        // last_id sem since
 
-		if _, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "palavra"}, "", nil, "", ""); !errors.Is(err, services.ErrInvalidInput) {
+		if _, err := SearchMessages(testCtx(), models.SearchRequest{Text: "palavra"}, "", nil, "", ""); !errors.Is(err, ErrInvalidInput) {
 			t.Errorf("esperava ErrInvalidInput para user vazio, obtive %v", err)
 		}
 	})
 }
 
 func TestUpdateUserBoundaryLengths(t *testing.T) {
-	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("failed to create user: %v", err)
 	}
@@ -5365,7 +5364,7 @@ func TestUpdateUserBoundaryLengths(t *testing.T) {
 	// exactly 32 runes for nickname and 64 runes for status (multibyte) is accepted
 	nickname := "n" + strings.Repeat("ç", 31)
 	status := "s" + strings.Repeat("ç", 63)
-	if err := services.UpdateUser(testCtx(), user.ID, nickname, status); err != nil {
+	if err := UpdateUser(testCtx(), user.ID, nickname, status); err != nil {
 		t.Fatalf("UpdateUser with 32-rune nickname and 64-rune status returned error: %v", err)
 	}
 	stored, err := storage.GetUserByID(testCtx(), user.ID)
@@ -5384,13 +5383,13 @@ func TestUpdateUserBoundaryLengths(t *testing.T) {
 
 	// 33 runes for nickname is rejected
 	longNickname := "n" + strings.Repeat("ç", 32)
-	if err := services.UpdateUser(testCtx(), user.ID, longNickname, "ok"); !errors.Is(err, services.ErrInvalidInput) {
+	if err := UpdateUser(testCtx(), user.ID, longNickname, "ok"); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("expected ErrInvalidInput for 33-rune nickname, got %v", err)
 	}
 
 	// 65 runes for status is rejected
 	longStatus := "s" + strings.Repeat("ç", 64)
-	if err := services.UpdateUser(testCtx(), user.ID, "ok", longStatus); !errors.Is(err, services.ErrInvalidInput) {
+	if err := UpdateUser(testCtx(), user.ID, "ok", longStatus); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("expected ErrInvalidInput for 65-rune status, got %v", err)
 	}
 
@@ -5414,7 +5413,7 @@ func TestListUsersPagination(t *testing.T) {
 	var since *time.Time
 	lastID := ""
 	for {
-		page, err := services.ListUsers(testCtx(), since, lastID)
+		page, err := ListUsers(testCtx(), since, lastID)
 		if err != nil {
 			t.Fatalf("ListUsers returned error: %v", err)
 		}
@@ -5439,7 +5438,7 @@ func TestListUsersPagination(t *testing.T) {
 	}
 
 	// first page from the frontier: 100 users (the limit) and has_more
-	page1, err := services.ListUsers(testCtx(), &frontier.CreatedAt, frontier.ID)
+	page1, err := ListUsers(testCtx(), &frontier.CreatedAt, frontier.ID)
 	if err != nil {
 		t.Fatalf("ListUsers returned error: %v", err)
 	}
@@ -5452,7 +5451,7 @@ func TestListUsersPagination(t *testing.T) {
 
 	// second page via the (created_at, id) cursor: the remaining user
 	last := page1.Users[len(page1.Users)-1]
-	page2, err := services.ListUsers(testCtx(), &last.CreatedAt, last.ID)
+	page2, err := ListUsers(testCtx(), &last.CreatedAt, last.ID)
 	if err != nil {
 		t.Fatalf("ListUsers for the second page returned error: %v", err)
 	}
@@ -5482,7 +5481,7 @@ func TestListUsersSince(t *testing.T) {
 	userB := newTestMessageUser(t)
 
 	since := userA.CreatedAt
-	list, err := services.ListUsers(testCtx(), &since, "")
+	list, err := ListUsers(testCtx(), &since, "")
 	if err != nil {
 		t.Fatalf("ListUsers with since returned error: %v", err)
 	}
@@ -5511,7 +5510,7 @@ func lastUserSummary(t *testing.T) models.UserSummary {
 	var since *time.Time
 	lastID := ""
 	for {
-		page, err := services.ListUsers(testCtx(), since, lastID)
+		page, err := ListUsers(testCtx(), since, lastID)
 		if err != nil {
 			t.Fatalf("ListUsers returned error: %v", err)
 		}
@@ -5540,7 +5539,7 @@ func TestCreateChannelLimitReached(t *testing.T) {
 		}
 	}
 
-	if _, err := services.CreateChannel(testCtx(), server.ID, "ch_"+randHex(8)); !errors.Is(err, services.ErrChannelLimitReached) {
+	if _, err := CreateChannel(testCtx(), server.ID, "ch_"+randHex(8)); !errors.Is(err, ErrChannelLimitReached) {
 		t.Errorf("expected ErrChannelLimitReached, got %v", err)
 	}
 

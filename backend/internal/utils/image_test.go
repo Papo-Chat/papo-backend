@@ -1,4 +1,4 @@
-package test_utils
+package utils
 
 import (
 	"bytes"
@@ -7,8 +7,6 @@ import (
 	"image/jpeg"
 	"image/png"
 	"testing"
-
-	"papo/internal/utils"
 )
 
 func TestValidateImageValid(t *testing.T) {
@@ -24,7 +22,7 @@ func TestValidateImageValid(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := utils.ValidateImage(tc.content, utils.MaxImageDimension); err != nil {
+			if err := ValidateImage(tc.content, MaxImageDimension); err != nil {
 				t.Fatalf("ValidateImage retornou erro inesperado: %v", err)
 			}
 		})
@@ -44,7 +42,7 @@ func TestValidateImageDimensionExceeded(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := utils.ValidateImage(tc.content, tc.maxDim); err == nil {
+			if err := ValidateImage(tc.content, tc.maxDim); err == nil {
 				t.Fatal("ValidateImage deveria retornar erro para dimensão acima do limite")
 			}
 		})
@@ -63,7 +61,7 @@ func TestValidateImageInvalidContent(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := utils.ValidateImage(tc.content, utils.MaxImageDimension); err == nil {
+			if err := ValidateImage(tc.content, MaxImageDimension); err == nil {
 				t.Fatal("ValidateImage deveria retornar erro para conteúdo inválido")
 			}
 		})

@@ -1,4 +1,4 @@
-package test_websocket
+package websocket
 
 import (
 	"context"
@@ -23,14 +23,13 @@ import (
 	"papo/internal/models"
 	"papo/internal/services"
 	"papo/internal/storage"
-	"papo/internal/websocket"
 
 	ws "github.com/gorilla/websocket"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // migrationsDir é o caminho relativo ao diretório deste pacote (backend/internal/websocket/test_websocket).
-const migrationsDir = "../../../../migrations"
+const migrationsDir = "../../../migrations"
 
 // defaultDatabaseURL corresponde aos padrões do infra/docker-compose.yml.
 const defaultDatabaseURL = "postgres://papo:papo123@localhost:5432/papo"
@@ -108,9 +107,9 @@ func runWebsocketTests(m *testing.M) int {
 // --- infraestrutura de teste ---
 
 // newWSHub cria um Hub com o loop Run ativo e o encerra no final do teste.
-func newWSHub(t *testing.T) *websocket.Hub {
+func newWSHub(t *testing.T) *Hub {
 	t.Helper()
-	hub := websocket.NewHub()
+	hub := NewHub()
 	go hub.Run()
 	t.Cleanup(func() { hub.Shutdown() })
 	return hub
@@ -122,10 +121,10 @@ func newWSHub(t *testing.T) *websocket.Hub {
 type wsTestServer struct {
 	srv     *httptest.Server
 	mu      sync.Mutex
-	clients []*websocket.Client
+	clients []*Client
 }
 
-func newWSTestServer(t *testing.T, hub *websocket.Hub, statusMessages map[string]*string) *wsTestServer {
+func newWSTestServer(t *testing.T, hub *Hub, statusMessages map[string]*string) *wsTestServer {
 	t.Helper()
 	environment := &wsTestServer{}
 	upgrader := ws.Upgrader{}
@@ -139,7 +138,7 @@ func newWSTestServer(t *testing.T, hub *websocket.Hub, statusMessages map[string
 		if statusMessages != nil {
 			statusMessage = statusMessages[userID]
 		}
-		client := websocket.Connect(hub, conn, userID, statusMessage)
+		client := Connect(hub, conn, userID, statusMessage)
 		environment.mu.Lock()
 		environment.clients = append(environment.clients, client)
 		environment.mu.Unlock()
@@ -162,7 +161,7 @@ func (s *wsTestServer) dial(t *testing.T, userID string) *ws.Conn {
 
 // clientAt retorna o cliente registrado no Hub na posição informada
 // (ordem das conexões do servidor de teste).
-func (s *wsTestServer) clientAt(t *testing.T, index int) *websocket.Client {
+func (s *wsTestServer) clientAt(t *testing.T, index int) *Client {
 	t.Helper()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -237,7 +236,7 @@ func sendTyping(t *testing.T, conn *ws.Conn, channelID string) {
 // assertTyping valida o payload de um evento typing.
 func assertTyping(t *testing.T, event wsEvent, channelID, userID string) {
 	t.Helper()
-	if event.Type != string(websocket.EventTypeTyping) {
+	if event.Type != string(EventTypeTyping) {
 		t.Fatalf("esperava evento typing, obtive %q", event.Type)
 	}
 	if event.ChannelID != channelID {
@@ -467,22 +466,22 @@ func randUUID() string {
 func TestEventTypeIsInbound(t *testing.T) {
 	cases := []struct {
 		name      string
-		eventType websocket.EventType
+		eventType EventType
 		inbound   bool
 	}{
-		{"typing", websocket.EventTypeTyping, true},
-		{"heartbeat", websocket.EventTypeHeartbeat, true},
-		{"message", websocket.EventTypeMessage, false},
-		{"message_edit", websocket.EventTypeMessageEdit, false},
-		{"message_delete", websocket.EventTypeMessageDelete, false},
-		{"channel_create", websocket.EventTypeChannelCreate, false},
-		{"channel_update", websocket.EventTypeChannelUpdate, false},
-		{"channel_delete", websocket.EventTypeChannelDelete, false},
-		{"presence_update", websocket.EventTypePresenceUpdate, false},
-		{"presence_sync", websocket.EventTypePresenceSync, false},
-		{"heartbeat_ack", websocket.EventTypeHeartbeatAck, false},
-		{"error", websocket.EventTypeError, false},
-		{"vazio", websocket.EventType(""), false},
+		{"typing", EventTypeTyping, true},
+		{"heartbeat", EventTypeHeartbeat, true},
+		{"message", EventTypeMessage, false},
+		{"message_edit", EventTypeMessageEdit, false},
+		{"message_delete", EventTypeMessageDelete, false},
+		{"channel_create", EventTypeChannelCreate, false},
+		{"channel_update", EventTypeChannelUpdate, false},
+		{"channel_delete", EventTypeChannelDelete, false},
+		{"presence_update", EventTypePresenceUpdate, false},
+		{"presence_sync", EventTypePresenceSync, false},
+		{"heartbeat_ack", EventTypeHeartbeatAck, false},
+		{"error", EventTypeError, false},
+		{"vazio", EventType(""), false},
 	}
 
 	for _, tc := range cases {
@@ -496,7 +495,7 @@ func TestEventTypeIsInbound(t *testing.T) {
 
 func TestPresenceStore(t *testing.T) {
 	t.Run("transições online/offline", func(t *testing.T) {
-		p := websocket.NewPresenceStore()
+		p := NewPresenceStore()
 
 		if !p.AddConnection("user_a", nil) {
 			t.Error("a primeira conexão deveria transicionar para online")
@@ -516,7 +515,7 @@ func TestPresenceStore(t *testing.T) {
 	})
 
 	t.Run("mensagem de status", func(t *testing.T) {
-		p := websocket.NewPresenceStore()
+		p := NewPresenceStore()
 		oi := "oi"
 
 		if p.SetStatusMessage("user_a", &oi) {
@@ -540,7 +539,7 @@ func TestPresenceStore(t *testing.T) {
 	})
 
 	t.Run("OnlineMembers ordenado por user_id", func(t *testing.T) {
-		p := websocket.NewPresenceStore()
+		p := NewPresenceStore()
 		z := "status zeta"
 		p.AddConnection("zeta", &z)
 		p.AddConnection("alpha", nil)
@@ -553,7 +552,7 @@ func TestPresenceStore(t *testing.T) {
 			t.Errorf("membros deveriam estar ordenados por user_id: %+v", members)
 		}
 		for _, member := range members {
-			if member.Status != websocket.StatusOnline {
+			if member.Status != StatusOnline {
 				t.Errorf("membro online deveria ter status online: %+v", member)
 			}
 		}
@@ -576,14 +575,14 @@ func TestHubPresenceSyncOnConnect(t *testing.T) {
 
 	conn := env.dial(t, "user_a")
 	event := readEvent(t, conn)
-	if event.Type != string(websocket.EventTypePresenceSync) {
+	if event.Type != string(EventTypePresenceSync) {
 		t.Fatalf("esperava presence_sync ao conectar, obtive %q", event.Type)
 	}
 	if len(event.Members) != 1 {
 		t.Fatalf("esperava 1 membro online, obtive %d", len(event.Members))
 	}
 	member := event.Members[0]
-	if member.UserID != "user_a" || member.Status != websocket.StatusOnline {
+	if member.UserID != "user_a" || member.Status != StatusOnline {
 		t.Errorf("membro inesperado no presence_sync: %+v", member)
 	}
 	if member.StatusMessage == nil || *member.StatusMessage != status {
@@ -605,14 +604,14 @@ func TestHubPresenceUpdateOnJoinAndLeave(t *testing.T) {
 
 	// user_a é notificado da entrada do user_b.
 	event := readEvent(t, connA)
-	if event.Type != string(websocket.EventTypePresenceUpdate) || event.UserID != "user_b" || event.Status != websocket.StatusOnline {
+	if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_b" || event.Status != StatusOnline {
 		t.Errorf("esperava presence_update online do user_b, obtive %+v", event)
 	}
 
 	// user_b sai: user_a é notificado do offline.
 	connB.Close()
 	event = readEvent(t, connA)
-	if event.Type != string(websocket.EventTypePresenceUpdate) || event.UserID != "user_b" || event.Status != websocket.StatusOffline {
+	if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_b" || event.Status != StatusOffline {
 		t.Errorf("esperava presence_update offline do user_b, obtive %+v", event)
 	}
 }
@@ -651,7 +650,7 @@ func TestHubMultipleConnectionsSameUser(t *testing.T) {
 	// Encerrar a última conexão notifica offline.
 	connA1.Close()
 	event = readEvent(t, connB)
-	if event.Type != string(websocket.EventTypePresenceUpdate) || event.UserID != "user_a" || event.Status != websocket.StatusOffline {
+	if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_a" || event.Status != StatusOffline {
 		t.Errorf("esperava presence_update offline do user_a, obtive %+v", event)
 	}
 }
@@ -666,8 +665,8 @@ func TestHubBroadcast(t *testing.T) {
 	readEvent(t, connB)
 	readEvent(t, connA) // presence_update user_b online
 
-	hub.Broadcast(websocket.MessageOutbound{
-		Type:      websocket.EventTypeMessage,
+	hub.Broadcast(MessageOutbound{
+		Type:      EventTypeMessage,
 		ID:        "msg_1",
 		ChannelID: "chan_1",
 		AuthorID:  "user_a",
@@ -678,7 +677,7 @@ func TestHubBroadcast(t *testing.T) {
 	for name, conn := range map[string]*ws.Conn{"user_a": connA, "user_b": connB} {
 		t.Run(name, func(t *testing.T) {
 			event := readEvent(t, conn)
-			if event.Type != string(websocket.EventTypeMessage) {
+			if event.Type != string(EventTypeMessage) {
 				t.Fatalf("esperava evento message, obtive %q", event.Type)
 			}
 			if event.ID != "msg_1" || event.ChannelID != "chan_1" || event.AuthorID != "user_a" || event.Content != "olá" {
@@ -698,8 +697,8 @@ func TestHubBroadcastToUsers(t *testing.T) {
 	readEvent(t, connB)
 	readEvent(t, connA) // presence_update user_b online
 
-	hub.BroadcastToUsers(websocket.MessageOutbound{
-		Type:      websocket.EventTypeMessage,
+	hub.BroadcastToUsers(MessageOutbound{
+		Type:      EventTypeMessage,
 		ID:        "msg_1",
 		ChannelID: "chan_1",
 		AuthorID:  "user_a",
@@ -708,7 +707,7 @@ func TestHubBroadcastToUsers(t *testing.T) {
 	}, map[string]bool{"user_a": true})
 
 	event := readEvent(t, connA)
-	if event.Type != string(websocket.EventTypeMessage) || event.ID != "msg_1" {
+	if event.Type != string(EventTypeMessage) || event.ID != "msg_1" {
 		t.Fatalf("user_a deveria receber o evento, obtive %+v", event)
 	}
 
@@ -731,7 +730,7 @@ func TestHubUpdateStatusMessage(t *testing.T) {
 		t.Fatal("UpdateStatusMessage em usuário online deveria retornar true")
 	}
 	event := readEvent(t, connA)
-	if event.Type != string(websocket.EventTypePresenceUpdate) || event.UserID != "user_b" || event.Status != websocket.StatusOnline {
+	if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_b" || event.Status != StatusOnline {
 		t.Fatalf("esperava presence_update do user_b, obtive %+v", event)
 	}
 	if event.StatusMessage == nil || *event.StatusMessage != newStatus {
@@ -836,7 +835,7 @@ func TestClientHandleInboundEvents(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sendRaw(t, conn, tc.raw)
 			event := readEvent(t, conn)
-			if event.Type != string(websocket.EventTypeError) {
+			if event.Type != string(EventTypeError) {
 				t.Fatalf("esperava evento error, obtive %q", event.Type)
 			}
 			if event.Message != "evento inválido" {
@@ -847,7 +846,7 @@ func TestClientHandleInboundEvents(t *testing.T) {
 
 	t.Run("heartbeat responde com ack", func(t *testing.T) {
 		sendRaw(t, conn, `{"type":"heartbeat"}`)
-		if event := readEvent(t, conn); event.Type != string(websocket.EventTypeHeartbeatAck) {
+		if event := readEvent(t, conn); event.Type != string(EventTypeHeartbeatAck) {
 			t.Errorf("esperava heartbeat_ack, obtive %q", event.Type)
 		}
 	})
@@ -867,7 +866,7 @@ func TestClientTyping(t *testing.T) {
 
 		sendTyping(t, conn, randUUID())
 		event := readEvent(t, conn)
-		if event.Type != string(websocket.EventTypeError) || event.Message != "canal não encontrado" {
+		if event.Type != string(EventTypeError) || event.Message != "canal não encontrado" {
 			t.Errorf("esperava erro 'canal não encontrado', obtive %+v", event)
 		}
 	})
@@ -911,7 +910,7 @@ func TestClientTyping(t *testing.T) {
 		sendTyping(t, connAlice, channel.ID)
 
 		event := readEvent(t, connAlice)
-		if event.Type != string(websocket.EventTypeError) || event.Message != "sem permissão para o canal" {
+		if event.Type != string(EventTypeError) || event.Message != "sem permissão para o canal" {
 			t.Errorf("esperava erro 'sem permissão para o canal', obtive %+v", event)
 		}
 

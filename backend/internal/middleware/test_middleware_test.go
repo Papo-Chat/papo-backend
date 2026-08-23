@@ -1,4 +1,4 @@
-package test_middleware
+package middleware
 
 import (
 	"bytes"
@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"papo/internal/config"
-	"papo/internal/middleware"
 	"papo/internal/models"
 	"papo/internal/storage"
 	"papo/internal/utils"
@@ -30,7 +29,7 @@ import (
 )
 
 // migrationsDir é o caminho relativo ao diretório deste pacote (backend/internal/middleware/test_middleware).
-const migrationsDir = "../../../../migrations"
+const migrationsDir = "../../../migrations"
 
 // defaultDatabaseURL corresponde aos padrões do infra/docker-compose.yml.
 const defaultDatabaseURL = "postgres://papo:papo123@localhost:5432/papo"
@@ -239,7 +238,7 @@ func recorder(c echo.Context) *httptest.ResponseRecorder {
 }
 
 // doLimitedRequest passa uma requisição pelo middleware de rate limit e por um
-// handler que responde 200. O IP é o identificador usado pelo middleware.
+// handler que responde 200. O IP é o identificador usado pelo
 func doLimitedRequest(t *testing.T, mw echo.MiddlewareFunc, path, ip string) *httptest.ResponseRecorder {
 	t.Helper()
 
@@ -254,7 +253,7 @@ func doLimitedRequest(t *testing.T, mw echo.MiddlewareFunc, path, ip string) *ht
 	return recorder(c)
 }
 
-// problem é o corpo de erro RFC 7807 retornado pelo middleware.
+// problem é o corpo de erro RFC 7807 retornado pelo
 type problem struct {
 	Type     string `json:"type"`
 	Title    string `json:"title"`
@@ -300,7 +299,7 @@ func assertProblem(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int,
 // --- RateLimit ---
 
 func TestRateLimitAllowsWithinBurst(t *testing.T) {
-	mw := middleware.RateLimit(1, 3)
+	mw := RateLimit(1, 3)
 	ip := "10.0.0.1"
 
 	for i := 1; i <= 3; i++ {
@@ -312,7 +311,7 @@ func TestRateLimitAllowsWithinBurst(t *testing.T) {
 }
 
 func TestRateLimitDeniesWhenBurstExceeded(t *testing.T) {
-	mw := middleware.RateLimit(1, 2)
+	mw := RateLimit(1, 2)
 	ip := "10.0.0.1"
 
 	for i := 1; i <= 2; i++ {
@@ -328,7 +327,7 @@ func TestRateLimitDeniesWhenBurstExceeded(t *testing.T) {
 }
 
 func TestRateLimitIsolatedPerIP(t *testing.T) {
-	mw := middleware.RateLimit(1, 1)
+	mw := RateLimit(1, 1)
 	ipA := "10.0.0.1"
 	ipB := "10.0.0.2"
 
@@ -347,7 +346,7 @@ func TestRateLimitIsolatedPerIP(t *testing.T) {
 
 func TestRateLimitRefillsOverTime(t *testing.T) {
 	// 100 req/s = 1 token a cada 10ms, com burst de 1
-	mw := middleware.RateLimit(100, 1)
+	mw := RateLimit(100, 1)
 	ip := "10.0.0.1"
 
 	if rec := doLimitedRequest(t, mw, "/auth/login", ip); rec.Code != http.StatusOK {
@@ -435,7 +434,7 @@ func newPermissionContext(t *testing.T, method, path string, body []byte, paramN
 		c.SetParamValues(paramValues...)
 	}
 	if userID != "" {
-		c.Set(middleware.UserIDContextKey, userID)
+		c.Set(UserIDContextKey, userID)
 	}
 	return c
 }
@@ -457,7 +456,7 @@ func TestPermissionDeniesWithoutAuthentication(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/servers/"+nonexistentID, nil,
 		[]string{"server_id"}, []string{nonexistentID}, "")
 
-	rec := doPermissionRequest(t, middleware.RequireManageServer(), c)
+	rec := doPermissionRequest(t, RequireManageServer(), c)
 	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized",
 		"Token inválido ou expirado", "token de autenticação ausente, inválido ou expirado", "")
 }
@@ -469,7 +468,7 @@ func TestPermissionAllowsOwnerWithoutRoles(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil,
 		[]string{"server_id"}, []string{server.ID}, ownerID)
 
-	if rec := doPermissionRequest(t, middleware.RequireManageServer(), c); rec.Code != http.StatusOK {
+	if rec := doPermissionRequest(t, RequireManageServer(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 para o dono, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
@@ -484,7 +483,7 @@ func TestPermissionAllowsRoleWithPermission(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil,
 		[]string{"server_id"}, []string{server.ID}, userID)
 
-	if rec := doPermissionRequest(t, middleware.RequireManageServer(), c); rec.Code != http.StatusOK {
+	if rec := doPermissionRequest(t, RequireManageServer(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 com a permissão, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
@@ -499,7 +498,7 @@ func TestPermissionDeniesRoleWithoutPermission(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil,
 		[]string{"server_id"}, []string{server.ID}, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireManageServer(), c)
+	rec := doPermissionRequest(t, RequireManageServer(), c)
 	assertProblem(t, rec, http.StatusForbidden, "forbidden",
 		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
 }
@@ -512,7 +511,7 @@ func TestPermissionDeniesUserWithoutRoles(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil,
 		[]string{"server_id"}, []string{server.ID}, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireManageServer(), c)
+	rec := doPermissionRequest(t, RequireManageServer(), c)
 	assertProblem(t, rec, http.StatusForbidden, "forbidden",
 		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
 }
@@ -530,7 +529,7 @@ func TestPermissionIgnoresRolesFromOtherServers(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/servers/"+serverA.ID, nil,
 		[]string{"server_id"}, []string{serverA.ID}, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireManageServer(), c)
+	rec := doPermissionRequest(t, RequireManageServer(), c)
 	assertProblem(t, rec, http.StatusForbidden, "forbidden",
 		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
 }
@@ -541,7 +540,7 @@ func TestPermissionServerNotFound(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/servers/"+nonexistentID, nil,
 		[]string{"server_id"}, []string{nonexistentID}, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireManageServer(), c)
+	rec := doPermissionRequest(t, RequireManageServer(), c)
 	assertProblem(t, rec, http.StatusNotFound, "not-found",
 		"Recurso não encontrado", "servidor não encontrado", "")
 }
@@ -552,7 +551,7 @@ func TestServerOwnerOrManageServerDeniesWithoutAuthentication(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/users/"+nonexistentID+"/ban", nil,
 		[]string{"user_id"}, []string{nonexistentID}, "")
 
-	rec := doPermissionRequest(t, middleware.RequireServerOwnerOrManageServer(), c)
+	rec := doPermissionRequest(t, RequireServerOwnerOrManageServer(), c)
 	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized",
 		"Token inválido ou expirado", "token de autenticação ausente, inválido ou expirado", "")
 }
@@ -564,7 +563,7 @@ func TestServerOwnerOrManageServerAllowsOwnerWithoutRoles(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/users/"+nonexistentID+"/ban", nil,
 		[]string{"user_id"}, []string{nonexistentID}, ownerID)
 
-	if rec := doPermissionRequest(t, middleware.RequireServerOwnerOrManageServer(), c); rec.Code != http.StatusOK {
+	if rec := doPermissionRequest(t, RequireServerOwnerOrManageServer(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 para o dono, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
@@ -579,7 +578,7 @@ func TestServerOwnerOrManageServerAllowsRoleWithPermission(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/users/"+nonexistentID+"/ban", nil,
 		[]string{"user_id"}, []string{nonexistentID}, userID)
 
-	if rec := doPermissionRequest(t, middleware.RequireServerOwnerOrManageServer(), c); rec.Code != http.StatusOK {
+	if rec := doPermissionRequest(t, RequireServerOwnerOrManageServer(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 com a permissão, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
@@ -594,7 +593,7 @@ func TestServerOwnerOrManageServerDeniesRoleWithoutPermission(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/users/"+nonexistentID+"/ban", nil,
 		[]string{"user_id"}, []string{nonexistentID}, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireServerOwnerOrManageServer(), c)
+	rec := doPermissionRequest(t, RequireServerOwnerOrManageServer(), c)
 	assertProblem(t, rec, http.StatusForbidden, "forbidden",
 		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
 }
@@ -605,7 +604,7 @@ func TestServerOwnerOrManageServerDeniesUserWithoutServersOrRoles(t *testing.T) 
 	c := newPermissionContext(t, http.MethodPut, "/users/"+nonexistentID+"/ban", nil,
 		[]string{"user_id"}, []string{nonexistentID}, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireServerOwnerOrManageServer(), c)
+	rec := doPermissionRequest(t, RequireServerOwnerOrManageServer(), c)
 	assertProblem(t, rec, http.StatusForbidden, "forbidden",
 		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
 }
@@ -624,7 +623,7 @@ func TestServerOwnerOrManageServerAllowsRoleFromAnyServer(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/users/"+nonexistentID+"/ban", nil,
 		[]string{"user_id"}, []string{nonexistentID}, userID)
 
-	if rec := doPermissionRequest(t, middleware.RequireServerOwnerOrManageServer(), c); rec.Code != http.StatusOK {
+	if rec := doPermissionRequest(t, RequireServerOwnerOrManageServer(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 via role de qualquer servidor, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
@@ -635,7 +634,7 @@ func TestSelfOrServerOwnerDeniesWithoutAuthentication(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPost, "/users/"+nonexistentID+"/reset", nil,
 		[]string{"user_id"}, []string{nonexistentID}, "")
 
-	rec := doPermissionRequest(t, middleware.RequireSelfOrServerOwner(), c)
+	rec := doPermissionRequest(t, RequireSelfOrServerOwner(), c)
 	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized",
 		"Token inválido ou expirado", "token de autenticação ausente, inválido ou expirado", "")
 }
@@ -647,7 +646,7 @@ func TestSelfOrServerOwnerAllowsSelfWithoutServer(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPost, "/users/"+userID+"/reset", nil,
 		[]string{"user_id"}, []string{userID}, userID)
 
-	if rec := doPermissionRequest(t, middleware.RequireSelfOrServerOwner(), c); rec.Code != http.StatusOK {
+	if rec := doPermissionRequest(t, RequireSelfOrServerOwner(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 para o próprio usuário, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
@@ -660,7 +659,7 @@ func TestSelfOrServerOwnerAllowsOwnerWithoutRoles(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPost, "/users/"+targetID+"/reset", nil,
 		[]string{"user_id"}, []string{targetID}, ownerID)
 
-	if rec := doPermissionRequest(t, middleware.RequireSelfOrServerOwner(), c); rec.Code != http.StatusOK {
+	if rec := doPermissionRequest(t, RequireSelfOrServerOwner(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 para o dono, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
@@ -678,7 +677,7 @@ func TestSelfOrServerOwnerDeniesRoleWithoutOwnership(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPost, "/users/"+targetID+"/reset", nil,
 		[]string{"user_id"}, []string{targetID}, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireSelfOrServerOwner(), c)
+	rec := doPermissionRequest(t, RequireSelfOrServerOwner(), c)
 	assertProblem(t, rec, http.StatusForbidden, "forbidden",
 		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
 }
@@ -690,7 +689,7 @@ func TestSelfOrServerOwnerDeniesUserWithoutServers(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPost, "/users/"+targetID+"/reset", nil,
 		[]string{"user_id"}, []string{targetID}, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireSelfOrServerOwner(), c)
+	rec := doPermissionRequest(t, RequireSelfOrServerOwner(), c)
 	assertProblem(t, rec, http.StatusForbidden, "forbidden",
 		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
 }
@@ -706,7 +705,7 @@ func TestPermissionResolvesServerByChannel(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/channels/"+channel.ID, nil,
 		[]string{"channel_id"}, []string{channel.ID}, userID)
 
-	if rec := doPermissionRequest(t, middleware.RequireManageChannels(), c); rec.Code != http.StatusOK {
+	if rec := doPermissionRequest(t, RequireManageChannels(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 via canal, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
@@ -717,7 +716,7 @@ func TestPermissionChannelNotFound(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPut, "/channels/"+nonexistentID, nil,
 		[]string{"channel_id"}, []string{nonexistentID}, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireManageChannels(), c)
+	rec := doPermissionRequest(t, RequireManageChannels(), c)
 	assertProblem(t, rec, http.StatusNotFound, "not-found",
 		"Recurso não encontrado", "canal não encontrado", "")
 }
@@ -733,7 +732,7 @@ func TestPermissionResolvesServerByRole(t *testing.T) {
 	c := newPermissionContext(t, http.MethodDelete, "/roles/"+targetRole.ID, nil,
 		[]string{"role_id"}, []string{targetRole.ID}, userID)
 
-	if rec := doPermissionRequest(t, middleware.RequireManageRoles(), c); rec.Code != http.StatusOK {
+	if rec := doPermissionRequest(t, RequireManageRoles(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 via role, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
@@ -744,7 +743,7 @@ func TestPermissionRoleNotFound(t *testing.T) {
 	c := newPermissionContext(t, http.MethodDelete, "/roles/"+nonexistentID, nil,
 		[]string{"role_id"}, []string{nonexistentID}, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireManageRoles(), c)
+	rec := doPermissionRequest(t, RequireManageRoles(), c)
 	assertProblem(t, rec, http.StatusNotFound, "not-found",
 		"Recurso não encontrado", "role não encontrada", "")
 }
@@ -759,7 +758,7 @@ func TestPermissionResolvesServerFromBody(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": "geral"})
 	c := newPermissionContext(t, http.MethodPost, "/channels", body, nil, nil, userID)
 
-	if rec := doPermissionRequest(t, middleware.RequireManageChannels(), c); rec.Code != http.StatusOK {
+	if rec := doPermissionRequest(t, RequireManageChannels(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 via corpo, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
@@ -775,7 +774,7 @@ func TestPermissionResolvesServerFromBodyRoleID(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"role_id": targetRole.ID})
 	c := newPermissionContext(t, http.MethodPost, "/users/"+userID+"/roles", body, nil, nil, userID)
 
-	if rec := doPermissionRequest(t, middleware.RequireManageRoles(), c); rec.Code != http.StatusOK {
+	if rec := doPermissionRequest(t, RequireManageRoles(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 via role_id no corpo, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
@@ -794,7 +793,7 @@ func TestPermissionServerIDParamTakesPrecedenceOverBody(t *testing.T) {
 	c := newPermissionContext(t, http.MethodPost, "/channels", body,
 		[]string{"server_id"}, []string{serverA.ID}, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireManageChannels(), c)
+	rec := doPermissionRequest(t, RequireManageChannels(), c)
 	assertProblem(t, rec, http.StatusForbidden, "forbidden",
 		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
 }
@@ -805,7 +804,7 @@ func TestPermissionBodyWithoutServerOrRole(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"name": "geral"})
 	c := newPermissionContext(t, http.MethodPost, "/channels", body, nil, nil, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireManageChannels(), c)
+	rec := doPermissionRequest(t, RequireManageChannels(), c)
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param",
 		"Parâmetro inválido", "não foi possível determinar o servidor alvo da operação", "")
 }
@@ -815,7 +814,7 @@ func TestPermissionInvalidJSONBody(t *testing.T) {
 
 	c := newPermissionContext(t, http.MethodPost, "/channels", []byte("não é json"), nil, nil, userID)
 
-	rec := doPermissionRequest(t, middleware.RequireManageChannels(), c)
+	rec := doPermissionRequest(t, RequireManageChannels(), c)
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param",
 		"Parâmetro inválido", "não foi possível determinar o servidor alvo da operação", "")
 }
@@ -830,15 +829,15 @@ func TestPermissionHelpersMapToCorrectPermission(t *testing.T) {
 	names := []string{"server_id"}
 	values := []string{server.ID}
 
-	if rec := doPermissionRequest(t, middleware.RequireManageChannels(),
+	if rec := doPermissionRequest(t, RequireManageChannels(),
 		newPermissionContext(t, http.MethodPost, "/channels", nil, names, values, userID)); rec.Code != http.StatusOK {
 		t.Fatalf("RequireManageChannels: esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
-	assertProblem(t, doPermissionRequest(t, middleware.RequireManageServer(),
+	assertProblem(t, doPermissionRequest(t, RequireManageServer(),
 		newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil, names, values, userID)),
 		http.StatusForbidden, "forbidden", "Acesso negado",
 		"usuário não possui a permissão necessária para esta operação", "")
-	assertProblem(t, doPermissionRequest(t, middleware.RequireManageRoles(),
+	assertProblem(t, doPermissionRequest(t, RequireManageRoles(),
 		newPermissionContext(t, http.MethodPost, "/roles", nil, names, values, userID)),
 		http.StatusForbidden, "forbidden", "Acesso negado",
 		"usuário não possui a permissão necessária para esta operação", "")
@@ -854,7 +853,7 @@ func TestPermissionRestoresBodyForHandler(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": "geral"})
 	c := newPermissionContext(t, http.MethodPost, "/channels", body, nil, nil, userID)
 
-	handler := middleware.RequireManageChannels()(func(ctx echo.Context) error {
+	handler := RequireManageChannels()(func(ctx echo.Context) error {
 		data, err := io.ReadAll(ctx.Request().Body)
 		if err != nil {
 			t.Fatalf("falha ao ler o corpo no handler: %v", err)
