@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16.4
+    container_name: papo_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-papo}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-papo123}
+      POSTGRES_DB: ${DB_NAME:-papo}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    networks:
+      - papo_network
+
+volumes:
+  postgres_data:
+
+networks:
+  papo_network:
+    driver: bridge

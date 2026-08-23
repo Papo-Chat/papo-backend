@@ -1,0 +1,5554 @@
+package test_services
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
+	"io"
+	"math/big"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"papo/internal/config"
+	"papo/internal/models"
+	"papo/internal/services"
+	"papo/internal/storage"
+	"papo/internal/utils"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+// migrationsDir é o caminho relativo ao diretório deste pacote (backend/internal/services/test_services).
+const migrationsDir = "../../../../migrations"
+
+// defaultDatabaseURL corresponde aos padrões do infra/docker-compose.yml.
+const defaultDatabaseURL = "postgres://papo:papo123@localhost:5432/papo"
+
+func TestMain(m *testing.M) {
+	os.Exit(runServicesTests(m))
+}
+
+// runServicesTests prepara um banco temporário com as migrations do projeto,
+// inicializa o storage contra ele, executa os testes e remove o banco ao final.
+func runServicesTests(m *testing.M) int {
+	baseURL := testDatabaseURL()
+
+	baseDB, err := sql.Open("pgx", baseURL)
+	if err != nil {
+		fmt.Printf("testes de services ignorados: falha ao abrir conexão: %v\n", err)
+		return 0
+	}
+	defer baseDB.Close()
+
+	if err := ping(baseDB); err != nil {
+		fmt.Printf("testes de services ignorados: não foi possível conectar ao PostgreSQL (%v). Inicie o PostgreSQL (infra/docker-compose.yml) ou defina TEST_DATABASE_URL/DATABASE_URL.\n", err)
+		return 0
+	}
+
+	removeOldTempDatabases(baseDB)
+
+	tempDBName, err := createTempDatabase(baseDB)
+	if err != nil {
+		fmt.Printf("testes de services ignorados: falha ao criar banco temporário: %v\n", err)
+		return 0
+	}
+	defer dropTempDatabase(baseDB, tempDBName)
+
+	tempURL, err := withDatabase(baseURL, tempDBName)
+	if err != nil {
+		fmt.Printf("testes de services ignorados: %v\n", err)
+		return 0
+	}
+
+	tempDB, err := sql.Open("pgx", tempURL)
+
+	if err != nil {
+		fmt.Printf("testes de services ignorados: %v\n", err)
+		return 0
+	}
+	defer tempDB.Close()
+
+	if err := ping(tempDB); err != nil {
+		fmt.Printf("testes de services ignorados: falha ao conectar no banco temporário: %v\n", err)
+	}
+
+	if err := applyMigrations(tempDB); err != nil {
+		fmt.Printf("testes de services FALHARAM na preparação: %v\n", err)
+		return 1
+	}
+
+	if err := storage.InitDB(tempURL); err != nil {
+		fmt.Printf("testes de services FALHARAM na preparação: %v\n", err)
+		return 1
+	}
+
+	// remove blobs de execuções anteriores (os uploads de attachment gravam em
+	// attachments/ relativo ao diretório deste pacote de testes)
+	if err := os.RemoveAll("attachments"); err != nil {
+		fmt.Printf("aviso: falha ao limpar pasta de attachments de testes: %v\n", err)
+	}
+
+	code := m.Run()
+
+	storage.CloseDB()
+	return code
+}
+
+// exclui servidores nos testes para manter a regra de negócio de 1 servidor por backend
+func cleanServers(ctx context.Context) error {
+	_, err := storage.GetDB().ExecContext(ctx, "DELETE FROM servers")
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// testDatabaseURL resolve a DSN base: TEST_DATABASE_URL > DATABASE_URL > padrão do docker-compose.
+func testDatabaseURL() string {
+	for _, key := range []string{"TEST_DATABASE_URL", "DATABASE_URL"} {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	return defaultDatabaseURL
+}
+
+func ping(db *sql.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return db.PingContext(ctx)
+}
+
+// createTempDatabase cria um banco isolado para os testes, evitando poluir os dados de desenvolvimento.
+func createTempDatabase(db *sql.DB) (string, error) {
+	name := "papo_test_" + randHex(6)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(ctx, "CREATE DATABASE "+name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+func dropTempDatabase(db *sql.DB, name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(ctx, `DROP DATABASE "`+name+`"`); err != nil {
+		fmt.Printf("aviso: falha ao remover banco temporário %s: %v\n", name, err)
+	}
+}
+
+// removeOldTempDatabases limpa bancos deixados por execuções anteriores interrompidas.
+func removeOldTempDatabases(db *sql.DB) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, `SELECT datname FROM pg_database WHERE datname LIKE 'papo\_test\_%'`)
+	if err != nil {
+		fmt.Printf("falha ao remover banco temporário antigo: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			fmt.Printf("falha ao remover banco temporário antigo: %v", err)
+			return
+		}
+		names = append(names, name)
+	}
+
+	if err := rows.Err(); err != nil {
+		fmt.Printf("falha ao remover banco temporário antigo: %v", err)
+		return
+	}
+
+	for _, name := range names {
+		if _, err := db.ExecContext(ctx, `DROP DATABASE "`+name+`"`); err != nil {
+			fmt.Printf("falha ao remover banco temporário antigo %s: %v\n", name, err)
+		}
+	}
+}
+
+// withDatabase substitui o nome do banco na DSN.
+func withDatabase(rawURL, name string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	u.Path = "/" + name
+	return u.String(), nil
+}
+
+// applyMigrations aplica a seção Up de cada migration do projeto, na ordem dos arquivos.
+func applyMigrations(db *sql.DB) error {
+	files, err := filepath.Glob(filepath.Join(migrationsDir, "*.sql"))
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("nenhum arquivo de migration encontrado em %s", migrationsDir)
+	}
+	sort.Strings(files)
+
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			return err
+		}
+		if _, err := db.Exec(gooseUpSection(string(content))); err != nil {
+			return fmt.Errorf("falha ao aplicar migration %s: %w", file, err)
+		}
+	}
+	return nil
+}
+
+// gooseUpSection retorna apenas a seção Up do arquivo goose.
+func gooseUpSection(sqlText string) string {
+	if idx := strings.Index(sqlText, "-- +goose Down"); idx >= 0 {
+		sqlText = sqlText[:idx]
+	}
+	return sqlText
+}
+
+// --- helpers de teste ---
+
+func testCtx() context.Context {
+	return context.Background()
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b)
+}
+
+func newRandomUsername() string {
+	return "usr" + randHex(4)
+}
+
+func newRandomPassword() string {
+	return "pw" + randHex(4)
+}
+
+func newRandomIP() string {
+	return fmt.Sprintf("10.0.%d.%d", randInt(1, 254), randInt(1, 254))
+}
+
+func randInt(min, max int) int {
+	if min > max {
+		min, max = max, min
+	}
+
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max-min+1)))
+	if err != nil {
+		panic(err)
+	}
+
+	return int(n.Int64()) + min
+}
+
+// randUUID gera um UUID v4 válido para simular um ID inexistente.
+func randUUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func timePtr(v time.Time) *time.Time {
+	return &v
+}
+
+// --- services.Register ---
+
+func TestRegister(t *testing.T) {
+	username := newRandomUsername()
+	password := newRandomPassword()
+	ip := newRandomIP()
+
+	user, err := services.Register(testCtx(), username, password, ip)
+	if err != nil {
+		t.Fatalf("Register retornou erro: %v", err)
+	}
+
+	if user.ID == "" {
+		t.Error("esperava user.ID preenchido")
+	}
+	if user.Username != username {
+		t.Errorf("esperava username %q, obtive %q", username, user.Username)
+	}
+	// Register não deve retornar o hash do banco
+	if user.PasswordHash != "" {
+		t.Errorf("Register não deve retornar password_hash, obtive %q", user.PasswordHash)
+	}
+	if user.Banned {
+		t.Error("esperava banned = false")
+	}
+	if user.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+	if user.LastIP == nil || *user.LastIP != ip {
+		t.Errorf("esperava last_ip %q, obtive %v", ip, user.LastIP)
+	}
+
+	// o hash persistido deve validar a senha original
+	stored, err := storage.GetUserByUsername(testCtx(), username)
+	if err != nil {
+		t.Fatalf("GetUserByUsername retornou erro: %v", err)
+	}
+	if err := utils.CheckPassword(password, stored.PasswordHash); err != nil {
+		t.Errorf("CheckPassword falhou para o hash persistido: %v", err)
+	}
+}
+
+func getMaxLenFields() (int, int) {
+	cfg := config.LoadConfig()
+
+	return cfg.MaxPasswordLength, cfg.MaxUsernameLength
+}
+
+func TestRegisterInvalidInput(t *testing.T) {
+	//Lê a configuração do tamanho máximo dos campos
+	MaxPasswordLength, MaxUsernameLength := getMaxLenFields()
+
+	cases := []struct {
+		name     string
+		username string
+		password string
+	}{
+
+		{"username vazio", "", "senha123"},
+		{"password vazio", "user123", ""},
+		{"username acima do limite", strings.Repeat("a", MaxUsernameLength+1), "senha123"},
+		{"password acima do limite", "user123", strings.Repeat("a", MaxPasswordLength+1)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := services.Register(testCtx(), tc.username, tc.password, newRandomIP())
+			if !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+}
+
+func TestRegisterBoundaryLengths(t *testing.T) {
+	//Lê a configuração do tamanho máximo dos campos
+	MaxPasswordLength, MaxUsernameLength := getMaxLenFields()
+
+	username := strings.Repeat("a", MaxUsernameLength)
+	password := strings.Repeat("b", MaxPasswordLength)
+
+	user, err := services.Register(testCtx(), username, password, newRandomIP())
+	if err != nil {
+		t.Fatalf("Register com tamanhos no limite retornou erro: %v", err)
+	}
+	if user.Username != username {
+		t.Errorf("esperava username %q, obtive %q", username, user.Username)
+	}
+}
+
+func TestRegisterUsernameTaken(t *testing.T) {
+	username := newRandomUsername()
+	ip := newRandomIP()
+
+	if _, err := services.Register(testCtx(), username, newRandomPassword(), ip); err != nil {
+		t.Fatalf("falha ao criar primeiro usuário: %v", err)
+	}
+
+	_, err := services.Register(testCtx(), username, newRandomPassword(), newRandomIP())
+	if !errors.Is(err, services.ErrUsernameTaken) {
+		t.Errorf("esperava ErrUsernameTaken, obtive %v", err)
+	}
+}
+
+func TestRegisterBannedIP(t *testing.T) {
+	ip := newRandomIP()
+	bannedUser, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if err != nil {
+		t.Fatalf("falha ao criar usuário para banir: %v", err)
+	}
+
+	if _, err := storage.SetUserBanned(testCtx(), bannedUser.ID, true); err != nil {
+		t.Fatalf("falha ao banir usuário: %v", err)
+	}
+
+	_, err = services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if !errors.Is(err, services.ErrBannedIP) {
+		t.Errorf("esperava ErrBannedIP, obtive %v", err)
+	}
+}
+
+// --- services.Login ---
+
+func TestLogin(t *testing.T) {
+	username := newRandomUsername()
+	password := newRandomPassword()
+	ip := newRandomIP()
+
+	if _, err := services.Register(testCtx(), username, password, ip); err != nil {
+		t.Fatalf("falha ao criar usuário para login: %v", err)
+	}
+
+	user, err := services.Login(testCtx(), username, password, ip)
+	if err != nil {
+		t.Fatalf("Login retornou erro: %v", err)
+	}
+	if user.ID == "" {
+		t.Error("esperava user.ID preenchido")
+	}
+	if user.Username != username {
+		t.Errorf("esperava username %q, obtive %q", username, user.Username)
+	}
+	// Login não deve retornar o hash do banco
+	if user.PasswordHash != "" {
+		t.Errorf("Login não deve retornar password_hash, obtive %q", user.PasswordHash)
+	}
+	if user.Banned {
+		t.Error("esperava banned = false")
+	}
+	if user.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+
+	// o login deve atualizar o last_ip do usuário
+	stored, err := storage.GetUserByUsername(testCtx(), username)
+	if err != nil {
+		t.Fatalf("GetUserByUsername retornou erro: %v", err)
+	}
+	if err := utils.CheckPassword(password, stored.PasswordHash); err != nil {
+		t.Errorf("CheckPassword falhou para o hash persistido: %v", err)
+	}
+}
+
+func TestLoginInvalidInput(t *testing.T) {
+	MaxPasswordLength, MaxUsernameLength := getMaxLenFields()
+
+	cases := []struct {
+		name     string
+		username string
+		password string
+	}{
+		{"username vazio", "", "senha123"},
+		{"password vazio", "user123", ""},
+		{"username acima do limite", strings.Repeat("a", MaxUsernameLength+1), "senha123"},
+		{"password acima do limite", "user123", strings.Repeat("a", MaxPasswordLength+1)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := services.Login(testCtx(), tc.username, tc.password, newRandomIP())
+			if !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+}
+
+func TestLoginBoundaryLengths(t *testing.T) {
+	MaxPasswordLength, MaxUsernameLength := getMaxLenFields()
+
+	username := strings.Repeat("a", MaxUsernameLength-2) + randHex(1)
+	password := strings.Repeat("b", MaxPasswordLength)
+	ip := newRandomIP()
+
+	if _, err := services.Register(testCtx(), username, password, ip); err != nil {
+		t.Fatalf("falha ao criar usuário com tamanhos no limite: %v", err)
+	}
+
+	if _, err := services.Login(testCtx(), username, password, ip); err != nil {
+		t.Errorf("Login com tamanhos no limite retornou erro: %v", err)
+	}
+}
+
+func TestLoginWrongPassword(t *testing.T) {
+	username := newRandomUsername()
+	ip := newRandomIP()
+
+	if _, err := services.Register(testCtx(), username, newRandomPassword(), ip); err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	_, err := services.Login(testCtx(), username, newRandomPassword(), ip)
+	if !errors.Is(err, services.ErrInvalidCredentials) {
+		t.Errorf("esperava ErrInvalidCredentials, obtive %v", err)
+	}
+}
+
+func TestLoginNonexistentUser(t *testing.T) {
+	ip := newRandomIP()
+	_, err := services.Login(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if !errors.Is(err, services.ErrInvalidCredentials) {
+		t.Errorf("esperava ErrInvalidCredentials, obtive %v", err)
+	}
+}
+
+func TestLoginBannedUser(t *testing.T) {
+	username := newRandomUsername()
+	password := newRandomPassword()
+	ip := newRandomIP()
+
+	user, err := services.Register(testCtx(), username, password, ip)
+	if err != nil {
+		t.Fatalf("falha ao criar usuário para banir: %v", err)
+	}
+
+	if _, err := storage.SetUserBanned(testCtx(), user.ID, true); err != nil {
+		t.Fatalf("falha ao banir usuário: %v", err)
+	}
+
+	_, err = services.Login(testCtx(), username, password, ip)
+	if !errors.Is(err, services.ErrBannedIP) {
+		t.Errorf("esperava ErrBannedIP, obtive %v", err)
+	}
+}
+
+func TestLoginBannedIP(t *testing.T) {
+	ip := newRandomIP()
+	bannedUser, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if err != nil {
+		t.Fatalf("falha ao criar usuário para banir: %v", err)
+	}
+
+	if _, err := storage.SetUserBanned(testCtx(), bannedUser.ID, true); err != nil {
+		t.Fatalf("falha ao banir usuário: %v", err)
+	}
+
+	_, err = services.Login(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if !errors.Is(err, services.ErrBannedIP) {
+		t.Errorf("esperava ErrBannedIP, obtive %v", err)
+	}
+}
+
+// --- services.Whoami ---
+
+func TestWhoami(t *testing.T) {
+	username := newRandomUsername()
+	password := newRandomPassword()
+	ip := newRandomIP()
+
+	created, err := services.Register(testCtx(), username, password, ip)
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	user, settings, err := services.Whoami(testCtx(), created.ID)
+	if err != nil {
+		t.Fatalf("Whoami retornou erro: %v", err)
+	}
+
+	if user.ID != created.ID {
+		t.Errorf("esperava id %s, obtive %s", created.ID, user.ID)
+	}
+	if user.Username != username {
+		t.Errorf("esperava username %q, obtive %q", username, user.Username)
+	}
+	// Whoami não deve retornar o hash do banco
+	if user.PasswordHash != "" {
+		t.Errorf("Whoami não deve retornar password_hash, obtive %q", user.PasswordHash)
+	}
+	if user.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+
+	if settings.UserID != created.ID {
+		t.Errorf("esperava settings.user_id %s, obtive %s", created.ID, settings.UserID)
+	}
+	if settings.Version != models.CurrentVersion {
+		t.Errorf("esperava settings.version %d, obtive %d", models.CurrentVersion, settings.Version)
+	}
+	if settings.Config != (models.UserConfig{}) {
+		t.Errorf("esperava settings.config vazio, obtive %+v", settings.Config)
+	}
+	if settings.UpdatedAt.IsZero() {
+		t.Error("esperava settings.updated_at preenchido")
+	}
+}
+
+func TestWhoamiReflectsProfileUpdate(t *testing.T) {
+	ip := newRandomIP()
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	nickname := "nick_" + randHex(4)
+	status := "disponível"
+	updatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := storage.UpdateUser(testCtx(), user.ID, models.User{
+		Nickname:        &nickname,
+		StatusMessage:   &status,
+		StatusUpdatedAt: &updatedAt,
+	}); err != nil {
+		t.Fatalf("falha ao atualizar perfil: %v", err)
+	}
+
+	got, _, err := services.Whoami(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("Whoami retornou erro: %v", err)
+	}
+	if got.Nickname == nil || *got.Nickname != nickname {
+		t.Errorf("esperava nickname %q, obtive %v", nickname, got.Nickname)
+	}
+	if got.StatusMessage == nil || *got.StatusMessage != status {
+		t.Errorf("esperava status_message %q, obtive %v", status, got.StatusMessage)
+	}
+	if got.StatusUpdatedAt == nil || !got.StatusUpdatedAt.Equal(updatedAt) {
+		t.Errorf("esperava status_updated_at %v, obtive %v", updatedAt, got.StatusUpdatedAt)
+	}
+}
+
+func TestWhoamiReflectsSettingsUpdate(t *testing.T) {
+	ip := newRandomIP()
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	config := models.UserConfig{
+		Theme: "dark",
+		Notifications: models.Notifications{
+			Enabled:        true,
+			MessagePreview: true,
+			Sound:          false,
+			Mentions:       true,
+		},
+		Display: models.Display{
+			FontSize:       "medium",
+			MessageDensity: "compact",
+			ShowTimestamps: true,
+			ShowAvatars:    false,
+		},
+	}
+	if _, err := storage.UpsertUserSettings(testCtx(), user.ID, config); err != nil {
+		t.Fatalf("falha ao atualizar settings: %v", err)
+	}
+
+	_, settings, err := services.Whoami(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("Whoami retornou erro: %v", err)
+	}
+	if settings.Config != config {
+		t.Errorf("config não confere:\n got  %+v\n want %+v", settings.Config, config)
+	}
+}
+
+func TestWhoamiEmptyUserID(t *testing.T) {
+	_, _, err := services.Whoami(testCtx(), "")
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
+	}
+}
+
+func TestWhoamiNonexistentUser(t *testing.T) {
+	_, _, err := services.Whoami(testCtx(), randUUID())
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.Profile ---
+
+func TestProfile(t *testing.T) {
+	username := newRandomUsername()
+	password := newRandomPassword()
+	ip := newRandomIP()
+
+	created, err := services.Register(testCtx(), username, password, ip)
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	user, err := services.Profile(testCtx(), created.ID)
+	if err != nil {
+		t.Fatalf("Profile retornou erro: %v", err)
+	}
+
+	if user.ID != created.ID {
+		t.Errorf("esperava id %s, obtive %s", created.ID, user.ID)
+	}
+	if user.Username != username {
+		t.Errorf("esperava username %q, obtive %q", username, user.Username)
+	}
+	// Profile não deve retornar o hash do banco
+	if user.PasswordHash != "" {
+		t.Errorf("Profile não deve retornar password_hash, obtive %q", user.PasswordHash)
+	}
+	if user.Banned {
+		t.Error("esperava banned = false")
+	}
+	if user.LastIP == nil || *user.LastIP != ip {
+		t.Errorf("esperava last_ip %q, obtive %v", ip, user.LastIP)
+	}
+	if user.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+}
+
+func TestProfileReflectsUpdate(t *testing.T) {
+	ip := newRandomIP()
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	nickname := "nick_" + randHex(4)
+	status := "disponível"
+	updatedAt := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := storage.UpdateUser(testCtx(), user.ID, models.User{
+		Nickname:        &nickname,
+		StatusMessage:   &status,
+		StatusUpdatedAt: &updatedAt,
+	}); err != nil {
+		t.Fatalf("falha ao atualizar perfil: %v", err)
+	}
+
+	got, err := services.Profile(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("Profile retornou erro: %v", err)
+	}
+	if got.Nickname == nil || *got.Nickname != nickname {
+		t.Errorf("esperava nickname %q, obtive %v", nickname, got.Nickname)
+	}
+	if got.StatusMessage == nil || *got.StatusMessage != status {
+		t.Errorf("esperava status_message %q, obtive %v", status, got.StatusMessage)
+	}
+	if got.StatusUpdatedAt == nil || !got.StatusUpdatedAt.Equal(updatedAt) {
+		t.Errorf("esperava status_updated_at %v, obtive %v", updatedAt, got.StatusUpdatedAt)
+	}
+}
+
+func TestProfileEmptyUserID(t *testing.T) {
+	_, err := services.Profile(testCtx(), "")
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
+	}
+}
+
+func TestProfileNonexistentUser(t *testing.T) {
+	_, err := services.Profile(testCtx(), randUUID())
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.UpdateUser ---
+
+func TestUpdateUser(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	nickname := "nick_" + randHex(4)
+	status := "disponível"
+
+	if err := services.UpdateUser(testCtx(), user.ID, nickname, status); err != nil {
+		t.Fatalf("UpdateUser retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if stored.Nickname == nil || *stored.Nickname != nickname {
+		t.Errorf("esperava nickname %q, obtive %v", nickname, stored.Nickname)
+	}
+	if stored.StatusMessage == nil || *stored.StatusMessage != status {
+		t.Errorf("esperava status_message %q, obtive %v", status, stored.StatusMessage)
+	}
+	if stored.StatusUpdatedAt == nil {
+		t.Error("esperava status_updated_at preenchido")
+	}
+
+	// uma segunda atualização substitui os valores anteriores
+	updatedNickname := "nick_" + randHex(4)
+	updatedStatus := "ausente"
+	if err := services.UpdateUser(testCtx(), user.ID, updatedNickname, updatedStatus); err != nil {
+		t.Fatalf("UpdateUser (segunda atualização) retornou erro: %v", err)
+	}
+	stored, err = storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if stored.Nickname == nil || *stored.Nickname != updatedNickname {
+		t.Errorf("esperava nickname %q, obtive %v", updatedNickname, stored.Nickname)
+	}
+	if stored.StatusMessage == nil || *stored.StatusMessage != updatedStatus {
+		t.Errorf("esperava status_message %q, obtive %v", updatedStatus, stored.StatusMessage)
+	}
+}
+
+func TestUpdateUserEmptyUserID(t *testing.T) {
+	err := services.UpdateUser(testCtx(), "", "nick", "status")
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
+	}
+}
+
+func TestUpdateUserNonexistentUser(t *testing.T) {
+	err := services.UpdateUser(testCtx(), randUUID(), "nick", "status")
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.UpdateAvatar ---
+
+// pngAvatarBytes gera um PNG válido de verdade, nas dimensões dadas,
+// pra testar validação de tamanho/dimensão.
+func pngAvatarBytes(width, height int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+
+	// opcional: preenche com uma cor sólida, só pra não ser um bitmap vazio
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic(err) // em teste, panic é aceitável — indica bug no próprio helper
+	}
+	return buf.Bytes()
+}
+
+func jpegAvatarBytes(width, height int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil { // nil = usa opções default
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+func gifAvatarBytes(width, height int) []byte {
+	palette := []color.Color{color.RGBA{R: 255, A: 255}, color.Black}
+	img := image.NewPaletted(image.Rect(0, 0, width, height), palette)
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.SetColorIndex(x, y, 0) // índice 0 da paleta acima
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := gif.Encode(&buf, img, nil); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+func TestUpdateAvatar(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		format string
+		avatar []byte
+	}{
+		{"PNG", "PNG", pngAvatarBytes(100, 100)},
+		{"JPEG", "JPEG", jpegAvatarBytes(100, 100)},
+		{"GIF", "GIF", gifAvatarBytes(100, 100)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			avatar := base64.StdEncoding.EncodeToString(tc.avatar)
+			if err := services.UpdateAvatar(testCtx(), user.ID, avatar, tc.format); err != nil {
+				t.Fatalf("UpdateAvatar retornou erro: %v", err)
+			}
+
+			stored, err := storage.GetUserByID(testCtx(), user.ID)
+			if err != nil {
+				t.Fatalf("GetUserByID retornou erro: %v", err)
+			}
+			if stored.AvatarFormat != tc.format {
+				t.Errorf("esperava avatar_format %q, obtive %q", tc.format, stored.AvatarFormat)
+			}
+			if !bytes.Equal(stored.AvatarBlob, tc.avatar) {
+				t.Errorf("avatar_blob não confere:\n got  %x\n want %x", stored.AvatarBlob, tc.avatar)
+			}
+		})
+	}
+}
+
+func TestUpdateAvatarRemovesWhenEmpty(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	// define um avatar inicialmente
+	avatar := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	if err := services.UpdateAvatar(testCtx(), user.ID, avatar, "PNG"); err != nil {
+		t.Fatalf("falha ao definir avatar inicial: %v", err)
+	}
+
+	// avatar e formato vazios devem remover o avatar
+	if err := services.UpdateAvatar(testCtx(), user.ID, "", ""); err != nil {
+		t.Fatalf("UpdateAvatar (remoção) retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if len(stored.AvatarBlob) != 0 {
+		t.Errorf("esperava avatar_blob vazio, obtive %x", stored.AvatarBlob)
+	}
+	if stored.AvatarFormat != "" {
+		t.Errorf("esperava avatar_format vazio, obtive %q", stored.AvatarFormat)
+	}
+}
+
+func TestUpdateAvatarInvalidInput(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	cases := []struct {
+		name         string
+		avatar       string
+		avatarFormat string
+	}{
+		{"base64 inválido", "!!!nao-e-base64!!!", "PNG"},
+		{"formato não aceito", base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)), "BMP"},
+		{"formato vazio com avatar", base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)), ""},
+		{"conteúdo não corresponde ao formato", base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)), "GIF"},
+		{"avatar vazio com formato", "", "PNG"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := services.UpdateAvatar(testCtx(), user.ID, tc.avatar, tc.avatarFormat)
+			if !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+}
+
+func TestUpdateAvatarExceedsMaxSize(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	// PNG válido com tamanho acima do limite de 2MB
+	oversized := make([]byte, 2<<20+1)
+	copy(oversized, pngAvatarBytes(100, 100))
+	avatar := base64.StdEncoding.EncodeToString(oversized)
+
+	err = services.UpdateAvatar(testCtx(), user.ID, avatar, "PNG")
+	if !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para avatar acima de 2MB, obtive %v", err)
+	}
+}
+
+func TestUpdateAvatarEmptyUserID(t *testing.T) {
+	avatar := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	err := services.UpdateAvatar(testCtx(), "", avatar, "PNG")
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
+	}
+}
+
+func TestUpdateAvatarNonexistentUser(t *testing.T) {
+	avatar := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	err := services.UpdateAvatar(testCtx(), randUUID(), avatar, "PNG")
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.UpdateSettings ---
+
+func TestUpdateSettings(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	config := models.UserConfig{
+		Theme: "dark",
+		Notifications: models.Notifications{
+			Enabled:        true,
+			MessagePreview: true,
+			Sound:          false,
+			Mentions:       true,
+		},
+		Display: models.Display{
+			FontSize:       "medium",
+			MessageDensity: "compact",
+			ShowTimestamps: true,
+			ShowAvatars:    false,
+		},
+	}
+
+	settings, err := services.UpdateSettings(testCtx(), user.ID, config)
+	if err != nil {
+		t.Fatalf("UpdateSettings retornou erro: %v", err)
+	}
+	if settings.UserID != user.ID {
+		t.Errorf("esperava user_id %s, obtive %s", user.ID, settings.UserID)
+	}
+	if settings.Version != models.CurrentVersion {
+		t.Errorf("esperava version %d, obtive %d", models.CurrentVersion, settings.Version)
+	}
+	if settings.Config != config {
+		t.Errorf("config não confere:\n got  %+v\n want %+v", settings.Config, config)
+	}
+	if settings.UpdatedAt.IsZero() {
+		t.Error("esperava updated_at preenchido")
+	}
+
+	// o config deve ter sido persistido
+	stored, err := storage.GetUserSettings(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserSettings retornou erro: %v", err)
+	}
+	if stored.Config != config {
+		t.Errorf("config persistido não confere:\n got  %+v\n want %+v", stored.Config, config)
+	}
+
+	// uma segunda atualização substitui o config anterior
+	updated := config
+	updated.Theme = "light"
+	updated.Display.ShowAvatars = true
+
+	again, err := services.UpdateSettings(testCtx(), user.ID, updated)
+	if err != nil {
+		t.Fatalf("UpdateSettings (segunda atualização) retornou erro: %v", err)
+	}
+	if again.Config != updated {
+		t.Errorf("config atualizado não confere:\n got  %+v\n want %+v", again.Config, updated)
+	}
+	stored, err = storage.GetUserSettings(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserSettings retornou erro: %v", err)
+	}
+	if stored.Config != updated {
+		t.Errorf("config persistido após atualização não confere:\n got  %+v\n want %+v", stored.Config, updated)
+	}
+}
+
+func TestUpdateSettingsInvalidConfig(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	valid := models.UserConfig{
+		Theme: "dark",
+		Display: models.Display{
+			FontSize:       "medium",
+			MessageDensity: "normal",
+		},
+	}
+
+	cases := []struct {
+		name   string
+		config models.UserConfig
+	}{
+		{"theme inválido", func() models.UserConfig { c := valid; c.Theme = "blue"; return c }()},
+		{"fontSize inválido", func() models.UserConfig { c := valid; c.Display.FontSize = "large"; return c }()},
+		{"messageDensity inválido", func() models.UserConfig { c := valid; c.Display.MessageDensity = "wide"; return c }()},
+		{"theme e fontSize inválidos", func() models.UserConfig { c := valid; c.Theme = ""; c.Display.FontSize = "xlarge"; return c }()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := services.UpdateSettings(testCtx(), user.ID, tc.config)
+			if !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+
+	// configurações inválidas não devem alterar o config persistido
+	if _, err := services.UpdateSettings(testCtx(), user.ID, valid); err != nil {
+		t.Fatalf("falha ao salvar config válido: %v", err)
+	}
+	_, err = services.UpdateSettings(testCtx(), user.ID, cases[0].config)
+	if !errors.Is(err, services.ErrInvalidInput) {
+		t.Fatalf("esperava ErrInvalidInput, obtive %v", err)
+	}
+	stored, err := storage.GetUserSettings(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserSettings retornou erro: %v", err)
+	}
+	if stored.Config != valid {
+		t.Errorf("config persistido mudou após tentativa inválida:\n got  %+v\n want %+v", stored.Config, valid)
+	}
+}
+
+func TestUpdateSettingsEmptyUserID(t *testing.T) {
+	config := models.UserConfig{
+		Theme: "dark",
+		Display: models.Display{
+			FontSize:       "medium",
+			MessageDensity: "normal",
+		},
+	}
+	_, err := services.UpdateSettings(testCtx(), "", config)
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
+	}
+}
+
+func TestUpdateSettingsNonexistentUser(t *testing.T) {
+	config := models.UserConfig{
+		Theme: "dark",
+		Display: models.Display{
+			FontSize:       "medium",
+			MessageDensity: "normal",
+		},
+	}
+	_, err := services.UpdateSettings(testCtx(), randUUID(), config)
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.BanUser ---
+
+func TestBanUser(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	if err := services.BanUser(testCtx(), user.ID, true); err != nil {
+		t.Fatalf("BanUser(true) retornou erro: %v", err)
+	}
+	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if !stored.Banned {
+		t.Error("esperava banned = true")
+	}
+
+	if err := services.BanUser(testCtx(), user.ID, false); err != nil {
+		t.Fatalf("BanUser(false) retornou erro: %v", err)
+	}
+	stored, err = storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if stored.Banned {
+		t.Error("esperava banned = false após desbanir")
+	}
+}
+
+// O dono do servidor NÃO PODE ser banível
+func TestBanServerOwner(t *testing.T) {
+	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+
+	name := newRandomServerName()
+	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+
+	_, err = services.CreateServerWithIcon(testCtx(), name, icon, "png", true, nil, &owner.ID)
+
+	if err != nil {
+		t.Fatalf("CreateServerWithIcon retornou erro: %v", err)
+	}
+	err = services.BanUser(testCtx(), owner.ID, true)
+
+	if !errors.Is(err, services.ErrServerOwner) {
+		t.Errorf("esperava ErrServerOwner para tentar banir dono do servidor, obtive %v", err)
+	}
+
+}
+
+func TestBanUserEmptyUserID(t *testing.T) {
+	if err := services.BanUser(testCtx(), "", true); !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id vazio, obtive %v", err)
+	}
+}
+
+func TestBanUserNonexistentUser(t *testing.T) {
+	if err := services.BanUser(testCtx(), randUUID(), true); !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.ResetUserPassword ---
+
+func TestResetUserPassword(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	if err := services.ResetUserPassword(testCtx(), user.ID); err != nil {
+		t.Fatalf("ResetUserPassword retornou erro: %v", err)
+	}
+	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if !stored.ResetPassword {
+		t.Error("esperava reset_password = true")
+	}
+}
+
+func TestResetUserPasswordEmptyUserID(t *testing.T) {
+	if err := services.ResetUserPassword(testCtx(), ""); !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id vazio, obtive %v", err)
+	}
+}
+
+func TestResetUserPasswordNonexistentUser(t *testing.T) {
+	if err := services.ResetUserPassword(testCtx(), randUUID()); !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.ListUsers ---
+
+func TestListUsers(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	users, err := services.ListUsers(testCtx(), nil, "")
+	if err != nil {
+		t.Fatalf("ListUsers retornou erro: %v", err)
+	}
+
+	byID := make(map[string]models.UserSummary, len(users.Users))
+	for _, u := range users.Users {
+		byID[u.ID] = u
+	}
+	got, ok := byID[user.ID]
+	if !ok {
+		t.Fatalf("usuário %s não aparece na listagem", user.ID)
+	}
+	if got.Username != user.Username {
+		t.Errorf("esperava username %q, obtive %q", user.Username, got.Username)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+}
+
+// --- services.ChangePassword ---
+
+func TestChangePassword(t *testing.T) {
+	password := newRandomPassword()
+	user, err := services.Register(testCtx(), newRandomUsername(), password, newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	if err := services.ResetUserPassword(testCtx(), user.ID); err != nil {
+		t.Fatalf("ResetUserPassword retornou erro: %v", err)
+	}
+
+	newPassword := newRandomPassword()
+	if err := services.ChangePassword(testCtx(), user.ID, newPassword); err != nil {
+		t.Fatalf("ChangePassword retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetUserByUsername(testCtx(), user.Username)
+	if err != nil {
+		t.Fatalf("GetUserByUsername retornou erro: %v", err)
+	}
+	if err := utils.CheckPassword(newPassword, stored.PasswordHash); err != nil {
+		t.Errorf("CheckPassword falhou para o novo hash persistido: %v", err)
+	}
+	if err := utils.CheckPassword(password, stored.PasswordHash); err == nil {
+		t.Error("a senha antiga deveria deixar de validar após a troca")
+	}
+	if stored.ResetPassword {
+		t.Error("esperava reset_password = false após trocar a senha")
+	}
+}
+
+func TestChangePasswordBoundaryLengths(t *testing.T) {
+	MaxPasswordLength, _ := getMaxLenFields()
+
+	password := newRandomPassword()
+	user, err := services.Register(testCtx(), newRandomUsername(), password, newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	err = storage.SetUserResetPassword(testCtx(), user.ID)
+
+	if err != nil {
+		t.Fatalf("SetUserResetPassword retornou erro: %v", err)
+	}
+
+	boundaryPassword := strings.Repeat("b", MaxPasswordLength)
+
+	err = storage.SetUserResetPassword(testCtx(), user.ID)
+
+	if err != nil {
+		t.Fatalf("SetUserResetPassword retornou erro: %v", err)
+	}
+
+	if err := services.ChangePassword(testCtx(), user.ID, boundaryPassword); err != nil {
+		t.Fatalf("ChangePassword com senha no limite retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetUserByUsername(testCtx(), user.Username)
+	if err != nil {
+		t.Fatalf("GetUserByUsername retornou erro: %v", err)
+	}
+	if err := utils.CheckPassword(boundaryPassword, stored.PasswordHash); err != nil {
+		t.Errorf("CheckPassword falhou para o hash persistido: %v", err)
+	}
+}
+
+func TestChangePasswordInvalidInput(t *testing.T) {
+	MaxPasswordLength, _ := getMaxLenFields()
+
+	password := newRandomPassword()
+	user, err := services.Register(testCtx(), newRandomUsername(), password, newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	err = storage.SetUserResetPassword(testCtx(), user.ID)
+
+	if err != nil {
+		t.Fatalf("SetUserResetPassword retornou erro: %v", err)
+	}
+
+	if err := services.ChangePassword(testCtx(), user.ID, ""); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para senha vazia, obtive %v", err)
+	}
+
+	err = storage.SetUserResetPassword(testCtx(), user.ID)
+
+	if err != nil {
+		t.Fatalf("SetUserResetPassword retornou erro: %v", err)
+	}
+
+	longPassword := strings.Repeat("a", MaxPasswordLength+1)
+	if err := services.ChangePassword(testCtx(), user.ID, longPassword); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para senha acima do limite, obtive %v", err)
+	}
+
+	stored, err := storage.GetUserByUsername(testCtx(), user.Username)
+	if err != nil {
+		t.Fatalf("GetUserByUsername retornou erro: %v", err)
+	}
+	if err := utils.CheckPassword(password, stored.PasswordHash); err != nil {
+		t.Error("a senha original deveria continuar válida após tentativas inválidas")
+	}
+}
+func TestChangePasswordNoReset(t *testing.T) {
+
+	password := newRandomPassword()
+	user, err := services.Register(testCtx(), newRandomUsername(), password, newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	if err := services.ChangePassword(testCtx(), user.ID, newRandomPassword()); !errors.Is(err, services.ErrUserNotReset) {
+		t.Errorf("esperava ErrUserNotReset para não reset_password, obtive %v", err)
+	}
+}
+
+func TestChangePasswordEmptyUserID(t *testing.T) {
+	if err := services.ChangePassword(testCtx(), "", newRandomPassword()); !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id vazio, obtive %v", err)
+	}
+}
+
+func TestChangePasswordNonexistentUser(t *testing.T) {
+	if err := services.ChangePassword(testCtx(), randUUID(), newRandomPassword()); !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.CreateServer ---
+
+// newRandomServerName gera um nome de servidor único (a constraint UNIQUE de
+// servers.name é global).
+func newRandomServerName() string {
+	return "srv" + randHex(4)
+}
+
+func TestCreateServer(t *testing.T) {
+	cleanServers(testCtx())
+	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+
+	name := newRandomServerName()
+	server, err := services.CreateServer(testCtx(), name, &owner.ID)
+	if err != nil {
+		t.Fatalf("CreateServer retornou erro: %v", err)
+	}
+
+	if server.ID == "" {
+		t.Error("esperava server.ID preenchido")
+	}
+	if server.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, server.Name)
+	}
+	if server.OwnerID == nil || *server.OwnerID != owner.ID {
+		t.Errorf("esperava owner_id %s, obtive %v", owner.ID, server.OwnerID)
+	}
+	if server.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+
+	// o servidor deve ter sido persistido
+	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServerByID retornou erro: %v", err)
+	}
+	if stored.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, stored.Name)
+	}
+	if stored.OwnerID == nil || *stored.OwnerID != owner.ID {
+		t.Errorf("esperava owner_id %s, obtive %v", owner.ID, stored.OwnerID)
+	}
+}
+
+func TestCreateServerWithoutOwner(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("CreateServer retornou erro: %v", err)
+	}
+
+	if server.OwnerID != nil {
+		t.Errorf("esperava owner_id nulo, obtive %v", *server.OwnerID)
+	}
+
+	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServerByID retornou erro: %v", err)
+	}
+	if stored.OwnerID != nil {
+		t.Errorf("esperava owner_id nulo no banco, obtive %v", *stored.OwnerID)
+	}
+}
+
+func TestCreateServerEmptyName(t *testing.T) {
+	cleanServers(testCtx())
+	_, err := services.CreateServer(testCtx(), "", nil)
+	if !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para nome vazio, obtive %v", err)
+	}
+}
+
+func TestCreateServerWithIcon(t *testing.T) {
+	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+
+	name := newRandomServerName()
+	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+
+	server, err := services.CreateServerWithIcon(testCtx(), name, icon, "png", true, nil, &owner.ID)
+	if err != nil {
+		t.Fatalf("CreateServerWithIcon retornou erro: %v", err)
+	}
+
+	if server.ID == "" {
+		t.Error("esperava server.ID preenchido")
+	}
+	if server.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, server.Name)
+	}
+	if server.OwnerID == nil || *server.OwnerID != owner.ID {
+		t.Errorf("esperava owner_id %s, obtive %v", owner.ID, server.OwnerID)
+	}
+	// o formato deve ser normalizado para maiúsculas
+	if server.IconFormat != "PNG" {
+		t.Errorf("esperava icon_format %q, obtive %q", "PNG", server.IconFormat)
+	}
+	if !bytes.Equal(server.IconBlob, pngAvatarBytes(100, 100)) {
+		t.Errorf("icon_blob não confere:\n got  %x\n want %x", server.IconBlob, pngAvatarBytes(100, 100))
+	}
+	if server.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+
+	// o servidor deve ter sido persistido
+	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServerByID retornou erro: %v", err)
+	}
+	if stored.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, stored.Name)
+	}
+	if stored.IconFormat != "PNG" {
+		t.Errorf("esperava icon_format %q, obtive %q", "PNG", stored.IconFormat)
+	}
+	if !bytes.Equal(stored.IconBlob, pngAvatarBytes(100, 100)) {
+		t.Errorf("icon_blob persistido não confere: %x", stored.IconBlob)
+	}
+}
+
+func TestCreateServerWithIconAllFormats(t *testing.T) {
+	cases := []struct {
+		name   string
+		format string
+		icon   []byte
+	}{
+		{"PNG", "PNG", pngAvatarBytes(100, 100)},
+		{"JPEG", "JPEG", jpegAvatarBytes(100, 100)},
+		{"GIF", "GIF", gifAvatarBytes(100, 100)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cleanServers(testCtx())
+			icon := base64.StdEncoding.EncodeToString(tc.icon)
+			server, err := services.CreateServerWithIcon(testCtx(), newRandomServerName(), icon, tc.format, true, nil, nil)
+			if err != nil {
+				t.Fatalf("CreateServerWithIcon retornou erro: %v", err)
+			}
+
+			stored, err := storage.GetServerByID(testCtx(), server.ID)
+			if err != nil {
+				t.Fatalf("GetServerByID retornou erro: %v", err)
+			}
+			if stored.IconFormat != tc.format {
+				t.Errorf("esperava icon_format %q, obtive %q", tc.format, stored.IconFormat)
+			}
+			if !bytes.Equal(stored.IconBlob, tc.icon) {
+				t.Errorf("icon_blob não confere:\n got  %x\n want %x", stored.IconBlob, tc.icon)
+			}
+		})
+	}
+}
+
+func TestCreateServerWithIconInvalidInput(t *testing.T) {
+	validIcon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+
+	cases := []struct {
+		name       string
+		serverName string
+		icon       string
+		iconFormat string
+	}{
+		{"nome vazio", "", validIcon, "PNG"},
+		{"nome acima de 32 caracteres", strings.Repeat("a", 33), validIcon, "PNG"},
+		{"base64 inválido", newRandomServerName(), "!!!nao-e-base64!!!", "PNG"},
+		{"formato não aceito", newRandomServerName(), validIcon, "BMP"},
+		{"formato vazio com ícone", newRandomServerName(), validIcon, ""},
+		{"conteúdo não corresponde ao formato", newRandomServerName(), validIcon, "GIF"},
+		{"ícone vazio com formato", newRandomServerName(), "", "PNG"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cleanServers(testCtx())
+			_, err := services.CreateServerWithIcon(testCtx(), tc.serverName, tc.icon, tc.iconFormat, true, nil, nil)
+			if !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateServerWithIconBoundaryNameLength(t *testing.T) {
+	// 32 caracteres multibyte (64 bytes) estão dentro do limite
+	name := strings.Repeat("ç", 32)
+	server, err := services.CreateServerWithIcon(testCtx(), name, "", "", true, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateServerWithIcon com nome de 32 caracteres retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServerByID retornou erro: %v", err)
+	}
+	if stored.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, stored.Name)
+	}
+}
+
+func TestCreateServerWithIconExceedsMaxSize(t *testing.T) {
+	cleanServers(testCtx())
+	// PNG válido com tamanho acima do limite de 2MB
+	oversized := make([]byte, 2<<20+1)
+	copy(oversized, pngAvatarBytes(100, 100))
+	icon := base64.StdEncoding.EncodeToString(oversized)
+
+	_, err := services.CreateServerWithIcon(testCtx(), newRandomServerName(), icon, "PNG", true, nil, nil)
+	if !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para ícone acima de 2MB, obtive %v", err)
+	}
+}
+
+func TestCreateServerWithIconBoundarySize(t *testing.T) {
+	cleanServers(testCtx())
+	// PNG válido com exatamente 2MB deve ser aceito
+	exact := make([]byte, 2<<20)
+	copy(exact, pngAvatarBytes(100, 100))
+	icon := base64.StdEncoding.EncodeToString(exact)
+
+	server, err := services.CreateServerWithIcon(testCtx(), newRandomServerName(), icon, "PNG", true, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateServerWithIcon com ícone de exatamente 2MB retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServerByID retornou erro: %v", err)
+	}
+	if len(stored.IconBlob) != 2<<20 {
+		t.Errorf("esperava icon_blob com %d bytes, obtive %d", 2<<20, len(stored.IconBlob))
+	}
+}
+
+// --- services.GetServer ---
+
+func TestGetServer(t *testing.T) {
+	cleanServers(testCtx())
+	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	// um canal para verificar o channel_count da visão ServerSummary
+	if _, err := storage.CreateChannel(testCtx(), server.ID, "ch_"+randHex(4), "text"); err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	// member_count é o total de usuários (storage)
+	users, err := services.ListUsers(testCtx(), nil, "")
+	if err != nil {
+		t.Fatalf("ListUsers retornou erro: %v", err)
+	}
+	wantMembers := len(users.Users)
+
+	summary, err := services.GetServer(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServer retornou erro: %v", err)
+	}
+
+	if summary.ID != server.ID {
+		t.Errorf("esperava id %s, obtive %s", server.ID, summary.ID)
+	}
+	if summary.Name != server.Name {
+		t.Errorf("esperava name %q, obtive %q", server.Name, summary.Name)
+	}
+	if summary.OwnerID == nil || *summary.OwnerID != owner.ID {
+		t.Errorf("esperava owner_id %s, obtive %v", owner.ID, summary.OwnerID)
+	}
+	if summary.OwnerUsername == nil || *summary.OwnerUsername != owner.Username {
+		t.Errorf("esperava owner_username %q, obtive %v", owner.Username, summary.OwnerUsername)
+	}
+	if summary.ChannelCount != 1 {
+		t.Errorf("esperava channel_count 1, obtive %d", summary.ChannelCount)
+	}
+	if summary.MemberCount != wantMembers {
+		t.Errorf("esperava member_count %d, obtive %d", wantMembers, summary.MemberCount)
+	}
+	if summary.RoleCount != 0 {
+		t.Errorf("esperava role_count 0, obtive %d", summary.RoleCount)
+	}
+	if len(summary.IconBlob) != 0 {
+		t.Errorf("esperava icon_blob vazio, obtive %x", summary.IconBlob)
+	}
+	if summary.IconFormat != "" {
+		t.Errorf("esperava icon_format vazio, obtive %q", summary.IconFormat)
+	}
+	if summary.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+}
+
+func TestGetServerEmptyID(t *testing.T) {
+	_, err := services.GetServer(testCtx(), "")
+	if !errors.Is(err, services.ErrServerNotFound) {
+		t.Errorf("esperava ErrServerNotFound para id vazio, obtive %v", err)
+	}
+}
+
+func TestGetServerNonexistent(t *testing.T) {
+	_, err := services.GetServer(testCtx(), randUUID())
+	if !errors.Is(err, services.ErrServerNotFound) {
+		t.Errorf("esperava ErrServerNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.ListServers ---
+
+func TestListServers(t *testing.T) {
+	cleanServers(testCtx())
+	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+
+	nameA := newRandomServerName()
+	serverA, err := services.CreateServer(testCtx(), nameA, &owner.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor A: %v", err)
+	}
+	summaries, err := services.ListServers(testCtx())
+	if err != nil {
+		t.Fatalf("ListServers retornou erro: %v", err)
+	}
+
+	byName := make(map[string]models.ServerSummary, len(summaries))
+	for _, s := range summaries {
+		byName[s.Name] = s
+	}
+
+	a, ok := byName[nameA]
+	if !ok {
+		t.Fatalf("servidor %q não encontrado na listagem", nameA)
+	}
+	if a.ID != serverA.ID {
+		t.Errorf("esperava id %s, obtive %s", serverA.ID, a.ID)
+	}
+	if a.OwnerUsername == nil || *a.OwnerUsername != owner.Username {
+		t.Errorf("esperava owner_username %q, obtive %v", owner.Username, a.OwnerUsername)
+	}
+	if a.ChannelCount != 0 {
+		t.Errorf("esperava channel_count 0, obtive %d", a.ChannelCount)
+	}
+}
+
+// --- services.UpdateServer ---
+
+func TestUpdateServer(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	newName := newRandomServerName()
+	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+
+	if err := services.UpdateServer(testCtx(), server.ID, newName, icon, "png", nil, nil); err != nil {
+		t.Fatalf("UpdateServer retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServerByID retornou erro: %v", err)
+	}
+	if stored.Name != newName {
+		t.Errorf("esperava name %q, obtive %q", newName, stored.Name)
+	}
+	// o formato deve ser normalizado para maiúsculas
+	if stored.IconFormat != "PNG" {
+		t.Errorf("esperava icon_format %q, obtive %q", "PNG", stored.IconFormat)
+	}
+	if !bytes.Equal(stored.IconBlob, pngAvatarBytes(100, 100)) {
+		t.Errorf("icon_blob não confere:\n got  %x\n want %x", stored.IconBlob, pngAvatarBytes(100, 100))
+	}
+}
+
+func TestUpdateServerAllFormats(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		format string
+		icon   []byte
+	}{
+		{"PNG", "PNG", pngAvatarBytes(100, 100)},
+		{"JPEG", "JPEG", jpegAvatarBytes(100, 100)},
+		{"GIF", "GIF", gifAvatarBytes(100, 100)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			icon := base64.StdEncoding.EncodeToString(tc.icon)
+			if err := services.UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, tc.format, nil, nil); err != nil {
+				t.Fatalf("UpdateServer retornou erro: %v", err)
+			}
+
+			stored, err := storage.GetServerByID(testCtx(), server.ID)
+			if err != nil {
+				t.Fatalf("GetServerByID retornou erro: %v", err)
+			}
+			if stored.IconFormat != tc.format {
+				t.Errorf("esperava icon_format %q, obtive %q", tc.format, stored.IconFormat)
+			}
+			if !bytes.Equal(stored.IconBlob, tc.icon) {
+				t.Errorf("icon_blob não confere:\n got  %x\n want %x", stored.IconBlob, tc.icon)
+			}
+		})
+	}
+}
+
+func TestUpdateServerRemovesIconWhenEmpty(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	// define um ícone inicialmente
+	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	if err := services.UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, "PNG", nil, nil); err != nil {
+		t.Fatalf("falha ao definir ícone inicial: %v", err)
+	}
+
+	// ícone e formato vazios devem remover o ícone
+	if err := services.UpdateServer(testCtx(), server.ID, newRandomServerName(), "", "", nil, nil); err != nil {
+		t.Fatalf("UpdateServer (remoção) retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServerByID retornou erro: %v", err)
+	}
+	if len(stored.IconBlob) != 0 {
+		t.Errorf("esperava icon_blob vazio, obtive %x", stored.IconBlob)
+	}
+	if stored.IconFormat != "" {
+		t.Errorf("esperava icon_format vazio, obtive %q", stored.IconFormat)
+	}
+}
+
+func TestUpdateServerInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	validIcon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+
+	cases := []struct {
+		name       string
+		serverName string
+		icon       string
+		iconFormat string
+	}{
+		{"base64 inválido", newRandomServerName(), "!!!nao-e-base64!!!", "PNG"},
+		{"formato não aceito", newRandomServerName(), validIcon, "BMP"},
+		{"formato vazio com ícone", newRandomServerName(), validIcon, ""},
+		{"conteúdo não corresponde ao formato", newRandomServerName(), validIcon, "GIF"},
+		{"ícone vazio com formato", newRandomServerName(), "", "PNG"},
+		{"nome vazio", "", validIcon, "PNG"},
+		{"nome acima de 32 caracteres", strings.Repeat("a", 33), validIcon, "PNG"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := services.UpdateServer(testCtx(), server.ID, tc.serverName, tc.icon, tc.iconFormat, nil, nil)
+			if !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+
+	// tentativas inválidas não devem alterar o servidor
+	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServerByID retornou erro: %v", err)
+	}
+	if stored.Name != server.Name {
+		t.Errorf("name mudou após tentativa inválida: esperado %q, obtive %q", server.Name, stored.Name)
+	}
+	if len(stored.IconBlob) != 0 {
+		t.Errorf("esperava icon_blob vazio, obtive %x", stored.IconBlob)
+	}
+	if stored.IconFormat != "" {
+		t.Errorf("esperava icon_format vazio, obtive %q", stored.IconFormat)
+	}
+}
+
+func TestUpdateServerBoundaryNameLength(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	// 32 caracteres multibyte (64 bytes) estão dentro do limite
+	name := strings.Repeat("ç", 32)
+	if err := services.UpdateServer(testCtx(), server.ID, name, "", "", nil, nil); err != nil {
+		t.Fatalf("UpdateServer com nome de 32 caracteres retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServerByID retornou erro: %v", err)
+	}
+	if stored.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, stored.Name)
+	}
+}
+
+func TestUpdateServerExceedsMaxSize(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	// PNG válido com tamanho acima do limite de 2MB
+	oversized := make([]byte, 2<<20+1)
+	copy(oversized, pngAvatarBytes(100, 100))
+	icon := base64.StdEncoding.EncodeToString(oversized)
+
+	err = services.UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, "PNG", nil, nil)
+	if !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para ícone acima de 2MB, obtive %v", err)
+	}
+}
+
+func TestUpdateServerBoundarySize(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	// PNG válido com exatamente 2MB deve ser aceito
+	exact := make([]byte, 2<<20)
+	copy(exact, pngAvatarBytes(100, 100))
+	icon := base64.StdEncoding.EncodeToString(exact)
+
+	if err := services.UpdateServer(testCtx(), server.ID, newRandomServerName(), icon, "PNG", nil, nil); err != nil {
+		t.Fatalf("UpdateServer com ícone de exatamente 2MB retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServerByID retornou erro: %v", err)
+	}
+	if len(stored.IconBlob) != 2<<20 {
+		t.Errorf("esperava icon_blob com %d bytes, obtive %d", 2<<20, len(stored.IconBlob))
+	}
+}
+
+func TestUpdateServerEmptyID(t *testing.T) {
+	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	err := services.UpdateServer(testCtx(), "", newRandomServerName(), icon, "PNG", nil, nil)
+	if !errors.Is(err, services.ErrServerNotFound) {
+		t.Errorf("esperava ErrServerNotFound para id vazio, obtive %v", err)
+	}
+}
+
+func TestUpdateServerNonexistent(t *testing.T) {
+	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	err := services.UpdateServer(testCtx(), randUUID(), newRandomServerName(), icon, "PNG", nil, nil)
+	if !errors.Is(err, services.ErrServerNotFound) {
+		t.Errorf("esperava ErrServerNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.ListChannels ---
+
+// newRandomChannelName gera um nome de canal único (a constraint UNIQUE de
+// channels.name é global).
+func newRandomChannelName() string {
+	return "ch" + randHex(4)
+}
+
+// newBoundaryChannelName gera um nome de canal único de exatamente 32
+// caracteres (runes) com conteúdo multibyte, para testar o limite de tamanho.
+func newBoundaryChannelName() string {
+	return randHex(4) + strings.Repeat("ç", 24)
+}
+
+// newRandomRoleName gera um nome de role único (constraint UNIQUE (server_id, name)).
+func newRandomRoleName() string {
+	return "role" + randHex(4)
+}
+
+func TestListChannels(t *testing.T) {
+	cleanServers(testCtx())
+	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	channelA, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal A: %v", err)
+	}
+	channelB, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal B: %v", err)
+	}
+
+	channels, err := services.ListChannels(testCtx(), nil)
+	if err != nil {
+		t.Fatalf("ListChannels retornou erro: %v", err)
+	}
+
+	byID := make(map[string]models.ChannelSummary, len(channels))
+	for _, c := range channels {
+		byID[c.ID] = c
+	}
+
+	for _, want := range []models.ChannelSummary{channelA, channelB} {
+		got, ok := byID[want.ID]
+		if !ok {
+			t.Fatalf("canal %q não encontrado na listagem", want.Name)
+		}
+		if got.ServerID != server.ID {
+			t.Errorf("esperava server_id %s, obtive %s", server.ID, got.ServerID)
+		}
+		if got.Name != want.Name {
+			t.Errorf("esperava name %q, obtive %q", want.Name, got.Name)
+		}
+		if got.Type != "text" {
+			t.Errorf("esperava type %q, obtive %q", "text", got.Type)
+		}
+		if len(got.Permissions) != 0 {
+			t.Errorf("esperava permissões vazias, obtive %+v", got.Permissions)
+		}
+		if got.LastMessage != nil {
+			t.Errorf("esperava last_message nula, obtive %+v", got.LastMessage)
+		}
+		if got.CreatedAt.IsZero() {
+			t.Error("esperava created_at preenchido")
+		}
+	}
+}
+
+func TestListChannelsFilterByServer(t *testing.T) {
+	cleanServers(testCtx())
+	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+
+	serverA, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor A: %v", err)
+	}
+
+	nameA := newRandomChannelName()
+	if _, err := services.CreateChannel(testCtx(), serverA.ID, nameA); err != nil {
+		t.Fatalf("falha ao criar canal A: %v", err)
+	}
+
+	channels, err := services.ListChannels(testCtx(), &serverA.ID)
+	if err != nil {
+		t.Fatalf("ListChannels retornou erro: %v", err)
+	}
+
+	if len(channels) != 1 {
+		t.Fatalf("esperava 1 canal no servidor A, obtive %d", len(channels))
+	}
+	if channels[0].Name != nameA {
+		t.Errorf("esperava canal %q, obtive %q", nameA, channels[0].Name)
+	}
+	if channels[0].ServerID != serverA.ID {
+		t.Errorf("esperava server_id %s, obtive %s", serverA.ID, channels[0].ServerID)
+	}
+}
+
+func TestListChannelsEmptyServerID(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	name := newRandomChannelName()
+	if _, err := services.CreateChannel(testCtx(), server.ID, name); err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	// serverID vazia (apontando para "") deve se comportar como sem filtro
+	empty := ""
+	channels, err := services.ListChannels(testCtx(), &empty)
+	if err != nil {
+		t.Fatalf("ListChannels retornou erro: %v", err)
+	}
+
+	found := false
+	for _, c := range channels {
+		if c.Name == name {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("canal %q não encontrado na listagem sem filtro", name)
+	}
+}
+
+func TestListChannelsLastMessage(t *testing.T) {
+	cleanServers(testCtx())
+	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+	author, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário autor: %v", err)
+	}
+
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	first, err := storage.CreateMessage(testCtx(), channel.ID, author.ID, "primeira mensagem", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar primeira mensagem: %v", err)
+	}
+
+	channels, err := services.ListChannels(testCtx(), &server.ID)
+	if err != nil {
+		t.Fatalf("ListChannels retornou erro: %v", err)
+	}
+	if len(channels) != 1 {
+		t.Fatalf("esperava 1 canal, obtive %d", len(channels))
+	}
+
+	last := channels[0].LastMessage
+	if last == nil {
+		t.Fatal("esperava last_message preenchida")
+	}
+	if last.ID != first.ID {
+		t.Errorf("esperava last_message.id %s, obtive %s", first.ID, last.ID)
+	}
+	if last.Content == nil {
+		t.Errorf("esperava content")
+	}
+	if *last.Content != "primeira mensagem" {
+		t.Errorf("esperava content %q, obtive %q", "primeira mensagem", *last.Content)
+	}
+	if last.AuthorID == nil || *last.AuthorID != author.ID {
+		t.Errorf("esperava author_id %s, obtive %v", author.ID, last.AuthorID)
+	}
+	if last.AuthorUsername == nil || *last.AuthorUsername != author.Username {
+		t.Errorf("esperava author_username %q, obtive %v", author.Username, last.AuthorUsername)
+	}
+	if !last.CreatedAt.Equal(first.CreatedAt) {
+		t.Errorf("esperava created_at %v, obtive %v", first.CreatedAt, last.CreatedAt)
+	}
+
+	// A segunda mensagem deve substituir a primeira como last_message.
+	// O intervalo garante timestamps distintos (o desempate da ordenação por id é aleatório).
+	time.Sleep(20 * time.Millisecond)
+	second, err := storage.CreateMessage(testCtx(), channel.ID, author.ID, "segunda mensagem", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar segunda mensagem: %v", err)
+	}
+
+	channels, err = services.ListChannels(testCtx(), &server.ID)
+	if err != nil {
+		t.Fatalf("ListChannels retornou erro: %v", err)
+	}
+	if len(channels) != 1 {
+		t.Fatalf("esperava 1 canal, obtive %d", len(channels))
+	}
+	last = channels[0].LastMessage
+	if last == nil {
+		t.Fatal("esperava last_message preenchida")
+	}
+	if last.ID != second.ID {
+		t.Errorf("esperava last_message.id %s, obtive %s", second.ID, last.ID)
+	}
+	if last.Content == nil {
+		t.Errorf("esperava content")
+	}
+	if *last.Content != "segunda mensagem" {
+		t.Errorf("esperava content %q, obtive %q", "segunda mensagem", *last.Content)
+	}
+}
+
+func TestListChannelsPermissionsExpanded(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	roleA, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role A: %v", err)
+	}
+	roleB, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role B: %v", err)
+	}
+
+	permA := models.ChannelPermission{ReadChannel: true, SendMessages: true, DeleteMessages: false}
+	permB := models.ChannelPermission{ReadChannel: false, SendMessages: false, DeleteMessages: true}
+	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleA.ID, permA); err != nil {
+		t.Fatalf("falha ao atualizar permissões da role A: %v", err)
+	}
+	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleB.ID, permB); err != nil {
+		t.Fatalf("falha ao atualizar permissões da role B: %v", err)
+	}
+
+	channels, err := services.ListChannels(testCtx(), &server.ID)
+	if err != nil {
+		t.Fatalf("ListChannels retornou erro: %v", err)
+	}
+	if len(channels) != 1 {
+		t.Fatalf("esperava 1 canal, obtive %d", len(channels))
+	}
+
+	permissions := channels[0].Permissions
+	if len(permissions) != 2 {
+		t.Fatalf("esperava 2 permissões, obtive %d", len(permissions))
+	}
+	// as entradas devem estar ordenadas por role_id
+	if permissions[0].RoleID > permissions[1].RoleID {
+		t.Error("esperava permissões ordenadas por role_id")
+	}
+
+	byRoleID := make(map[string]models.ChannelPermissionEntry, len(permissions))
+	for _, p := range permissions {
+		byRoleID[p.RoleID] = p
+	}
+
+	if got := byRoleID[roleA.ID]; got.RoleName != roleA.Name || got.Permissions != permA {
+		t.Errorf("permissões da role A não conferem: got %+v", got)
+	}
+	if got := byRoleID[roleB.ID]; got.RoleName != roleB.Name || got.Permissions != permB {
+		t.Errorf("permissões da role B não conferem: got %+v", got)
+	}
+}
+
+// --- services.CreateChannel ---
+
+func TestCreateChannel(t *testing.T) {
+	cleanServers(testCtx())
+	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	name := newRandomChannelName()
+	summary, err := services.CreateChannel(testCtx(), server.ID, name)
+	if err != nil {
+		t.Fatalf("CreateChannel retornou erro: %v", err)
+	}
+
+	if summary.ID == "" {
+		t.Error("esperava id preenchido")
+	}
+	if summary.ServerID != server.ID {
+		t.Errorf("esperava server_id %s, obtive %s", server.ID, summary.ServerID)
+	}
+	if summary.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, summary.Name)
+	}
+	if summary.Type != "text" {
+		t.Errorf("esperava type %q, obtive %q", "text", summary.Type)
+	}
+	if len(summary.Permissions) != 0 {
+		t.Errorf("esperava permissões vazias, obtive %+v", summary.Permissions)
+	}
+	if summary.LastMessage != nil {
+		t.Errorf("esperava last_message nula, obtive %+v", summary.LastMessage)
+	}
+	if summary.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+
+	// o canal deve ter sido persistido
+	stored, err := storage.GetChannelByID(testCtx(), summary.ID)
+	if err != nil {
+		t.Fatalf("GetChannelByID retornou erro: %v", err)
+	}
+	if stored.ServerID != server.ID {
+		t.Errorf("esperava server_id %s, obtive %s", server.ID, stored.ServerID)
+	}
+	if stored.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, stored.Name)
+	}
+	if stored.Type != "text" {
+		t.Errorf("esperava type %q, obtive %q", "text", stored.Type)
+	}
+	if len(stored.Permissions) != 0 {
+		t.Errorf("esperava permissões vazias no banco, obtive %+v", stored.Permissions)
+	}
+}
+
+func TestCreateChannelInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	cases := []struct {
+		name     string
+		serverID string
+		channel  string
+	}{
+		{"server_id vazio", "", newRandomChannelName()},
+		{"nome vazio", server.ID, ""},
+		{"nome acima de 32 caracteres", server.ID, strings.Repeat("a", 33)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := services.CreateChannel(testCtx(), tc.serverID, tc.channel)
+			if !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateChannelBoundaryNameLength(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	// 32 caracteres (runes) com conteúdo multibyte estão dentro do limite
+	name := newBoundaryChannelName()
+	summary, err := services.CreateChannel(testCtx(), server.ID, name)
+	if err != nil {
+		t.Fatalf("CreateChannel com nome de 32 caracteres retornou erro: %v", err)
+	}
+	if summary.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, summary.Name)
+	}
+}
+
+func TestCreateChannelNonexistentServer(t *testing.T) {
+	_, err := services.CreateChannel(testCtx(), randUUID(), newRandomChannelName())
+	if !errors.Is(err, services.ErrServerNotFound) {
+		t.Errorf("esperava ErrServerNotFound para servidor inexistente, obtive %v", err)
+	}
+}
+
+func TestCreateChannelNameTaken(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	name := newRandomChannelName()
+	if _, err := services.CreateChannel(testCtx(), server.ID, name); err != nil {
+		t.Fatalf("falha ao criar primeiro canal: %v", err)
+	}
+
+	_, err = services.CreateChannel(testCtx(), server.ID, name)
+	if !errors.Is(err, services.ErrChannelNameTaken) {
+		t.Errorf("esperava ErrChannelNameTaken, obtive %v", err)
+	}
+
+	// a tentativa duplicada não deve criar um segundo registro
+	channels, err := storage.ListChannelsByServer(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("ListChannelsByServer retornou erro: %v", err)
+	}
+	count := 0
+	for _, c := range channels {
+		if c.Name == name {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("esperava 1 canal com o nome %q, obtive %d", name, count)
+	}
+}
+
+// --- services.UpdateChannel ---
+
+func TestUpdateChannel(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+	role, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	permission := models.ChannelPermission{ReadChannel: true, SendMessages: true}
+	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission); err != nil {
+		t.Fatalf("falha ao atualizar permissões: %v", err)
+	}
+
+	newName := newRandomChannelName()
+	summary, err := services.UpdateChannel(testCtx(), channel.ID, newName)
+	if err != nil {
+		t.Fatalf("UpdateChannel retornou erro: %v", err)
+	}
+
+	if summary.ID != channel.ID {
+		t.Errorf("esperava id %s, obtive %s", channel.ID, summary.ID)
+	}
+	if summary.ServerID != server.ID {
+		t.Errorf("esperava server_id %s, obtive %s", server.ID, summary.ServerID)
+	}
+	if summary.Name != newName {
+		t.Errorf("esperava name %q, obtive %q", newName, summary.Name)
+	}
+	if summary.Type != "text" {
+		t.Errorf("esperava type %q, obtive %q", "text", summary.Type)
+	}
+	if summary.LastMessage != nil {
+		t.Errorf("esperava last_message nula, obtive %+v", summary.LastMessage)
+	}
+	if summary.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+
+	// as permissões expandidas devem acompanhar o rename
+	if len(summary.Permissions) != 1 {
+		t.Fatalf("esperava 1 permissão, obtive %d", len(summary.Permissions))
+	}
+	if summary.Permissions[0].RoleID != role.ID {
+		t.Errorf("esperava role_id %s, obtive %s", role.ID, summary.Permissions[0].RoleID)
+	}
+	if summary.Permissions[0].RoleName != role.Name {
+		t.Errorf("esperava role_name %q, obtive %q", role.Name, summary.Permissions[0].RoleName)
+	}
+	if summary.Permissions[0].Permissions != permission {
+		t.Errorf("esperava permissões %v, obtive %v", permission, summary.Permissions[0].Permissions)
+	}
+
+	// o novo nome deve estar persistido
+	stored, err := storage.GetChannelByID(testCtx(), channel.ID)
+	if err != nil {
+		t.Fatalf("GetChannelByID retornou erro: %v", err)
+	}
+	if stored.Name != newName {
+		t.Errorf("esperava name persistido %q, obtive %q", newName, stored.Name)
+	}
+}
+
+func TestUpdateChannelEmptyID(t *testing.T) {
+	_, err := services.UpdateChannel(testCtx(), "", newRandomChannelName())
+	if !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para id vazio, obtive %v", err)
+	}
+}
+
+func TestUpdateChannelEmptyName(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	_, err = services.UpdateChannel(testCtx(), channel.ID, "")
+	if !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para nome vazio, obtive %v", err)
+	}
+}
+
+func TestUpdateChannelNameTooLong(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	_, err = services.UpdateChannel(testCtx(), channel.ID, strings.Repeat("a", 33))
+	if !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para nome acima de 32 caracteres, obtive %v", err)
+	}
+}
+
+func TestUpdateChannelBoundaryNameLength(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	// 32 caracteres (runes) com conteúdo multibyte estão dentro do limite
+	name := newBoundaryChannelName()
+	summary, err := services.UpdateChannel(testCtx(), channel.ID, name)
+	if err != nil {
+		t.Fatalf("UpdateChannel com nome de 32 caracteres retornou erro: %v", err)
+	}
+	if summary.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, summary.Name)
+	}
+}
+
+func TestUpdateChannelNonexistent(t *testing.T) {
+	_, err := services.UpdateChannel(testCtx(), randUUID(), newRandomChannelName())
+	if !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+func TestUpdateChannelNameTaken(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar primeiro canal: %v", err)
+	}
+	takenName := newRandomChannelName()
+	if _, err := services.CreateChannel(testCtx(), server.ID, takenName); err != nil {
+		t.Fatalf("falha ao criar segundo canal: %v", err)
+	}
+
+	_, err = services.UpdateChannel(testCtx(), channel.ID, takenName)
+	if !errors.Is(err, services.ErrChannelNameTaken) {
+		t.Errorf("esperava ErrChannelNameTaken, obtive %v", err)
+	}
+
+	// o rename recusado não deve alterar o nome original
+	stored, err := storage.GetChannelByID(testCtx(), channel.ID)
+	if err != nil {
+		t.Fatalf("GetChannelByID retornou erro: %v", err)
+	}
+	if stored.Name != channel.Name {
+		t.Errorf("esperava name original %q, obtive %q", channel.Name, stored.Name)
+	}
+}
+
+// --- services.DeleteChannel ---
+
+func TestDeleteChannel(t *testing.T) {
+	cleanServers(testCtx())
+	owner, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+	author, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário autor: %v", err)
+	}
+
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), &owner.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+	if _, err := storage.CreateMessage(testCtx(), channel.ID, author.ID, "mensagem do canal", nil); err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	if _, err := services.DeleteChannel(testCtx(), channel.ID); err != nil {
+		t.Fatalf("DeleteChannel retornou erro: %v", err)
+	}
+
+	if _, err := storage.GetChannelByID(testCtx(), channel.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("esperava canal removido, obtive %v", err)
+	}
+
+	// as mensagens do canal devem ser removidas em cascata (schema)
+	messages, err := storage.ListMessagesByChannel(testCtx(), channel.ID, nil, "", nil)
+	if err != nil {
+		t.Fatalf("ListMessagesByChannel retornou erro: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Errorf("esperava mensagens removidas em cascata, obtive %d", len(messages))
+	}
+}
+
+func TestDeleteChannelEmptyID(t *testing.T) {
+	_, err := services.DeleteChannel(testCtx(), "")
+	if !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para id vazio, obtive %v", err)
+	}
+}
+
+func TestDeleteChannelNonexistent(t *testing.T) {
+	_, err := services.DeleteChannel(testCtx(), randUUID())
+	if !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.ChangeChannelPosition (tarefa 8.4) ---
+
+func TestChangeChannelPosition(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	c1, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar primeiro canal: %v", err)
+	}
+	c2, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar segundo canal: %v", err)
+	}
+	c3, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar terceiro canal: %v", err)
+	}
+
+	summary, err := services.ChangeChannelPosition(testCtx(), c1.ID, 1, 3)
+	if err != nil {
+		t.Fatalf("ChangeChannelPosition retornou erro: %v", err)
+	}
+	if summary.ID != c1.ID || summary.Position != 3 {
+		t.Errorf("esperava canal %s na posição 3, obtive %s na posição %d", c1.ID, summary.ID, summary.Position)
+	}
+
+	channels, err := storage.ListChannelsByServer(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("ListChannelsByServer retornou erro: %v", err)
+	}
+	expected := []string{c2.ID, c3.ID, c1.ID}
+	for i, want := range expected {
+		if channels[i].ID != want {
+			t.Errorf("posição %d: esperava canal %s, obtive %s", i+1, want, channels[i].ID)
+		}
+	}
+}
+
+func TestChangeChannelPositionMoveUp(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	_, err = services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar primeiro canal: %v", err)
+	}
+	_, err = services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar segundo canal: %v", err)
+	}
+	c3, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar terceiro canal: %v", err)
+	}
+
+	summary, err := services.ChangeChannelPosition(testCtx(), c3.ID, 3, 1)
+	if err != nil {
+		t.Fatalf("ChangeChannelPosition retornou erro: %v", err)
+	}
+	if summary.ID != c3.ID || summary.Position != 1 {
+		t.Errorf("esperava canal %s na posição 1, obtive %s na posição %d", c3.ID, summary.ID, summary.Position)
+	}
+}
+
+func TestChangeChannelPositionSamePosition(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	_, err = services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar primeiro canal: %v", err)
+	}
+	c2, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar segundo canal: %v", err)
+	}
+
+	summary, err := services.ChangeChannelPosition(testCtx(), c2.ID, 2, 2)
+	if err != nil {
+		t.Fatalf("ChangeChannelPosition retornou erro: %v", err)
+	}
+	if summary.ID != c2.ID || summary.Position != 2 {
+		t.Errorf("esperava canal %s na posição 2, obtive %s na posição %d", c2.ID, summary.ID, summary.Position)
+	}
+}
+
+func TestChangeChannelPositionInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	c1, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		old  int
+		new  int
+	}{
+		{"old_position zero", 0, 1},
+		{"old_position negativo", -1, 1},
+		{"new_position zero", 1, 0},
+		{"new_position negativa", 1, -1},
+		{"new_position acima do último", 1, 2},
+		{"new_position muito acima", 1, 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := services.ChangeChannelPosition(testCtx(), c1.ID, tc.old, tc.new); !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+
+	stored, err := storage.GetChannelByID(testCtx(), c1.ID)
+	if err != nil {
+		t.Fatalf("GetChannelByID retornou erro: %v", err)
+	}
+	if stored.Position != 1 {
+		t.Errorf("esperava posição 1 inalterada, obtive %d", stored.Position)
+	}
+}
+
+func TestChangeChannelPositionNotFound(t *testing.T) {
+	if _, err := services.ChangeChannelPosition(testCtx(), "", 1, 1); !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para id vazio, obtive %v", err)
+	}
+	if _, err := services.ChangeChannelPosition(testCtx(), randUUID(), 1, 1); !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+func TestChangeChannelPositionConflict(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	c1, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar primeiro canal: %v", err)
+	}
+	c2, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar segundo canal: %v", err)
+	}
+	c3, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar terceiro canal: %v", err)
+	}
+
+	if _, err := services.ChangeChannelPosition(testCtx(), c1.ID, 2, 3); !errors.Is(err, services.ErrChannelPositionConflict) {
+		t.Fatalf("esperava ErrChannelPositionConflict, obtive %v", err)
+	}
+
+	channels, err := storage.ListChannelsByServer(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("ListChannelsByServer retornou erro: %v", err)
+	}
+	expected := []string{c1.ID, c2.ID, c3.ID}
+	for i, want := range expected {
+		if channels[i].ID != want {
+			t.Errorf("ordem alterada pelo conflito: %+v", channels)
+		}
+	}
+}
+
+// --- services.GetChannelPermissions ---
+
+func TestGetChannelPermissions(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	roleA, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role A: %v", err)
+	}
+	roleB, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role B: %v", err)
+	}
+
+	permA := models.ChannelPermission{ReadChannel: true, SendMessages: true, DeleteMessages: false}
+	permB := models.ChannelPermission{ReadChannel: false, SendMessages: false, DeleteMessages: true}
+	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleA.ID, permA); err != nil {
+		t.Fatalf("falha ao atualizar permissões da role A: %v", err)
+	}
+	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleB.ID, permB); err != nil {
+		t.Fatalf("falha ao atualizar permissões da role B: %v", err)
+	}
+
+	permissions, err := services.GetChannelPermissions(testCtx(), channel.ID)
+	if err != nil {
+		t.Fatalf("GetChannelPermissions retornou erro: %v", err)
+	}
+	if len(permissions) != 2 {
+		t.Fatalf("esperava 2 permissões, obtive %d", len(permissions))
+	}
+	// as entradas devem estar ordenadas por role_id
+	if permissions[0].RoleID > permissions[1].RoleID {
+		t.Error("esperava permissões ordenadas por role_id")
+	}
+
+	byRoleID := make(map[string]models.ChannelPermissionEntry, len(permissions))
+	for _, p := range permissions {
+		byRoleID[p.RoleID] = p
+	}
+
+	if got := byRoleID[roleA.ID]; got.RoleName != roleA.Name || got.Permissions != permA {
+		t.Errorf("permissões da role A não conferem: got %+v", got)
+	}
+	if got := byRoleID[roleB.ID]; got.RoleName != roleB.Name || got.Permissions != permB {
+		t.Errorf("permissões da role B não conferem: got %+v", got)
+	}
+}
+
+func TestGetChannelPermissionsEmpty(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	permissions, err := services.GetChannelPermissions(testCtx(), channel.ID)
+	if err != nil {
+		t.Fatalf("GetChannelPermissions retornou erro: %v", err)
+	}
+	if len(permissions) != 0 {
+		t.Errorf("esperava permissões vazias, obtive %+v", permissions)
+	}
+}
+
+func TestGetChannelPermissionsEmptyID(t *testing.T) {
+	_, err := services.GetChannelPermissions(testCtx(), "")
+	if !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para id vazio, obtive %v", err)
+	}
+}
+
+func TestGetChannelPermissionsNonexistent(t *testing.T) {
+	_, err := services.GetChannelPermissions(testCtx(), randUUID())
+	if !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.UpdateChannelPermissions ---
+
+func TestUpdateChannelPermissions(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+	role, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	permission := models.ChannelPermission{ReadChannel: true, SendMessages: false, DeleteMessages: true}
+
+	got, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission)
+	if err != nil {
+		t.Fatalf("UpdateChannelPermissions retornou erro: %v", err)
+	}
+	if got != permission {
+		t.Errorf("esperava %v, obtive %v", permission, got)
+	}
+
+	stored, err := storage.GetChannelByID(testCtx(), channel.ID)
+	if err != nil {
+		t.Fatalf("GetChannelByID retornou erro: %v", err)
+	}
+	if stored.Permissions[role.ID] != permission {
+		t.Errorf("permissão persistida não confere: got %v", stored.Permissions[role.ID])
+	}
+}
+
+func TestUpdateChannelPermissionsReplacesExisting(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+	role, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	first := models.ChannelPermission{ReadChannel: true, SendMessages: true, DeleteMessages: true}
+	second := models.ChannelPermission{ReadChannel: true, SendMessages: false, DeleteMessages: false}
+
+	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, first); err != nil {
+		t.Fatalf("falha ao atualizar permissões (primeira): %v", err)
+	}
+	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, second); err != nil {
+		t.Fatalf("falha ao atualizar permissões (segunda): %v", err)
+	}
+
+	stored, err := storage.GetChannelByID(testCtx(), channel.ID)
+	if err != nil {
+		t.Fatalf("GetChannelByID retornou erro: %v", err)
+	}
+	if stored.Permissions[role.ID] != second {
+		t.Errorf("esperava permissão substituída %v, obtive %v", second, stored.Permissions[role.ID])
+	}
+}
+
+func TestUpdateChannelPermissionsMultipleRoles(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	roleA, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role A: %v", err)
+	}
+	roleB, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role B: %v", err)
+	}
+
+	permA := models.ChannelPermission{ReadChannel: true, SendMessages: true, DeleteMessages: false}
+	permB := models.ChannelPermission{ReadChannel: true, SendMessages: false, DeleteMessages: true}
+
+	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleA.ID, permA); err != nil {
+		t.Fatalf("falha ao atualizar permissões da role A: %v", err)
+	}
+	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, roleB.ID, permB); err != nil {
+		t.Fatalf("falha ao atualizar permissões da role B: %v", err)
+	}
+
+	stored, err := storage.GetChannelByID(testCtx(), channel.ID)
+	if err != nil {
+		t.Fatalf("GetChannelByID retornou erro: %v", err)
+	}
+	if len(stored.Permissions) != 2 {
+		t.Fatalf("esperava 2 permissões, obtive %d", len(stored.Permissions))
+	}
+	if stored.Permissions[roleA.ID] != permA {
+		t.Errorf("permissão da role A não confere: got %v", stored.Permissions[roleA.ID])
+	}
+	if stored.Permissions[roleB.ID] != permB {
+		t.Errorf("permissão da role B não confere: got %v", stored.Permissions[roleB.ID])
+	}
+}
+
+func TestUpdateChannelPermissionsNonexistentRole(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	_, err = services.UpdateChannelPermissions(testCtx(), channel.ID, randUUID(), models.ChannelPermission{ReadChannel: true})
+	if !errors.Is(err, services.ErrRoleNotFound) {
+		t.Errorf("esperava ErrRoleNotFound para role inexistente, obtive %v", err)
+	}
+}
+
+func TestUpdateChannelPermissionsEmptyChannelID(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	_, err = services.UpdateChannelPermissions(testCtx(), "", role.ID, models.ChannelPermission{})
+	if !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para channel_id vazio, obtive %v", err)
+	}
+}
+
+func TestUpdateChannelPermissionsEmptyRoleID(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	_, err = services.UpdateChannelPermissions(testCtx(), channel.ID, "", models.ChannelPermission{})
+	if !errors.Is(err, services.ErrRoleNotFound) {
+		t.Errorf("esperava ErrRoleNotFound para role_id vazio, obtive %v", err)
+	}
+}
+
+func TestUpdateChannelPermissionsNonexistentChannel(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	_, err = services.UpdateChannelPermissions(testCtx(), randUUID(), role.ID, models.ChannelPermission{})
+	if !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para canal inexistente, obtive %v", err)
+	}
+}
+
+func strPtr(s string) *string {
+	return &s
+}
+
+// --- services.ListRoles ---
+func TestListRoles(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	permsA := models.RolePermissions{ManageRoles: true, BanMembers: true}
+	roleA, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), strPtr("#FF0000"), permsA)
+	if err != nil {
+		t.Fatalf("falha ao criar role A: %v", err)
+	}
+	roleB, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role B: %v", err)
+	}
+
+	roles, err := services.ListRoles(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("ListRoles retornou erro: %v", err)
+	}
+	if len(roles) != 2 {
+		t.Fatalf("esperava 2 roles, obtive %d", len(roles))
+	}
+
+	byID := make(map[string]models.Role, len(roles))
+	for _, r := range roles {
+		byID[r.ID] = r
+	}
+
+	gotA, ok := byID[roleA.ID]
+	if !ok {
+		t.Fatalf("role A ausente da listagem: %+v", roles)
+	}
+	if gotA.ServerID != server.ID {
+		t.Errorf("esperava server_id %s, obtive %s", server.ID, gotA.ServerID)
+	}
+	if gotA.Color == nil || *gotA.Color != "#FF0000" {
+		t.Errorf("esperava color #FF0000, obtive %v", gotA.Color)
+	}
+	if gotA.Permissions != permsA {
+		t.Errorf("esperava permissões %v, obtive %v", permsA, gotA.Permissions)
+	}
+
+	gotB, ok := byID[roleB.ID]
+	if !ok {
+		t.Fatalf("role B ausente da listagem: %+v", roles)
+	}
+	if gotB.Color != nil {
+		t.Errorf("esperava color nula, obtive %v", *gotB.Color)
+	}
+}
+
+func TestListRolesEmptyServerID(t *testing.T) {
+	_, err := services.ListRoles(testCtx(), "")
+	if !errors.Is(err, services.ErrServerNotFound) {
+		t.Errorf("esperava ErrServerNotFound para server_id vazio, obtive %v", err)
+	}
+}
+
+func TestListRolesNonexistentServer(t *testing.T) {
+	_, err := services.ListRoles(testCtx(), randUUID())
+	if !errors.Is(err, services.ErrServerNotFound) {
+		t.Errorf("esperava ErrServerNotFound para servidor inexistente, obtive %v", err)
+	}
+}
+
+// --- services.CreateRole ---
+
+func TestCreateRole(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	name := newRandomRoleName()
+	color := "#FF0000"
+	perms := models.RolePermissions{ManageRoles: true, BanMembers: true, EveryoneMessage: true}
+	role, err := services.CreateRole(testCtx(), server.ID, name, &color, perms)
+	if err != nil {
+		t.Fatalf("CreateRole retornou erro: %v", err)
+	}
+
+	if role.ID == "" {
+		t.Error("esperava id preenchido")
+	}
+	if role.ServerID != server.ID {
+		t.Errorf("esperava server_id %s, obtive %s", server.ID, role.ServerID)
+	}
+	if role.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, role.Name)
+	}
+	if role.Color == nil || *role.Color != color {
+		t.Errorf("esperava color %q, obtive %v", color, role.Color)
+	}
+	if role.Permissions != perms {
+		t.Errorf("esperava permissões %v, obtive %v", perms, role.Permissions)
+	}
+	if role.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+
+	// a role deve ter sido persistida
+	stored, err := storage.GetRoleByID(testCtx(), role.ID)
+	if err != nil {
+		t.Fatalf("GetRoleByID retornou erro: %v", err)
+	}
+	if stored.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, stored.Name)
+	}
+	if stored.Color == nil || *stored.Color != color {
+		t.Errorf("esperava color %q no banco, obtive %v", color, stored.Color)
+	}
+	if stored.Permissions != perms {
+		t.Errorf("esperava permissões %v no banco, obtive %v", perms, stored.Permissions)
+	}
+}
+
+func TestCreateRoleWithoutColor(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("CreateRole sem color retornou erro: %v", err)
+	}
+	if role.Color != nil {
+		t.Errorf("esperava color nula, obtive %v", *role.Color)
+	}
+
+	stored, err := storage.GetRoleByID(testCtx(), role.ID)
+	if err != nil {
+		t.Fatalf("GetRoleByID retornou erro: %v", err)
+	}
+	if stored.Color != nil {
+		t.Errorf("esperava color nula no banco, obtive %v", *stored.Color)
+	}
+}
+
+func TestCreateRoleInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	cases := []struct {
+		name     string
+		roleName string
+		color    *string
+	}{
+		{"nome vazio", "", nil},
+		{"nome acima de 32 caracteres", strings.Repeat("a", 33), nil},
+		{"cor sem prefixo #", newRandomRoleName(), strPtr("FF0000")},
+		{"cor com 3 dígitos", newRandomRoleName(), strPtr("#FFF")},
+		{"cor com 7 dígitos", newRandomRoleName(), strPtr("#1234567")},
+		{"cor com caracteres inválidos", newRandomRoleName(), strPtr("#GGGGGG")},
+		{"cor em formato nomeado", newRandomRoleName(), strPtr("red")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := services.CreateRole(testCtx(), server.ID, tc.roleName, tc.color, models.RolePermissions{})
+			if !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateRoleBoundaryNameLength(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	// 32 caracteres multibyte (64 bytes) estão dentro do limite
+	name := strings.Repeat("ç", 32)
+	role, err := services.CreateRole(testCtx(), server.ID, name, nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("CreateRole com nome de 32 caracteres retornou erro: %v", err)
+	}
+	if role.Name != name {
+		t.Errorf("esperava name %q, obtive %q", name, role.Name)
+	}
+}
+
+func TestCreateRoleNonexistentServer(t *testing.T) {
+	_, err := services.CreateRole(testCtx(), randUUID(), newRandomRoleName(), nil, models.RolePermissions{})
+	if !errors.Is(err, services.ErrServerNotFound) {
+		t.Errorf("esperava ErrServerNotFound para servidor inexistente, obtive %v", err)
+	}
+}
+
+// --- services.UpdateRole ---
+
+func TestUpdateRole(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), strPtr("#FF0000"), models.RolePermissions{ManageRoles: true})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	newName := newRandomRoleName()
+	newColor := "#00FF00"
+	newPerms := models.RolePermissions{BanMembers: true, EveryoneMessage: true}
+	updated, err := services.UpdateRole(testCtx(), role.ID, newName, &newColor, newPerms)
+	if err != nil {
+		t.Fatalf("UpdateRole retornou erro: %v", err)
+	}
+
+	if updated.ID != role.ID {
+		t.Errorf("esperava id %s, obtive %s", role.ID, updated.ID)
+	}
+	if updated.ServerID != server.ID {
+		t.Errorf("esperava server_id %s, obtive %s", server.ID, updated.ServerID)
+	}
+	if updated.Name != newName {
+		t.Errorf("esperava name %q, obtive %q", newName, updated.Name)
+	}
+	if updated.Color == nil || *updated.Color != newColor {
+		t.Errorf("esperava color %q, obtive %v", newColor, updated.Color)
+	}
+	if updated.Permissions != newPerms {
+		t.Errorf("esperava permissões %v, obtive %v", newPerms, updated.Permissions)
+	}
+	if !updated.CreatedAt.Equal(role.CreatedAt) {
+		t.Errorf("esperava created_at %s inalterado, obtive %s", role.CreatedAt, updated.CreatedAt)
+	}
+
+	// os novos valores devem estar persistidos
+	stored, err := storage.GetRoleByID(testCtx(), role.ID)
+	if err != nil {
+		t.Fatalf("GetRoleByID retornou erro: %v", err)
+	}
+	if stored.Name != newName {
+		t.Errorf("esperava name persistido %q, obtive %q", newName, stored.Name)
+	}
+	if stored.Color == nil || *stored.Color != newColor {
+		t.Errorf("esperava color persistido %q, obtive %v", newColor, stored.Color)
+	}
+	if stored.Permissions != newPerms {
+		t.Errorf("esperava permissões persistidas %v, obtive %v", newPerms, stored.Permissions)
+	}
+}
+
+func TestUpdateRoleClearsColor(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), strPtr("#FF0000"), models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	if _, err := services.UpdateRole(testCtx(), role.ID, newRandomRoleName(), nil, models.RolePermissions{}); err != nil {
+		t.Fatalf("UpdateRole com color nula retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetRoleByID(testCtx(), role.ID)
+	if err != nil {
+		t.Fatalf("GetRoleByID retornou erro: %v", err)
+	}
+	if stored.Color != nil {
+		t.Errorf("esperava color removida, obtive %v", *stored.Color)
+	}
+}
+
+func TestUpdateRoleEmptyID(t *testing.T) {
+	_, err := services.UpdateRole(testCtx(), "", newRandomRoleName(), nil, models.RolePermissions{})
+	if !errors.Is(err, services.ErrRoleNotFound) {
+		t.Errorf("esperava ErrRoleNotFound para id vazio, obtive %v", err)
+	}
+}
+
+func TestUpdateRoleInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	cases := []struct {
+		name     string
+		roleName string
+		color    *string
+	}{
+		{"nome vazio", "", nil},
+		{"nome acima de 32 caracteres", strings.Repeat("a", 33), nil},
+		{"cor sem prefixo #", newRandomRoleName(), strPtr("FF0000")},
+		{"cor com 3 dígitos", newRandomRoleName(), strPtr("#FFF")},
+		{"cor com caracteres inválidos", newRandomRoleName(), strPtr("#GGGGGG")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := services.UpdateRole(testCtx(), role.ID, tc.roleName, tc.color, models.RolePermissions{})
+			if !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+}
+
+func TestUpdateRoleNonexistent(t *testing.T) {
+	_, err := services.UpdateRole(testCtx(), randUUID(), newRandomRoleName(), nil, models.RolePermissions{})
+	if !errors.Is(err, services.ErrRoleNotFound) {
+		t.Errorf("esperava ErrRoleNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+func TestUpdateRoleNameTaken(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar primeira role: %v", err)
+	}
+	takenName := newRandomRoleName()
+	if _, err := services.CreateRole(testCtx(), server.ID, takenName, nil, models.RolePermissions{}); err != nil {
+		t.Fatalf("falha ao criar segunda role: %v", err)
+	}
+
+	_, err = services.UpdateRole(testCtx(), role.ID, takenName, nil, models.RolePermissions{})
+	if !errors.Is(err, services.ErrRoleNameTaken) {
+		t.Errorf("esperava ErrRoleNameTaken, obtive %v", err)
+	}
+
+	// o rename recusado não deve alterar o nome original
+	stored, err := storage.GetRoleByID(testCtx(), role.ID)
+	if err != nil {
+		t.Fatalf("GetRoleByID retornou erro: %v", err)
+	}
+	if stored.Name != role.Name {
+		t.Errorf("esperava name original %q, obtive %q", role.Name, stored.Name)
+	}
+}
+
+// --- services.DeleteRole ---
+
+func TestDeleteRole(t *testing.T) {
+	cleanServers(testCtx())
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{ManageRoles: true})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	if _, err := services.AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role ao usuário: %v", err)
+	}
+	permission := models.ChannelPermission{ReadChannel: true, SendMessages: true}
+	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission); err != nil {
+		t.Fatalf("falha ao atualizar permissões: %v", err)
+	}
+
+	if err := services.DeleteRole(testCtx(), role.ID); err != nil {
+		t.Fatalf("DeleteRole retornou erro: %v", err)
+	}
+
+	if _, err := storage.GetRoleByID(testCtx(), role.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("esperava role removida, obtive %v", err)
+	}
+
+	// as atribuições dos usuários devem ser removidas em cascata (schema)
+	if _, err := storage.GetUserRole(testCtx(), user.ID, role.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("esperava atribuição removida em cascata, obtive %v", err)
+	}
+
+	// a entrada da role nas permissões dos canais do servidor deve ser removida
+	stored, err := storage.GetChannelByID(testCtx(), channel.ID)
+	if err != nil {
+		t.Fatalf("GetChannelByID retornou erro: %v", err)
+	}
+	if _, ok := stored.Permissions[role.ID]; ok {
+		t.Errorf("esperava permissão da role removida do canal, obtive %v", stored.Permissions)
+	}
+}
+
+func TestDeleteRoleEmptyID(t *testing.T) {
+	err := services.DeleteRole(testCtx(), "")
+	if !errors.Is(err, services.ErrRoleNotFound) {
+		t.Errorf("esperava ErrRoleNotFound para id vazio, obtive %v", err)
+	}
+}
+
+func TestDeleteRoleNonexistent(t *testing.T) {
+	err := services.DeleteRole(testCtx(), randUUID())
+	if !errors.Is(err, services.ErrRoleNotFound) {
+		t.Errorf("esperava ErrRoleNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- services.AssignUserRole ---
+
+func TestAssignUserRole(t *testing.T) {
+	cleanServers(testCtx())
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	userRole, err := services.AssignUserRole(testCtx(), user.ID, role.ID)
+	if err != nil {
+		t.Fatalf("AssignUserRole retornou erro: %v", err)
+	}
+
+	if userRole.UserID != user.ID {
+		t.Errorf("esperava user_id %s, obtive %s", user.ID, userRole.UserID)
+	}
+	if userRole.RoleID != role.ID {
+		t.Errorf("esperava role_id %s, obtive %s", role.ID, userRole.RoleID)
+	}
+	if userRole.AssignedAt.IsZero() {
+		t.Error("esperava assigned_at preenchido")
+	}
+
+	// a atribuição deve ter sido persistida
+	stored, err := storage.GetUserRole(testCtx(), user.ID, role.ID)
+	if err != nil {
+		t.Fatalf("GetUserRole retornou erro: %v", err)
+	}
+	if stored.AssignedAt != userRole.AssignedAt {
+		t.Errorf("esperava assigned_at %s no banco, obtive %s", userRole.AssignedAt, stored.AssignedAt)
+	}
+
+	userRoles, err := storage.GetRolesByUser(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetRolesByUser retornou erro: %v", err)
+	}
+	if len(userRoles) != 1 || userRoles[0].ID != role.ID {
+		t.Errorf("esperava apenas a role %s no usuário, obtive %+v", role.ID, userRoles)
+	}
+}
+
+func TestAssignUserRoleAlreadyAssigned(t *testing.T) {
+	cleanServers(testCtx())
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	first, err := services.AssignUserRole(testCtx(), user.ID, role.ID)
+	if err != nil {
+		t.Fatalf("primeira AssignUserRole retornou erro: %v", err)
+	}
+
+	// atribuir a mesma role novamente é idempotente
+	second, err := services.AssignUserRole(testCtx(), user.ID, role.ID)
+	if err != nil {
+		t.Fatalf("segunda AssignUserRole retornou erro: %v", err)
+	}
+	if second.UserID != first.UserID || second.RoleID != first.RoleID {
+		t.Errorf("esperava a mesma atribuição %v, obtive %v", first, second)
+	}
+	if !second.AssignedAt.Equal(first.AssignedAt) {
+		t.Errorf("esperava assigned_at %s preservado, obtive %s", first.AssignedAt, second.AssignedAt)
+	}
+
+	// a atribuição duplicada não deve criar um segundo registro
+	roles, err := storage.GetRolesByUser(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetRolesByUser retornou erro: %v", err)
+	}
+	if len(roles) != 1 {
+		t.Errorf("esperava 1 role atribuída, obtive %d", len(roles))
+	}
+}
+
+func TestAssignUserRoleEmptyUserID(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	_, err = services.AssignUserRole(testCtx(), "", role.ID)
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para user_id vazio, obtive %v", err)
+	}
+}
+
+func TestAssignUserRoleEmptyRoleID(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	_, err = services.AssignUserRole(testCtx(), user.ID, "")
+	if !errors.Is(err, services.ErrRoleNotFound) {
+		t.Errorf("esperava ErrRoleNotFound para role_id vazio, obtive %v", err)
+	}
+}
+
+func TestAssignUserRoleNonexistentUser(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	_, err = services.AssignUserRole(testCtx(), randUUID(), role.ID)
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para usuário inexistente, obtive %v", err)
+	}
+}
+
+func TestAssignUserRoleNonexistentRole(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	_, err = services.AssignUserRole(testCtx(), user.ID, randUUID())
+	if !errors.Is(err, services.ErrRoleNotFound) {
+		t.Errorf("esperava ErrRoleNotFound para role inexistente, obtive %v", err)
+	}
+}
+
+// --- services.RemoveUserRole ---
+
+func TestRemoveUserRole(t *testing.T) {
+	cleanServers(testCtx())
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	if _, err := services.AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role ao usuário: %v", err)
+	}
+
+	if err := services.RemoveUserRole(testCtx(), user.ID, role.ID); err != nil {
+		t.Fatalf("RemoveUserRole retornou erro: %v", err)
+	}
+
+	if _, err := storage.GetUserRole(testCtx(), user.ID, role.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("esperava atribuição removida, obtive %v", err)
+	}
+}
+
+func TestRemoveUserRoleEmptyUserID(t *testing.T) {
+	cleanServers(testCtx())
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	err = services.RemoveUserRole(testCtx(), "", role.ID)
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para user_id vazio, obtive %v", err)
+	}
+}
+
+func TestRemoveUserRoleEmptyRoleID(t *testing.T) {
+	cleanServers(testCtx())
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	err = services.RemoveUserRole(testCtx(), user.ID, "")
+	if !errors.Is(err, services.ErrRoleNotFound) {
+		t.Errorf("esperava ErrRoleNotFound para role_id vazio, obtive %v", err)
+	}
+}
+
+func TestRemoveUserRoleNonexistentUser(t *testing.T) {
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	err = services.RemoveUserRole(testCtx(), randUUID(), role.ID)
+	if !errors.Is(err, services.ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para usuário inexistente, obtive %v", err)
+	}
+}
+
+func TestRemoveUserRoleNonexistentRole(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	err = services.RemoveUserRole(testCtx(), user.ID, randUUID())
+	if !errors.Is(err, services.ErrRoleNotFound) {
+		t.Errorf("esperava ErrRoleNotFound para role inexistente, obtive %v", err)
+	}
+}
+
+func TestRemoveUserRoleNotAssigned(t *testing.T) {
+	cleanServers(testCtx())
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), nil)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+	role, err := services.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+
+	err = services.RemoveUserRole(testCtx(), user.ID, role.ID)
+	if !errors.Is(err, services.ErrUserRoleNotFound) {
+		t.Errorf("esperava ErrUserRoleNotFound para role não atribuída, obtive %v", err)
+	}
+}
+
+// --- services.LoginServer / RequireServerAccess ---
+
+// removeAllServersTest limpa a tabela servers (as dependências são removidas
+// em cascata) para isolar os testes que dependem do estado do servidor do
+// backend (1 backend = 1 servidor).
+func removeAllServersTest(t *testing.T) {
+	t.Helper()
+	if _, err := storage.GetDB().ExecContext(testCtx(), "DELETE FROM servers"); err != nil {
+		t.Fatalf("falha ao limpar a tabela servers: %v", err)
+	}
+}
+
+// createNonPublicServerTest cria o servidor do backend como não público, com a
+// senha informada (hash bcrypt).
+func createNonPublicServerTest(t *testing.T, password string) {
+	t.Helper()
+	hash, err := utils.HashPassword(password)
+	if err != nil {
+		t.Fatalf("falha ao gerar hash da senha do servidor: %v", err)
+	}
+	if _, err := storage.CreateServerWithIcon(testCtx(), "server_"+randHex(8), nil, "", false, nil, &hash); err != nil {
+		t.Fatalf("falha ao criar servidor não público: %v", err)
+	}
+}
+
+// createPublicServerTest cria o servidor do backend como público.
+func createPublicServerTest(t *testing.T) {
+	t.Helper()
+	if _, err := storage.CreateServerWithIcon(testCtx(), "server_"+randHex(8), nil, "", true, nil, nil); err != nil {
+		t.Fatalf("falha ao criar servidor público: %v", err)
+	}
+}
+
+func TestLoginServerInvalidInput(t *testing.T) {
+	MaxPasswordLength, _ := getMaxLenFields()
+
+	cases := []struct {
+		name     string
+		password string
+	}{
+		{"senha vazia", ""},
+		{"senha acima do limite", strings.Repeat("a", MaxPasswordLength+1)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := services.LoginServer(testCtx(), tc.password, newRandomIP())
+			if !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+}
+
+func TestLoginServerBannedIP(t *testing.T) {
+	ip := newRandomIP()
+	bannedUser, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), ip)
+	if err != nil {
+		t.Fatalf("falha ao criar usuário para banir: %v", err)
+	}
+	if _, err := storage.SetUserBanned(testCtx(), bannedUser.ID, true); err != nil {
+		t.Fatalf("falha ao banir usuário: %v", err)
+	}
+
+	err = services.LoginServer(testCtx(), "qualquer_senha", ip)
+	if !errors.Is(err, services.ErrBannedIP) {
+		t.Errorf("esperava ErrBannedIP, obtive %v", err)
+	}
+}
+
+func TestLoginServerNotFound(t *testing.T) {
+	removeAllServersTest(t)
+
+	err := services.LoginServer(testCtx(), "qualquer_senha", newRandomIP())
+	if !errors.Is(err, services.ErrServerNotFound) {
+		t.Errorf("esperava ErrServerNotFound, obtive %v", err)
+	}
+}
+
+func TestLoginServerSuccessNonPublic(t *testing.T) {
+	password := "server_pw_" + randHex(4)
+	removeAllServersTest(t)
+	createNonPublicServerTest(t, password)
+
+	if err := services.LoginServer(testCtx(), password, newRandomIP()); err != nil {
+		t.Errorf("LoginServer com a senha correta retornou erro: %v", err)
+	}
+
+	err := services.LoginServer(testCtx(), "senha_incorreta_"+randHex(4), newRandomIP())
+	if !errors.Is(err, services.ErrInvalidCredentials) {
+		t.Errorf("esperava ErrInvalidCredentials para senha incorreta, obtive %v", err)
+	}
+}
+
+func TestLoginServerSuccessPublic(t *testing.T) {
+	removeAllServersTest(t)
+	createPublicServerTest(t)
+
+	if err := services.LoginServer(testCtx(), "qualquer_senha", newRandomIP()); err != nil {
+		t.Errorf("LoginServer em servidor público retornou erro: %v", err)
+	}
+}
+
+func TestRequireServerAccess(t *testing.T) {
+	cfg := config.LoadConfig()
+
+	t.Run("bootstrap sem servidor", func(t *testing.T) {
+		removeAllServersTest(t)
+		if err := services.RequireServerAccess(testCtx(), ""); err != nil {
+			t.Errorf("esperava sem erro no bootstrap, obtive %v", err)
+		}
+	})
+
+	t.Run("servidor público", func(t *testing.T) {
+		removeAllServersTest(t)
+		createPublicServerTest(t)
+		if err := services.RequireServerAccess(testCtx(), ""); err != nil {
+			t.Errorf("esperava sem erro em servidor público, obtive %v", err)
+		}
+	})
+
+	t.Run("servidor não público sem cookie", func(t *testing.T) {
+		removeAllServersTest(t)
+		createNonPublicServerTest(t, "server_pw_"+randHex(4))
+		if err := services.RequireServerAccess(testCtx(), ""); !errors.Is(err, services.ErrServerAccessRequired) {
+			t.Errorf("esperava ErrServerAccessRequired, obtive %v", err)
+		}
+	})
+
+	t.Run("servidor não público com cookie inválido", func(t *testing.T) {
+		removeAllServersTest(t)
+		createNonPublicServerTest(t, "server_pw_"+randHex(4))
+		if err := services.RequireServerAccess(testCtx(), "token-invalido"); !errors.Is(err, services.ErrServerAccessRequired) {
+			t.Errorf("esperava ErrServerAccessRequired, obtive %v", err)
+		}
+	})
+
+	t.Run("servidor não público com token de sessão", func(t *testing.T) {
+		removeAllServersTest(t)
+		createNonPublicServerTest(t, "server_pw_"+randHex(4))
+		sessionToken, err := utils.GenerateToken("usuario-teste", cfg.JWTSecret)
+		if err != nil {
+			t.Fatalf("falha ao gerar token de sessão: %v", err)
+		}
+		if err := services.RequireServerAccess(testCtx(), sessionToken); !errors.Is(err, services.ErrServerAccessRequired) {
+			t.Errorf("token de sessão não deveria conceder acesso, obtive %v", err)
+		}
+	})
+
+	t.Run("servidor não público com token temporário válido", func(t *testing.T) {
+		removeAllServersTest(t)
+		createNonPublicServerTest(t, "server_pw_"+randHex(4))
+		tempToken, err := utils.GenerateTempToken(cfg.JWTSecret)
+		if err != nil {
+			t.Fatalf("falha ao gerar token temporário: %v", err)
+		}
+		if err := services.RequireServerAccess(testCtx(), tempToken); err != nil {
+			t.Errorf("esperava sem erro com token temporário válido, obtive %v", err)
+		}
+	})
+}
+
+// --- services.ListMessages ---
+
+// newTestMessageUser registra um usuário de apoio para os testes de mensagem.
+func newTestMessageUser(t *testing.T) models.User {
+	t.Helper()
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário de apoio: %v", err)
+	}
+	return user
+}
+
+// newTestMessageChannel cria servidor e canal de apoio para os testes de mensagem.
+func newTestMessageChannel(t *testing.T, ownerID *string) (models.Server, models.ChannelSummary) {
+	t.Helper()
+	server, err := services.CreateServer(testCtx(), newRandomServerName(), ownerID)
+	if err != nil {
+		t.Fatalf("falha ao criar servidor de apoio: %v", err)
+	}
+	channel, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal de apoio: %v", err)
+	}
+	return server, channel
+}
+
+// grantChannelPermission atribui uma role com a permissão de canal informada
+// ao usuário e a vincula ao canal.
+func grantChannelPermission(t *testing.T, server models.Server, channel models.ChannelSummary, user models.User, permission models.ChannelPermission) {
+	t.Helper()
+	role, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role de apoio: %v", err)
+	}
+	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, permission); err != nil {
+		t.Fatalf("falha ao vincular permissão ao canal: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role ao usuário: %v", err)
+	}
+}
+
+func TestListMessages(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	reader := newTestMessageUser(t)
+	stranger := newTestMessageUser(t)
+	server, channel := newTestMessageChannel(t, &owner.ID)
+	grantChannelPermission(t, server, channel, reader, models.ChannelPermission{ReadChannel: true})
+
+	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "primeira mensagem", nil); err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "segunda mensagem", nil); err != nil {
+		t.Fatalf("falha ao criar segunda mensagem de apoio: %v", err)
+	}
+
+	// dono do servidor: sempre pode ler
+	list, err := services.ListMessages(testCtx(), channel.ID, owner.ID, nil, "")
+	if err != nil {
+		t.Fatalf("ListMessages do dono retornou erro: %v", err)
+	}
+	if list.ChannelID != channel.ID {
+		t.Errorf("esperava channel_id %s, obtive %s", channel.ID, list.ChannelID)
+	}
+	if len(list.Messages) != 2 {
+		t.Fatalf("esperava 2 mensagens, obtive %d", len(list.Messages))
+	}
+	if list.HasMore {
+		t.Error("esperava has_more false")
+	}
+
+	// usuário com read_channel: pode ler
+	if _, err := services.ListMessages(testCtx(), channel.ID, reader.ID, nil, ""); err != nil {
+		t.Errorf("ListMessages do leitor retornou erro: %v", err)
+	}
+
+	// usuário sem permissão no canal do servidor: negado
+	if _, err := services.ListMessages(testCtx(), channel.ID, stranger.ID, nil, ""); !errors.Is(err, services.ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied para usuário sem permissão, obtive %v", err)
+	}
+
+	// canal inexistente
+	if _, err := services.ListMessages(testCtx(), randUUID(), owner.ID, nil, ""); !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para canal inexistente, obtive %v", err)
+	}
+
+	// channel_id vazio
+	if _, err := services.ListMessages(testCtx(), "", owner.ID, nil, ""); !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para channel_id vazio, obtive %v", err)
+	}
+}
+
+func TestListMessagesSince(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+
+	first, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar primeira mensagem: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", nil); err != nil {
+		t.Fatalf("falha ao criar segunda mensagem: %v", err)
+	}
+
+	// since após a primeira mensagem: só a segunda
+	since := first.CreatedAt
+	list, err := services.ListMessages(testCtx(), channel.ID, owner.ID, timePtr(since), "")
+	if err != nil {
+		t.Fatalf("ListMessages com since retornou erro: %v", err)
+	}
+	if len(list.Messages) != 1 {
+		t.Fatalf("esperava 1 mensagem após o since, obtive %d", len(list.Messages))
+	}
+}
+
+func TestListMessagesHasMore(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+
+	for i := 0; i < 101; i++ {
+		if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem "+randHex(2), nil); err != nil {
+			t.Fatalf("falha ao criar mensagem de apoio %d: %v", i, err)
+		}
+	}
+
+	list, err := services.ListMessages(testCtx(), channel.ID, owner.ID, nil, "")
+	if err != nil {
+		t.Fatalf("ListMessages retornou erro: %v", err)
+	}
+	if !list.HasMore {
+		t.Error("esperava has_more true com 101 mensagens")
+	}
+	if len(list.Messages) != 100 {
+		t.Errorf("esperava 100 mensagens, obtive %d", len(list.Messages))
+	}
+}
+
+// --- services.CreateMessage ---
+
+func TestCreateMessage(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	writer := newTestMessageUser(t)
+	stranger := newTestMessageUser(t)
+	server, channel := newTestMessageChannel(t, &owner.ID)
+	grantChannelPermission(t, server, channel, writer, models.ChannelPermission{SendMessages: true})
+
+	// dono do servidor: sempre pode enviar
+	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "olá mundo", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage do dono retornou erro: %v", err)
+	}
+	if message.ID == "" {
+		t.Error("esperava id preenchido")
+	}
+	if message.ChannelID != channel.ID {
+		t.Errorf("esperava channel_id %s, obtive %s", channel.ID, message.ChannelID)
+	}
+	if message.AuthorID == nil || *message.AuthorID != owner.ID {
+		t.Errorf("esperava author_id %s, obtive %v", owner.ID, message.AuthorID)
+	}
+	if message.Content == nil || *message.Content != "olá mundo" {
+		t.Errorf("esperava content %q, obtive %v", "olá mundo", message.Content)
+	}
+	if message.EditedAt != nil {
+		t.Errorf("esperava edited_at nil, obtive %v", message.EditedAt)
+	}
+	if len(message.Attachments) != 0 {
+		t.Errorf("esperava 0 attachments, obtive %d", len(message.Attachments))
+	}
+
+	// usuário com send_messages: pode enviar
+	if _, err := services.CreateMessage(testCtx(), channel.ID, writer.ID, "mensagem do writer", nil); err != nil {
+		t.Errorf("CreateMessage do writer retornou erro: %v", err)
+	}
+
+	// usuário sem permissão no canal: negado
+	if _, err := services.CreateMessage(testCtx(), channel.ID, stranger.ID, "mensagem do estranho", nil); !errors.Is(err, services.ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied para usuário sem send_messages, obtive %v", err)
+	}
+}
+
+func TestCreateMessageInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+
+	// channel_id vazio
+	if _, err := services.CreateMessage(testCtx(), "", owner.ID, "conteúdo", nil); !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para channel_id vazio, obtive %v", err)
+	}
+
+	// canal inexistente
+	if _, err := services.CreateMessage(testCtx(), randUUID(), owner.ID, "conteúdo", nil); !errors.Is(err, services.ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound para canal inexistente, obtive %v", err)
+	}
+
+	// author_id vazio
+	if _, err := services.CreateMessage(testCtx(), channel.ID, "", "conteúdo", nil); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para author_id vazio, obtive %v", err)
+	}
+
+	// content acima do limite (8192 caracteres)
+	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, strings.Repeat("a", 8193), nil); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para content acima do limite, obtive %v", err)
+	}
+
+	// content vazio sem attachments
+	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "", nil); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para content vazio sem attachments, obtive %v", err)
+	}
+
+	// nome de attachment vazio
+	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "", []services.AttachmentInput{{OriginalFileName: "", Content: strings.NewReader("x")}}); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para nome de attachment vazio, obtive %v", err)
+	}
+
+	// nome de attachment acima do limite (128 caracteres)
+	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "", []services.AttachmentInput{{OriginalFileName: strings.Repeat("a", 129) + ".txt", Content: strings.NewReader("x")}}); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para nome de attachment acima do limite, obtive %v", err)
+	}
+}
+
+func TestCreateMessageBoundary(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+
+	// content exatamente no limite (8192 caracteres): aceito
+	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, strings.Repeat("a", 8192), nil); err != nil {
+		t.Errorf("CreateMessage com content no limite retornou erro: %v", err)
+	}
+
+	// nome de attachment exatamente no limite (128 caracteres): aceito
+	name := strings.Repeat("a", 127) + "b"
+	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "", []services.AttachmentInput{{OriginalFileName: name, Content: strings.NewReader("conteúdo")}}); err != nil {
+		t.Errorf("CreateMessage com nome de attachment no limite retornou erro: %v", err)
+	}
+}
+
+func TestCreateMessageMaxAttachments(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+
+	inputs := func(n int) []services.AttachmentInput {
+		list := make([]services.AttachmentInput, 0, n)
+		for i := 0; i < n; i++ {
+			list = append(list, services.AttachmentInput{
+				OriginalFileName: fmt.Sprintf("arquivo-%d.txt", i),
+				Content:          strings.NewReader(fmt.Sprintf("conteúdo %d", i)),
+			})
+		}
+		return list
+	}
+
+	// exatamente no limite (10 attachments): aceito
+	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "no limite", inputs(10))
+	if err != nil {
+		t.Fatalf("CreateMessage com 10 attachments retornou erro: %v", err)
+	}
+	if len(message.Attachments) != 10 {
+		t.Errorf("esperava 10 attachments, obtive %d", len(message.Attachments))
+	}
+
+	// acima do limite (11 attachments): ErrTooManyAttachments
+	if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "acima do limite", inputs(11)); !errors.Is(err, services.ErrTooManyAttachments) {
+		t.Errorf("esperava ErrTooManyAttachments para 11 attachments, obtive %v", err)
+	}
+}
+
+func TestCreateMessageWithAttachments(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	writer := newTestMessageUser(t)
+	noAttachment := newTestMessageUser(t)
+	server, channel := newTestMessageChannel(t, &owner.ID)
+	grantChannelPermission(t, server, channel, writer, models.ChannelPermission{SendMessages: true})
+	grantChannelPermission(t, server, channel, noAttachment, models.ChannelPermission{SendMessages: true})
+
+	// dá send_attachment apenas para o writer
+	role, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{SendAttachment: true})
+	if err != nil {
+		t.Fatalf("falha ao criar role de apoio: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), writer.ID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role ao usuário: %v", err)
+	}
+
+	// dono: pode enviar com attachments
+	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "com arquivo", []services.AttachmentInput{
+		{OriginalFileName: "documento.txt", Content: strings.NewReader("conteúdo do documento")},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage do dono com attachment retornou erro: %v", err)
+	}
+	if len(message.Attachments) != 1 {
+		t.Fatalf("esperava 1 attachment, obtive %d", len(message.Attachments))
+	}
+	attachment := message.Attachments[0]
+	if attachment.OriginalFileName != "documento.txt" {
+		t.Errorf("esperava original_file_name %q, obtive %q", "documento.txt", attachment.OriginalFileName)
+	}
+	if attachment.MimeType != "text/plain; charset=utf-8" {
+		t.Errorf("esperava mime_type %q, obtive %q", "text/plain; charset=utf-8", attachment.MimeType)
+	}
+	if attachment.SizeBytes != int64(len("conteúdo do documento")) {
+		t.Errorf("esperava size_bytes %d, obtive %d", len("conteúdo do documento"), attachment.SizeBytes)
+	}
+
+	// o attachment foi vinculado à mensagem no banco
+	stored, err := storage.ListAttachmentsByMessage(testCtx(), message.ID)
+	if err != nil {
+		t.Fatalf("ListAttachmentsByMessage retornou erro: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("esperava 1 attachment vinculado, obtive %d", len(stored))
+	}
+	if stored[0].MessagesID == nil || *stored[0].MessagesID != message.ID {
+		t.Errorf("esperava messages_id %s, obtive %v", message.ID, stored[0].MessagesID)
+	}
+
+	// o blob foi gravado no content-addressable storage
+	if _, err := os.Stat(stored[0].FilePath); err != nil {
+		t.Errorf("blob do attachment não encontrado em disco: %v", err)
+	}
+
+	// writer com send_messages + send_attachment: pode enviar
+	if _, err := services.CreateMessage(testCtx(), channel.ID, writer.ID, "com arquivo do writer", []services.AttachmentInput{
+		{OriginalFileName: "outro.txt", Content: strings.NewReader("outro conteúdo")},
+	}); err != nil {
+		t.Errorf("CreateMessage do writer com attachment retornou erro: %v", err)
+	}
+
+	// noAttachment com send_messages mas sem send_attachment: negado
+	if _, err := services.CreateMessage(testCtx(), channel.ID, noAttachment.ID, "com arquivo negado", []services.AttachmentInput{
+		{OriginalFileName: "negado.txt", Content: strings.NewReader("não deve passar")},
+	}); !errors.Is(err, services.ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied para usuário sem send_attachment, obtive %v", err)
+	}
+}
+
+func TestCreateMessageAttachmentSanitization(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+
+	// nome com componentes de caminho é sanitizado para o último segmento
+	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "sanitizado", []services.AttachmentInput{
+		{OriginalFileName: "campos/sub/pasta/arquivo.txt", Content: strings.NewReader("conteúdo")},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	if len(message.Attachments) != 1 {
+		t.Fatalf("esperava 1 attachment, obtive %d", len(message.Attachments))
+	}
+	if message.Attachments[0].OriginalFileName != "arquivo.txt" {
+		t.Errorf("esperava nome sanitizado %q, obtive %q", "arquivo.txt", message.Attachments[0].OriginalFileName)
+	}
+}
+
+func TestCreateMessageAttachmentDeduplication(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+
+	content := "conteúdo duplicado"
+	input := func() services.AttachmentInput {
+		return services.AttachmentInput{OriginalFileName: "dup.txt", Content: strings.NewReader(content)}
+	}
+
+	first, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", []services.AttachmentInput{input()})
+	if err != nil {
+		t.Fatalf("CreateMessage da primeira mensagem retornou erro: %v", err)
+	}
+	second, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", []services.AttachmentInput{input()})
+	if err != nil {
+		t.Fatalf("CreateMessage da segunda mensagem retornou erro: %v", err)
+	}
+
+	if len(first.Attachments) != 1 || len(second.Attachments) != 1 {
+		t.Fatalf("esperava 1 attachment em cada mensagem, obtive %d e %d", len(first.Attachments), len(second.Attachments))
+	}
+	// mesmo conteúdo: mesmo hash e mesmo caminho de blob
+	if first.Attachments[0].ID == second.Attachments[0].ID {
+		t.Fatal("esperava ids de attachment distintos")
+	}
+	firstStored, err := storage.GetAttachmentByID(testCtx(), first.Attachments[0].ID)
+	if err != nil {
+		t.Fatalf("GetAttachmentByID da primeira retornou erro: %v", err)
+	}
+	secondStored, err := storage.GetAttachmentByID(testCtx(), second.Attachments[0].ID)
+	if err != nil {
+		t.Fatalf("GetAttachmentByID da segunda retornou erro: %v", err)
+	}
+	if firstStored.ShaHash != secondStored.ShaHash {
+		t.Errorf("esperava o mesmo sha_hash para o mesmo conteúdo")
+	}
+	if firstStored.FilePath != secondStored.FilePath {
+		t.Errorf("esperava o mesmo file_path para o mesmo conteúdo")
+	}
+	// o blob é único em disco
+	if _, err := os.Stat(firstStored.FilePath); err != nil {
+		t.Errorf("blob do attachment não encontrado em disco: %v", err)
+	}
+}
+
+// --- services.EditMessage ---
+
+func TestEditMessage(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	other := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+
+	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "original", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+
+	// autor: pode editar
+	edited, err := services.EditMessage(testCtx(), message.ID, owner.ID, "editado")
+	if err != nil {
+		t.Fatalf("EditMessage do autor retornou erro: %v", err)
+	}
+	if edited.Content == nil || *edited.Content != "editado" {
+		t.Errorf("esperava content %q, obtive %v", "editado", edited.Content)
+	}
+	if edited.EditedAt == nil {
+		t.Error("esperava edited_at preenchido após a edição")
+	}
+
+	// não autor: negado
+	if _, err := services.EditMessage(testCtx(), message.ID, other.ID, "invadido"); !errors.Is(err, services.ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied para não autor, obtive %v", err)
+	}
+}
+
+func TestEditMessageClearsContent(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+
+	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "vai ser limpo", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+
+	// content vazio limpa o texto da mensagem (NULL)
+	edited, err := services.EditMessage(testCtx(), message.ID, owner.ID, "")
+	if err != nil {
+		t.Fatalf("EditMessage com content vazio retornou erro: %v", err)
+	}
+	if edited.Content != nil {
+		t.Errorf("esperava content NULL após limpar, obtive %q", *edited.Content)
+	}
+}
+
+func TestEditMessageInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+
+	// message_id vazio
+	if _, err := services.EditMessage(testCtx(), "", owner.ID, "x"); !errors.Is(err, services.ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para message_id vazio, obtive %v", err)
+	}
+
+	// mensagem inexistente
+	if _, err := services.EditMessage(testCtx(), randUUID(), owner.ID, "x"); !errors.Is(err, services.ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para mensagem inexistente, obtive %v", err)
+	}
+
+	// author_id vazio
+	if _, err := services.EditMessage(testCtx(), message.ID, "", "x"); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para author_id vazio, obtive %v", err)
+	}
+
+	// content acima do limite
+	if _, err := services.EditMessage(testCtx(), message.ID, owner.ID, strings.Repeat("a", 8193)); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para content acima do limite, obtive %v", err)
+	}
+}
+
+// --- services.DeleteMessage ---
+
+func TestDeleteMessage(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+
+	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "vai ser apagada", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+
+	// autor: pode excluir
+	if _, err := services.DeleteMessage(testCtx(), message.ID, owner.ID); err != nil {
+		t.Fatalf("DeleteMessage do autor retornou erro: %v", err)
+	}
+	if _, err := storage.GetMessageByID(testCtx(), message.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("esperava ErrNotFound após a exclusão, obtive %v", err)
+	}
+}
+
+func TestDeleteMessageByModerator(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	moderator := newTestMessageUser(t)
+	stranger := newTestMessageUser(t)
+	server, channel := newTestMessageChannel(t, &owner.ID)
+	grantChannelPermission(t, server, channel, moderator, models.ChannelPermission{DeleteMessages: true})
+
+	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem do dono", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+
+	// usuário com delete_messages: pode excluir mensagem de outro autor
+	if _, err := services.DeleteMessage(testCtx(), message.ID, moderator.ID); err != nil {
+		t.Fatalf("DeleteMessage do moderador retornou erro: %v", err)
+	}
+	if _, err := storage.GetMessageByID(testCtx(), message.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("esperava ErrNotFound após a exclusão, obtive %v", err)
+	}
+
+	// usuário sem permissão: negado
+	other, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "outra mensagem", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	if _, err := services.DeleteMessage(testCtx(), other.ID, stranger.ID); !errors.Is(err, services.ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied para usuário sem delete_messages, obtive %v", err)
+	}
+}
+
+func TestDeleteMessageInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &owner.ID)
+	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+
+	// message_id vazio
+	if _, err := services.DeleteMessage(testCtx(), "", owner.ID); !errors.Is(err, services.ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para message_id vazio, obtive %v", err)
+	}
+
+	// mensagem inexistente
+	if _, err := services.DeleteMessage(testCtx(), randUUID(), owner.ID); !errors.Is(err, services.ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para mensagem inexistente, obtive %v", err)
+	}
+
+	// author_id vazio
+	if _, err := services.DeleteMessage(testCtx(), message.ID, ""); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para author_id vazio, obtive %v", err)
+	}
+}
+
+// --- services.UploadAttachment ---
+
+func TestUploadAttachment(t *testing.T) {
+	user := newTestMessageUser(t)
+
+	attachment, err := services.UploadAttachment(testCtx(), "documento.txt", strings.NewReader("conteúdo do documento"), user.ID)
+	if err != nil {
+		t.Fatalf("UploadAttachment retornou erro: %v", err)
+	}
+	if attachment.ID == "" {
+		t.Error("esperava id preenchido")
+	}
+	if attachment.OriginalFileName != "documento.txt" {
+		t.Errorf("esperava original_file_name %q, obtive %q", "documento.txt", attachment.OriginalFileName)
+	}
+	if attachment.MimeType != "text/plain; charset=utf-8" {
+		t.Errorf("esperava mime_type %q, obtive %q", "text/plain; charset=utf-8", attachment.MimeType)
+	}
+	if attachment.SizeBytes != int64(len("conteúdo do documento")) {
+		t.Errorf("esperava size_bytes %d, obtive %d", len("conteúdo do documento"), attachment.SizeBytes)
+	}
+	if attachment.CreatedBy == nil || *attachment.CreatedBy != user.ID {
+		t.Errorf("esperava created_by %s, obtive %v", user.ID, attachment.CreatedBy)
+	}
+	if attachment.MessagesID != nil {
+		t.Errorf("esperava messages_id nil para upload avulso, obtive %v", attachment.MessagesID)
+	}
+	// o sha_hash é o sha256 do conteúdo
+	expectedHash := sha256.Sum256([]byte("conteúdo do documento"))
+	if attachment.ShaHash != hex.EncodeToString(expectedHash[:]) {
+		t.Errorf("esperava sha_hash %q, obtive %q", hex.EncodeToString(expectedHash[:]), attachment.ShaHash)
+	}
+	// o blob foi gravado no content-addressable storage
+	if _, err := os.Stat(attachment.FilePath); err != nil {
+		t.Errorf("blob do attachment não encontrado em disco: %v", err)
+	}
+}
+
+func TestUploadAttachmentMimeDetection(t *testing.T) {
+	user := newTestMessageUser(t)
+
+	cases := []struct {
+		name     string
+		content  []byte
+		expected string
+	}{
+		{"png", []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00}, "image/png"},
+		{"gif", []byte{'G', 'I', 'F', '8', '9', 'a', 0x00, 0x00}, "image/gif"},
+		{"texto", []byte("apenas texto puro"), "text/plain; charset=utf-8"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			attachment, err := services.UploadAttachment(testCtx(), "arquivo_"+randHex(4), bytes.NewReader(tc.content), user.ID)
+			if err != nil {
+				t.Fatalf("UploadAttachment retornou erro: %v", err)
+			}
+			if attachment.MimeType != tc.expected {
+				t.Errorf("esperava mime_type %q, obtive %q", tc.expected, attachment.MimeType)
+			}
+		})
+	}
+}
+
+func TestUploadAttachmentInvalidInput(t *testing.T) {
+	user := newTestMessageUser(t)
+
+	// nome vazio
+	if _, err := services.UploadAttachment(testCtx(), "", strings.NewReader("x"), user.ID); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para nome vazio, obtive %v", err)
+	}
+
+	// nome apenas com separadores de caminho (sanitização resultou vazio)
+	if _, err := services.UploadAttachment(testCtx(), "///", strings.NewReader("x"), user.ID); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para nome com apenas separadores, obtive %v", err)
+	}
+
+	// nome acima do limite (128 caracteres)
+	if _, err := services.UploadAttachment(testCtx(), strings.Repeat("a", 129), strings.NewReader("x"), user.ID); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para nome acima do limite, obtive %v", err)
+	}
+}
+
+func TestUploadAttachmentTooLarge(t *testing.T) {
+	user := newTestMessageUser(t)
+
+	// conteúdo acima de 100MB: recusado
+	reader := &largeReader{total: 100*1024*1024 + 1}
+	if _, err := services.UploadAttachment(testCtx(), "grande.bin", reader, user.ID); !errors.Is(err, services.ErrAttachmentTooLarge) {
+		t.Errorf("esperava ErrAttachmentTooLarge para arquivo acima de 100MB, obtive %v", err)
+	}
+}
+
+// largeReader fornece um número total de bytes em blocos de 1MiB, sem
+// alocar o conteúdo em memória.
+type largeReader struct {
+	total  int64
+	served int64
+	buf    []byte
+}
+
+func (r *largeReader) Read(p []byte) (int, error) {
+	if r.served >= r.total {
+		return 0, io.EOF
+	}
+	if r.buf == nil {
+		r.buf = make([]byte, 1024*1024)
+	}
+	remaining := r.total - r.served
+	chunk := int64(len(r.buf))
+	if chunk > remaining {
+		chunk = remaining
+	}
+	if chunk > int64(len(p)) {
+		chunk = int64(len(p))
+	}
+	copy(p, r.buf[:chunk])
+	r.served += chunk
+	return int(chunk), nil
+}
+
+// TestDownloadAttachment garante que o download do attachment aplica a regra
+// de read_channel: em canal aberto (sem roles com permissões definidas)
+// qualquer usuário pode baixar; em canal fechado apenas o dono do servidor e
+// quem tem read_channel; e que os erros de entrada são mapeados.
+func TestDownloadAttachment(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	reader := newTestMessageUser(t)
+	stranger := newTestMessageUser(t)
+	server, channel := newTestMessageChannel(t, &owner.ID)
+
+	message, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "com anexo", []services.AttachmentInput{
+		{OriginalFileName: "documento.txt", Content: strings.NewReader("conteúdo do documento")},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage com attachment retornou erro: %v", err)
+	}
+	if len(message.Attachments) != 1 {
+		t.Fatalf("esperava 1 attachment, obtive %d", len(message.Attachments))
+	}
+	attachment := message.Attachments[0]
+
+	// canal aberto (nenhuma role com permissões definidas): qualquer usuário baixa
+	downloaded, err := services.DownloadAttachment(testCtx(), attachment.ID, stranger.ID)
+	if err != nil {
+		t.Fatalf("DownloadAttachment em canal aberto retornou erro: %v", err)
+	}
+	if downloaded.ID != attachment.ID {
+		t.Errorf("esperava attachment %s, obtive %s", attachment.ID, downloaded.ID)
+	}
+	if downloaded.OriginalFileName != "documento.txt" {
+		t.Errorf("esperava original_file_name %q, obtive %q", "documento.txt", downloaded.OriginalFileName)
+	}
+	if downloaded.MimeType != "text/plain; charset=utf-8" {
+		t.Errorf("esperava mime_type %q, obtive %q", "text/plain; charset=utf-8", downloaded.MimeType)
+	}
+	if downloaded.SizeBytes != int64(len("conteúdo do documento")) {
+		t.Errorf("esperava size_bytes %d, obtive %d", len("conteúdo do documento"), downloaded.SizeBytes)
+	}
+	if downloaded.MessagesID == nil || *downloaded.MessagesID != message.ID {
+		t.Errorf("esperava messages_id %s, obtive %v", message.ID, downloaded.MessagesID)
+	}
+	if _, err := os.Stat(downloaded.FilePath); err != nil {
+		t.Errorf("blob do attachment não encontrado em disco: %v", err)
+	}
+
+	// fecha o canal: apenas read_channel pode baixar
+	grantChannelPermission(t, server, channel, reader, models.ChannelPermission{ReadChannel: true})
+
+	// dono do servidor: sempre pode baixar
+	if _, err := services.DownloadAttachment(testCtx(), attachment.ID, owner.ID); err != nil {
+		t.Errorf("DownloadAttachment do dono retornou erro: %v", err)
+	}
+
+	// usuário com read_channel: pode baixar
+	if _, err := services.DownloadAttachment(testCtx(), attachment.ID, reader.ID); err != nil {
+		t.Errorf("DownloadAttachment do leitor retornou erro: %v", err)
+	}
+
+	// usuário sem permissão em canal fechado: negado
+	if _, err := services.DownloadAttachment(testCtx(), attachment.ID, stranger.ID); !errors.Is(err, services.ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied para usuário sem permissão, obtive %v", err)
+	}
+
+	// attachment inexistente
+	if _, err := services.DownloadAttachment(testCtx(), randUUID(), owner.ID); !errors.Is(err, services.ErrAttachmentNotFound) {
+		t.Errorf("esperava ErrAttachmentNotFound para attachment inexistente, obtive %v", err)
+	}
+
+	// file_id vazio
+	if _, err := services.DownloadAttachment(testCtx(), "", owner.ID); !errors.Is(err, services.ErrAttachmentNotFound) {
+		t.Errorf("esperava ErrAttachmentNotFound para file_id vazio, obtive %v", err)
+	}
+
+	// user_id vazio
+	if _, err := services.DownloadAttachment(testCtx(), attachment.ID, ""); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para user_id vazio, obtive %v", err)
+	}
+}
+
+// TestDownloadAttachmentOrphan garante que um attachment não vinculado a uma
+// mensagem (messages_id NULL, upload avulso) não é exposto pela API de
+// download e retorna ErrAttachmentNotFound.
+func TestDownloadAttachmentOrphan(t *testing.T) {
+	user := newTestMessageUser(t)
+
+	attachment, err := services.UploadAttachment(testCtx(), "orfa.txt", strings.NewReader("conteúdo órfão"), user.ID)
+	if err != nil {
+		t.Fatalf("UploadAttachment retornou erro: %v", err)
+	}
+	if attachment.MessagesID != nil {
+		t.Fatalf("esperava messages_id nil para upload avulso, obtive %v", attachment.MessagesID)
+	}
+
+	if _, err := services.DownloadAttachment(testCtx(), attachment.ID, user.ID); !errors.Is(err, services.ErrAttachmentNotFound) {
+		t.Errorf("esperava ErrAttachmentNotFound para attachment órfão, obtive %v", err)
+	}
+}
+
+// --- services (attachments) fim ---
+
+// --- services.Emojis (tarefa 7.4) ---
+
+func TestListEmojisPagination(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	server, _ := newTestMessageChannel(t, &owner.ID)
+
+	const total = 26
+	for i := 0; i < total; i++ {
+		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID); err != nil {
+			t.Fatalf("falha ao criar emoji %d: %v", i, err)
+		}
+	}
+
+	// primeira página: 25 emojis (limite) e has_more
+	list, err := services.ListEmojis(testCtx(), &server.ID, nil, "")
+	if err != nil {
+		t.Fatalf("ListEmojis retornou erro: %v", err)
+	}
+	if len(list.Emojis) != 25 {
+		t.Fatalf("esperava 25 emojis na primeira página, obtive %d", len(list.Emojis))
+	}
+	if !list.HasMore {
+		t.Error("esperava has_more true na primeira página")
+	}
+	for _, e := range list.Emojis {
+		if e.ServerID != server.ID {
+			t.Errorf("emoji %s pertence a outro servidor (%s)", e.ID, e.ServerID)
+		}
+	}
+
+	// segunda página via cursor (created_at, id): retorna o emoji restante
+	last := list.Emojis[24]
+	page2, err := services.ListEmojis(testCtx(), &server.ID, &last.CreatedAt, last.ID)
+	if err != nil {
+		t.Fatalf("ListEmojis da segunda página retornou erro: %v", err)
+	}
+	if len(page2.Emojis) != 1 {
+		t.Fatalf("esperava 1 emoji na segunda página, obtive %d", len(page2.Emojis))
+	}
+	if page2.Emojis[0].ID == last.ID {
+		t.Error("segunda página não deve repetir o último emoji da primeira")
+	}
+	if page2.HasMore {
+		t.Error("esperava has_more false na segunda página")
+	}
+}
+
+/*
+	func TestListEmojisServerFilter(t *testing.T) {
+		cleanServers(testCtx())
+		owner := newTestMessageUser(t)
+		server, _ := newTestMessageChannel(t, &owner.ID)
+		otherServer, _ := newTestMessageChannel(t, &owner.ID)
+
+		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID); err != nil {
+			t.Fatalf("falha ao criar emoji: %v", err)
+		}
+		if _, err := storage.CreateEmoji(testCtx(), otherServer.ID, "emoji_"+randHex(8), "PNG", []byte{2}, &owner.ID); err != nil {
+			t.Fatalf("falha ao criar emoji: %v", err)
+		}
+
+		list, err := services.ListEmojis(testCtx(), &server.ID, nil, "")
+		if err != nil {
+			t.Fatalf("ListEmojis retornou erro: %v", err)
+		}
+		if len(list.Emojis) != 1 {
+			t.Fatalf("esperava 1 emoji do servidor, obtive %d", len(list.Emojis))
+		}
+		if list.Emojis[0].ServerID != server.ID {
+			t.Errorf("esperava emoji do servidor %s, obtive %s", server.ID, list.Emojis[0].ServerID)
+		}
+		if list.HasMore {
+			t.Error("esperava has_more false")
+		}
+	}
+*/
+func TestCreateEmoji(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	server, _ := newTestMessageChannel(t, &owner.ID)
+	png := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+
+	emoji, err := services.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "png", png, owner.ID)
+	if err != nil {
+		t.Fatalf("CreateEmoji retornou erro: %v", err)
+	}
+	if emoji.ServerID != server.ID {
+		t.Errorf("esperava server_id %s, obtive %s", server.ID, emoji.ServerID)
+	}
+	if emoji.Format != "PNG" {
+		t.Errorf("esperava format normalizado para PNG, obtive %q", emoji.Format)
+	}
+	if emoji.CreatedBy == nil || *emoji.CreatedBy != owner.ID {
+		t.Errorf("esperava created_by %s, obtive %v", owner.ID, emoji.CreatedBy)
+	}
+	if string(emoji.ImageBlob) != string(pngAvatarBytes(100, 100)) {
+		t.Error("image_blob retornado não corresponde ao conteúdo enviado")
+	}
+}
+
+func TestCreateEmojiInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	server, _ := newTestMessageChannel(t, &owner.ID)
+	png := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	gif := base64.StdEncoding.EncodeToString(gifAvatarBytes(100, 100))
+	name := "emoji_" + randHex(8)
+
+	cases := []struct {
+		desc     string
+		serverID string
+		name     string
+		format   string
+		blob     string
+		userID   string
+	}{
+		{"server_id vazio", "", name, "PNG", png, owner.ID},
+		{"name vazio", server.ID, "", "PNG", png, owner.ID},
+		{"format vazio", server.ID, name, "", png, owner.ID},
+		{"image_blob vazio", server.ID, name, "PNG", "", owner.ID},
+		{"created_by vazio", server.ID, name, "PNG", png, ""},
+		{"name acima de 32 caracteres", server.ID, strings.Repeat("a", 33), "PNG", png, owner.ID},
+		{"format inválido", server.ID, name, "SVG", png, owner.ID},
+		{"base64 inválido", server.ID, name, "PNG", "!!!", owner.ID},
+		{"conteúdo não corresponde ao formato", server.ID, name, "PNG", gif, owner.ID},
+		{"emoji acima de 256kb", server.ID, name, "PNG", base64.StdEncoding.EncodeToString(append(pngAvatarBytes(100, 100), make([]byte, 257*1024)...)), owner.ID},
+	}
+	for _, tc := range cases {
+		if _, err := services.CreateEmoji(testCtx(), tc.serverID, tc.name, tc.format, tc.blob, tc.userID); !errors.Is(err, services.ErrInvalidInput) {
+			t.Errorf("%s: esperava ErrInvalidInput, obtive %v", tc.desc, err)
+		}
+	}
+}
+
+func TestCreateEmojiNameTaken(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	server, _ := newTestMessageChannel(t, &owner.ID)
+	png := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	name := "emoji_" + randHex(8)
+
+	if _, err := services.CreateEmoji(testCtx(), server.ID, name, "PNG", png, owner.ID); err != nil {
+		t.Fatalf("falha ao criar primeiro emoji: %v", err)
+	}
+	if _, err := services.CreateEmoji(testCtx(), server.ID, name, "PNG", png, owner.ID); !errors.Is(err, services.ErrEmojiNameTaken) {
+		t.Errorf("esperava ErrEmojiNameTaken, obtive %v", err)
+	}
+}
+
+func TestCreateEmojiServerNotFound(t *testing.T) {
+	owner := newTestMessageUser(t)
+	png := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+
+	if _, err := services.CreateEmoji(testCtx(), randUUID(), "emoji_"+randHex(8), "PNG", png, owner.ID); !errors.Is(err, services.ErrServerNotFound) {
+		t.Errorf("esperava ErrServerNotFound, obtive %v", err)
+	}
+}
+
+func TestCreateEmojiLimitReached(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	server, _ := newTestMessageChannel(t, &owner.ID)
+
+	// preenche o servidor até o limite (500)
+	for i := 0; i < 500; i++ {
+		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID); err != nil {
+			t.Fatalf("falha ao criar emoji %d: %v", i, err)
+		}
+	}
+
+	png := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	if _, err := services.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", png, owner.ID); !errors.Is(err, services.ErrEmojiLimitReached) {
+		t.Errorf("esperava ErrEmojiLimitReached, obtive %v", err)
+	}
+}
+
+func TestDeleteEmoji(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	author := newTestMessageUser(t)
+	stranger := newTestMessageUser(t)
+	server, _ := newTestMessageChannel(t, &owner.ID)
+
+	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &author.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar emoji: %v", err)
+	}
+
+	// usuário sem permissão: negado
+	if err := services.DeleteEmoji(testCtx(), emoji.ID, stranger.ID); !errors.Is(err, services.ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied para usuário sem permissão, obtive %v", err)
+	}
+
+	// autor: pode excluir
+	if err := services.DeleteEmoji(testCtx(), emoji.ID, author.ID); err != nil {
+		t.Fatalf("DeleteEmoji do autor retornou erro: %v", err)
+	}
+	if _, err := storage.GetEmojiByID(testCtx(), emoji.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("esperava ErrNotFound após a exclusão, obtive %v", err)
+	}
+}
+
+func TestDeleteEmojiByServerOwner(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	author := newTestMessageUser(t)
+	server, _ := newTestMessageChannel(t, &owner.ID)
+
+	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &author.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar emoji: %v", err)
+	}
+
+	if err := services.DeleteEmoji(testCtx(), emoji.ID, owner.ID); err != nil {
+		t.Fatalf("DeleteEmoji do dono retornou erro: %v", err)
+	}
+	if _, err := storage.GetEmojiByID(testCtx(), emoji.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("esperava ErrNotFound após a exclusão, obtive %v", err)
+	}
+}
+
+func TestDeleteEmojiByManageServerRole(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	author := newTestMessageUser(t)
+	mod := newTestMessageUser(t)
+	server, _ := newTestMessageChannel(t, &owner.ID)
+
+	role, err := storage.CreateRole(testCtx(), server.ID, newRandomRoleName(), nil, models.RolePermissions{ManageServer: true})
+	if err != nil {
+		t.Fatalf("falha ao criar role de apoio: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), mod.ID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role ao usuário: %v", err)
+	}
+
+	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &author.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar emoji: %v", err)
+	}
+
+	if err := services.DeleteEmoji(testCtx(), emoji.ID, mod.ID); err != nil {
+		t.Fatalf("DeleteEmoji do usuário com manage_server retornou erro: %v", err)
+	}
+	if _, err := storage.GetEmojiByID(testCtx(), emoji.ID); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("esperava ErrNotFound após a exclusão, obtive %v", err)
+	}
+}
+
+func TestDeleteEmojiInvalidInput(t *testing.T) {
+	owner := newTestMessageUser(t)
+
+	if err := services.DeleteEmoji(testCtx(), "", owner.ID); !errors.Is(err, services.ErrEmojiNotFound) {
+		t.Errorf("esperava ErrEmojiNotFound para emoji_id vazio, obtive %v", err)
+	}
+	if err := services.DeleteEmoji(testCtx(), randUUID(), ""); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para user_id vazio, obtive %v", err)
+	}
+}
+
+func TestDeleteEmojiNotFound(t *testing.T) {
+	owner := newTestMessageUser(t)
+
+	if err := services.DeleteEmoji(testCtx(), randUUID(), owner.ID); !errors.Is(err, services.ErrEmojiNotFound) {
+		t.Errorf("esperava ErrEmojiNotFound para emoji inexistente, obtive %v", err)
+	}
+}
+
+// --- services.SearchMessages ---
+
+// searchResultIDs retorna os ids dos resultados da busca ordenados (comparação por conjunto).
+func searchResultIDs(results []models.SearchResult) []string {
+	ids := make([]string, 0, len(results))
+	for _, r := range results {
+		ids = append(ids, r.ID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// assertSearchSet verifica que os resultados da busca formam exatamente o conjunto de ids esperado (ordem irrelevante).
+func assertSearchSet(t *testing.T, results []models.SearchResult, want ...string) {
+	t.Helper()
+	got := searchResultIDs(results)
+	wantSorted := append([]string(nil), want...)
+	sort.Strings(wantSorted)
+	if len(got) != len(wantSorted) {
+		t.Errorf("esperava %d resultados %v, obtive %d %v", len(wantSorted), wantSorted, len(got), got)
+		return
+	}
+	for i := range got {
+		if got[i] != wantSorted[i] {
+			t.Errorf("esperava resultados %v, obtive %v", wantSorted, got)
+			return
+		}
+	}
+}
+
+// assertSearchOrder verifica que os resultados da busca vêm exatamente na ordem esperada.
+func assertSearchOrder(t *testing.T, results []models.SearchResult, want ...string) {
+	t.Helper()
+	got := make([]string, 0, len(results))
+	for _, r := range results {
+		got = append(got, r.ID)
+	}
+	if len(got) != len(want) {
+		t.Errorf("esperava %d resultados %v, obtive %d %v", len(want), want, len(got), got)
+		return
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("esperava ordem %v, obtive %v", want, got)
+			return
+		}
+	}
+}
+
+func TestSearchMessages(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	reader := newTestMessageUser(t)
+	stranger := newTestMessageUser(t)
+	server, channel := newTestMessageChannel(t, &owner.ID)
+	restricted, err := services.CreateChannel(testCtx(), server.ID, newRandomChannelName())
+	if err != nil {
+		t.Fatalf("falha ao criar canal restrito de apoio: %v", err)
+	}
+	grantChannelPermission(t, server, restricted, reader, models.ChannelPermission{ReadChannel: true})
+
+	m1, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "zebra borboleta", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem 1: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	m2, err := services.CreateMessage(testCtx(), channel.ID, reader.ID, "borboleta vagalume", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem 2: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	m3, err := services.CreateMessage(testCtx(), channel.ID, stranger.ID, "vagalume", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem 3: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	m4, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "peixe", []services.AttachmentInput{
+		{OriginalFileName: "peixe.txt", Content: strings.NewReader("conteúdo do peixe")},
+	})
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem 4 com attachment: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	m5, err := services.CreateMessage(testCtx(), restricted.ID, owner.ID, "zebra secreta", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem 5 no canal restrito: %v", err)
+	}
+
+	dateStart := m1.CreatedAt.UTC().Format("2006-01-02")
+	dateEnd := m5.CreatedAt.UTC().Format("2006-01-02")
+	yesterday := m1.CreatedAt.UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	withAttachment := true
+	withoutAttachment := false
+
+	t.Run("apenas texto", func(t *testing.T) {
+		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "zebra"}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com texto retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m1.ID, m5.ID)
+		for _, r := range res.Results {
+			if r.Type != "message" {
+				t.Errorf("esperava type message, obtive %q", r.Type)
+			}
+			if r.Score == nil {
+				t.Error("esperava score preenchido em busca textual")
+			}
+			if r.ServerID != server.ID {
+				t.Errorf("esperava server_id %s, obtive %s", server.ID, r.ServerID)
+			}
+		}
+		byID := map[string]models.SearchResult{}
+		for _, r := range res.Results {
+			byID[r.ID] = r
+		}
+		if byID[m1.ID].ChannelName != channel.Name {
+			t.Errorf("esperava channel_name %q, obtive %q", channel.Name, byID[m1.ID].ChannelName)
+		}
+		if byID[m1.ID].AuthorUsername == nil || *byID[m1.ID].AuthorUsername != owner.Username {
+			t.Errorf("esperava author_username %q, obtive %v", owner.Username, byID[m1.ID].AuthorUsername)
+		}
+
+		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Text: "borboleta"}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com borboleta retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m1.ID, m2.ID)
+	})
+
+	t.Run("apenas autor", func(t *testing.T) {
+		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Author: reader.ID}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com autor retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m2.ID)
+		if res.Results[0].AuthorID == nil || *res.Results[0].AuthorID != reader.ID {
+			t.Errorf("esperava author_id %s, obtive %v", reader.ID, res.Results[0].AuthorID)
+		}
+		if res.Results[0].Score != nil {
+			t.Error("esperava score nil sem busca textual")
+		}
+	})
+
+	t.Run("apenas intervalo de datas", func(t *testing.T) {
+		res, err := services.SearchMessages(testCtx(), models.SearchRequest{DateStart: dateStart, DateEnd: dateEnd}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com datas retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m1.ID, m2.ID, m3.ID, m4.ID, m5.ID)
+
+		res, err = services.SearchMessages(testCtx(), models.SearchRequest{DateEnd: yesterday}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com date_end no passado retornou erro: %v", err)
+		}
+		if len(res.Results) != 0 {
+			t.Errorf("esperava 0 resultados, obtive %d", len(res.Results))
+		}
+	})
+
+	t.Run("apenas contains_attachment", func(t *testing.T) {
+		res, err := services.SearchMessages(testCtx(), models.SearchRequest{ContainsAttachment: &withAttachment}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com contains_attachment true retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m4.ID)
+
+		res, err = services.SearchMessages(testCtx(), models.SearchRequest{ContainsAttachment: &withoutAttachment}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com contains_attachment false retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m1.ID, m2.ID, m3.ID, m5.ID)
+	})
+
+	t.Run("texto + autor", func(t *testing.T) {
+		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "borboleta", Author: owner.ID}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com texto + autor retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m1.ID)
+	})
+
+	t.Run("texto + intervalo de datas", func(t *testing.T) {
+		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "zebra", DateStart: dateStart, DateEnd: dateEnd}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com texto + datas retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m1.ID, m5.ID)
+
+		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Text: "zebra", DateEnd: yesterday}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com texto + date_end no passado retornou erro: %v", err)
+		}
+		if len(res.Results) != 0 {
+			t.Errorf("esperava 0 resultados, obtive %d", len(res.Results))
+		}
+	})
+
+	t.Run("autor + contains_attachment", func(t *testing.T) {
+		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID, ContainsAttachment: &withAttachment}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com autor + contains_attachment retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m4.ID)
+	})
+
+	t.Run("filtro por server_id", func(t *testing.T) {
+		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID}, server.ID, nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com server_id retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m1.ID, m4.ID, m5.ID)
+
+		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID}, randUUID(), nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com server_id inexistente retornou erro: %v", err)
+		}
+		if len(res.Results) != 0 {
+			t.Errorf("esperava 0 resultados, obtive %d", len(res.Results))
+		}
+	})
+
+	t.Run("todos os filtros combinados", func(t *testing.T) {
+		res, err := services.SearchMessages(testCtx(), models.SearchRequest{
+			Text:               "peixe",
+			Author:             owner.ID,
+			DateStart:          dateStart,
+			DateEnd:            dateEnd,
+			ContainsAttachment: &withAttachment,
+		}, server.ID, nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com todos os filtros retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m4.ID)
+	})
+
+	t.Run("ordem", func(t *testing.T) {
+		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID, Order: "asc"}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com order asc retornou erro: %v", err)
+		}
+		assertSearchOrder(t, res.Results, m1.ID, m4.ID, m5.ID)
+
+		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID, Order: "desc"}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages com order desc retornou erro: %v", err)
+		}
+		assertSearchOrder(t, res.Results, m5.ID, m4.ID, m1.ID)
+
+		// padrão (order ausente): desc
+		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Author: owner.ID}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages sem order retornou erro: %v", err)
+		}
+		assertSearchOrder(t, res.Results, m5.ID, m4.ID, m1.ID)
+	})
+
+	t.Run("autorização", func(t *testing.T) {
+		// reader: lê o canal aberto e o restrito (read_channel via role)
+		res, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "zebra"}, "", nil, "", reader.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages do reader retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m1.ID, m5.ID)
+
+		// stranger: sem roles, não vê o canal restrito
+		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Text: "vagalume"}, "", nil, "", stranger.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages do stranger retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m2.ID, m3.ID)
+
+		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Text: "secreta"}, "", nil, "", stranger.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages do stranger no restrito retornou erro: %v", err)
+		}
+		if len(res.Results) != 0 {
+			t.Errorf("esperava 0 resultados para o stranger, obtive %d", len(res.Results))
+		}
+
+		// owner: vê tudo
+		res, err = services.SearchMessages(testCtx(), models.SearchRequest{Text: "secreta"}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages do owner retornou erro: %v", err)
+		}
+		assertSearchSet(t, res.Results, m5.ID)
+	})
+
+	t.Run("paginação", func(t *testing.T) {
+		for i := 0; i < 101; i++ {
+			if _, err := services.CreateMessage(testCtx(), channel.ID, owner.ID, "pagina "+randHex(2), nil); err != nil {
+				t.Fatalf("falha ao criar mensagem de paginação %d: %v", i, err)
+			}
+		}
+
+		page1, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "pagina"}, "", nil, "", owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages da primeira página retornou erro: %v", err)
+		}
+		if !page1.HasMore {
+			t.Error("esperava has_more true na primeira página")
+		}
+		if len(page1.Results) != 100 {
+			t.Fatalf("esperava 100 resultados, obtive %d", len(page1.Results))
+		}
+
+		last := page1.Results[len(page1.Results)-1]
+		page2, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "pagina"}, "", timePtr(last.CreatedAt), last.ID, owner.ID)
+		if err != nil {
+			t.Fatalf("SearchMessages da segunda página retornou erro: %v", err)
+		}
+		if page2.HasMore {
+			t.Error("esperava has_more false na segunda página")
+		}
+		if len(page2.Results) != 1 {
+			t.Fatalf("esperava 1 resultado na segunda página, obtive %d", len(page2.Results))
+		}
+
+		// sem duplicatas entre as páginas
+		seen := map[string]bool{}
+		for _, r := range page1.Results {
+			seen[r.ID] = true
+		}
+		for _, r := range page2.Results {
+			if seen[r.ID] {
+				t.Errorf("resultado %s duplicado entre as páginas", r.ID)
+			}
+		}
+	})
+
+	t.Run("validação", func(t *testing.T) {
+		expectInvalid := func(req models.SearchRequest, serverID string, since *time.Time, lastID string) {
+			if _, err := services.SearchMessages(testCtx(), req, serverID, since, lastID, owner.ID); !errors.Is(err, services.ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		}
+
+		expectInvalid(models.SearchRequest{}, "", nil, "")                                               // nenhum filtro
+		expectInvalid(models.SearchRequest{Text: "   "}, "", nil, "")                                    // só espaços
+		expectInvalid(models.SearchRequest{Text: "palavra", Order: "up"}, "", nil, "")                   // order inválido
+		expectInvalid(models.SearchRequest{DateStart: "31/12/2026"}, "", nil, "")                        // data malformada
+		expectInvalid(models.SearchRequest{DateStart: "2026-12-31", DateEnd: "2026-01-01"}, "", nil, "") // start depois de end
+		expectInvalid(models.SearchRequest{Text: "palavra"}, "", timePtr(time.Now()), "")                // since sem last_id
+		expectInvalid(models.SearchRequest{Text: "palavra"}, "", nil, randUUID())                        // last_id sem since
+
+		if _, err := services.SearchMessages(testCtx(), models.SearchRequest{Text: "palavra"}, "", nil, "", ""); !errors.Is(err, services.ErrInvalidInput) {
+			t.Errorf("esperava ErrInvalidInput para user vazio, obtive %v", err)
+		}
+	})
+}
+
+func TestUpdateUserBoundaryLengths(t *testing.T) {
+	user, err := services.Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	// exactly 32 runes for nickname and 64 runes for status (multibyte) is accepted
+	nickname := "n" + strings.Repeat("ç", 31)
+	status := "s" + strings.Repeat("ç", 63)
+	if err := services.UpdateUser(testCtx(), user.ID, nickname, status); err != nil {
+		t.Fatalf("UpdateUser with 32-rune nickname and 64-rune status returned error: %v", err)
+	}
+	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID returned error: %v", err)
+	}
+	if stored.Nickname == nil || *stored.Nickname != nickname {
+		t.Errorf("expected nickname %q, got %v", nickname, stored.Nickname)
+	}
+	if stored.StatusMessage == nil || *stored.StatusMessage != status {
+		t.Errorf("expected status_message %q, got %v", status, stored.StatusMessage)
+	}
+	if stored.StatusUpdatedAt == nil {
+		t.Error("expected status_updated_at to be set")
+	}
+
+	// 33 runes for nickname is rejected
+	longNickname := "n" + strings.Repeat("ç", 32)
+	if err := services.UpdateUser(testCtx(), user.ID, longNickname, "ok"); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for 33-rune nickname, got %v", err)
+	}
+
+	// 65 runes for status is rejected
+	longStatus := "s" + strings.Repeat("ç", 64)
+	if err := services.UpdateUser(testCtx(), user.ID, "ok", longStatus); !errors.Is(err, services.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for 65-rune status, got %v", err)
+	}
+
+	// rejections must not persist anything
+	stored, err = storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID returned error: %v", err)
+	}
+	if stored.Nickname == nil || *stored.Nickname != nickname {
+		t.Errorf("expected nickname %q after rejections, got %v", nickname, stored.Nickname)
+	}
+	if stored.StatusMessage == nil || *stored.StatusMessage != status {
+		t.Errorf("expected status_message %q after rejections, got %v", status, stored.StatusMessage)
+	}
+}
+
+func TestListUsersPagination(t *testing.T) {
+	// frontier: the last user in (created_at, id) order, including users
+	// left behind by other tests
+	var frontier models.UserSummary
+	var since *time.Time
+	lastID := ""
+	for {
+		page, err := services.ListUsers(testCtx(), since, lastID)
+		if err != nil {
+			t.Fatalf("ListUsers returned error: %v", err)
+		}
+		if len(page.Users) == 0 {
+			t.Fatal("ListUsers returned an empty page while walking the frontier")
+		}
+		frontier = page.Users[len(page.Users)-1]
+		if !page.HasMore {
+			break
+		}
+		since = &frontier.CreatedAt
+		lastID = frontier.ID
+	}
+
+	// 10ms to guarantee the new users have a created_at after the frontier
+	time.Sleep(10 * time.Millisecond)
+	const newTotal = 101
+	for i := 0; i < newTotal; i++ {
+		if _, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP()); err != nil {
+			t.Fatalf("failed to create user %d: %v", i, err)
+		}
+	}
+
+	// first page from the frontier: 100 users (the limit) and has_more
+	page1, err := services.ListUsers(testCtx(), &frontier.CreatedAt, frontier.ID)
+	if err != nil {
+		t.Fatalf("ListUsers returned error: %v", err)
+	}
+	if len(page1.Users) != 100 {
+		t.Fatalf("expected 100 users on the first page, got %d", len(page1.Users))
+	}
+	if !page1.HasMore {
+		t.Error("expected has_more true on the first page")
+	}
+
+	// second page via the (created_at, id) cursor: the remaining user
+	last := page1.Users[len(page1.Users)-1]
+	page2, err := services.ListUsers(testCtx(), &last.CreatedAt, last.ID)
+	if err != nil {
+		t.Fatalf("ListUsers for the second page returned error: %v", err)
+	}
+	if len(page2.Users) != 1 {
+		t.Fatalf("expected 1 user on the second page, got %d", len(page2.Users))
+	}
+	if page2.Users[0].ID == last.ID {
+		t.Error("second page must not repeat the last user from the first page")
+	}
+	if page2.HasMore {
+		t.Error("expected has_more false on the second page")
+	}
+
+	// no duplicates between pages
+	seen := make(map[string]bool, len(page1.Users)+len(page2.Users))
+	for _, u := range page1.Users {
+		seen[u.ID] = true
+	}
+	if seen[page2.Users[0].ID] {
+		t.Error("user duplicated between pages")
+	}
+}
+
+func TestListUsersSince(t *testing.T) {
+	userA := newTestMessageUser(t)
+	time.Sleep(10 * time.Millisecond)
+	userB := newTestMessageUser(t)
+
+	since := userA.CreatedAt
+	list, err := services.ListUsers(testCtx(), &since, "")
+	if err != nil {
+		t.Fatalf("ListUsers with since returned error: %v", err)
+	}
+
+	byID := make(map[string]models.UserSummary, len(list.Users))
+	for _, u := range list.Users {
+		byID[u.ID] = u
+	}
+	if _, ok := byID[userA.ID]; ok {
+		t.Error("since should exclude the user with the same timestamp")
+	}
+	got, ok := byID[userB.ID]
+	if !ok {
+		t.Fatal("user created after since does not appear in the list")
+	}
+	if got.Username != userB.Username {
+		t.Errorf("expected username %q, got %q", userB.Username, got.Username)
+	}
+}
+
+// lastUserSummary returns the last user in (created_at, id) order, walking
+// all pages of ListUsers (including users left behind by other tests).
+func lastUserSummary(t *testing.T) models.UserSummary {
+	t.Helper()
+	var frontier models.UserSummary
+	var since *time.Time
+	lastID := ""
+	for {
+		page, err := services.ListUsers(testCtx(), since, lastID)
+		if err != nil {
+			t.Fatalf("ListUsers returned error: %v", err)
+		}
+		if len(page.Users) == 0 {
+			t.Fatal("ListUsers returned an empty page")
+		}
+		frontier = page.Users[len(page.Users)-1]
+		if !page.HasMore {
+			break
+		}
+		since = &frontier.CreatedAt
+		lastID = frontier.ID
+	}
+	return frontier
+}
+
+func TestCreateChannelLimitReached(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	server, _ := newTestMessageChannel(t, &owner.ID)
+
+	// fill the server up to the limit (500)
+	for i := 0; i < 499; i++ {
+		if _, err := storage.CreateChannel(testCtx(), server.ID, "ch_"+randHex(8), "text"); err != nil {
+			t.Fatalf("failed to create channel %d: %v", i, err)
+		}
+	}
+
+	if _, err := services.CreateChannel(testCtx(), server.ID, "ch_"+randHex(8)); !errors.Is(err, services.ErrChannelLimitReached) {
+		t.Errorf("expected ErrChannelLimitReached, got %v", err)
+	}
+
+	count, err := storage.CountChannelsByServer(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("CountChannelsByServer returned error: %v", err)
+	}
+	if count != 500 {
+		t.Errorf("expected 500 channels, got %d", count)
+	}
+}

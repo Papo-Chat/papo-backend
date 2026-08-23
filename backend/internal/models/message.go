@@ -1,0 +1,37 @@
+package models
+
+import "time"
+
+// Message representa a tabela messages.
+type Message struct {
+	ID        string     `db:"id" json:"id"`
+	ChannelID string     `db:"channel_id" json:"channel_id"`
+	AuthorID  *string    `db:"author_id" json:"author_id"`
+	Content   *string    `db:"content" json:"content"`
+	CreatedAt time.Time  `db:"created_at" json:"created_at"`
+	EditedAt  *time.Time `db:"edited_at" json:"edited_at"`
+}
+
+// MessageAttachment é a informação mínima do attachment exposta nas respostas
+// de mensagens (listagem, criação e edição).
+type MessageAttachment struct {
+	ID               string    `json:"id"`
+	MimeType         string    `json:"mime_type"`
+	OriginalFileName string    `json:"original_file_name"`
+	SizeBytes        int64     `json:"size_bytes"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// MessageWithAttachment é a mensagem com seus attachments, como exposta pela
+// API (respostas de listagem, criação e edição de mensagens).
+type MessageWithAttachment struct {
+	Message
+	Attachments []MessageAttachment `json:"attachments"`
+}
+
+// MessageList é a resposta de GET /channels/:channel_id/messages.
+type MessageList struct {
+	ChannelID string                  `json:"channel_id"`
+	Messages  []MessageWithAttachment `json:"messages"`
+	HasMore   bool                    `json:"has_more"`
+}

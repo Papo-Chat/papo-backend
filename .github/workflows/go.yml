@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: papo
+          POSTGRES_PASSWORD: papo123
+          POSTGRES_DB: papo_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+          cache-dependency-path: backend/go.sum 
+
+      - name: Configurar Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Baixar dependências
+        run: go mod download
+
+      - name: Rodar migrations
+        run: |
+          go install github.com/pressly/goose/v3/cmd/goose@latest
+          goose -dir ../migrations postgres "postgres://papo:papo123@localhost:5432/papo_test?sslmode=disable" up
+
+      - name: Build
+        run: go build -v ./backend/...
+
+      - name: Testes
+        env:
+          SERVER_PORT: "8080"
+          DATABASE_URL: "postgres://papo:papo123@localhost:5432/papo_test?sslmode=disable"
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          BASE_URL: "http://localhost:8080/"
+          MAX_USERNAME_LENGTH: "16"
+          MAX_PASSWORD_LENGTH: "64"
+          AUTH_RATE_LIMIT: "5"
+          AUTH_RATE_BURST: "10"
+          RATE_LIMIT: "20"
+          RATE_BURST: "40"
+        run: go test -v -race ./backend/...
+
+      - name: Vet
+        run: go vet ./backend/...

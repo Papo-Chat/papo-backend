@@ -1,0 +1,117 @@
+-- Go Migration File
+-- GOOS=linux GOARCH=amd64 go run github.com/pressly/goose/v3/cmd/goose
+
+-- +goose Up
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username TEXT UNIQUE NOT NULL,
+    nickname TEXT,
+    password_hash TEXT NOT NULL,
+    avatar_blob BYTEA,
+    avatar_format TEXT NOT NULL DEFAULT '',
+    banned BOOLEAN NOT NULL DEFAULT FALSE,
+    reset_password BOOLEAN NOT NULL DEFAULT FALSE,
+    last_ip TEXT,
+    status_message TEXT,
+    status_updated_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS servers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id UUID REFERENCES users(id),
+    name TEXT NOT NULL,
+    icon_blob BYTEA,
+    public_server BOOLEAN NOT NULL DEFAULT TRUE,
+    password_hash TEXT,
+    icon_format TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS channels (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    server_id UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    name TEXT NOT NULL UNIQUE,
+    permissions JSONB DEFAULT '{}',
+    position INTEGER NOT NULL,
+    type TEXT NOT NULL DEFAULT 'text' CHECK (type IN ('text', 'category')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    tsv_content TSVECTOR GENERATED ALWAYS AS (to_tsvector('portuguese', name)) STORED
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    channel_id UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    author_id UUID REFERENCES users(id),
+    content TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    edited_at TIMESTAMPTZ DEFAULT NULL,
+    tsv_content TSVECTOR GENERATED ALWAYS AS (to_tsvector('portuguese', content)) STORED
+);
+
+CREATE TABLE IF NOT EXISTS attachments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    original_file_name TEXT NOT NULL,   
+    messages_id UUID REFERENCES messages(id) ON DELETE CASCADE,
+    mime_type TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    sha_hash TEXT NOT NULL,
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS emojis (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    server_id UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    name TEXT UNIQUE NOT NULL,
+    format TEXT NOT NULL,
+    image_blob BYTEA NOT NULL,
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+
+CREATE TABLE IF NOT EXISTS user_channel_state (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel_id UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    last_read_message_id UUID NOT NULL,
+    last_read_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL DEFAULT 1,
+    config JSONB NOT NULL DEFAULT '{}',
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS roles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    server_id UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    color TEXT,
+    permissions JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (server_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS user_roles (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    assigned_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, role_id)
+);
+
+-- +goose Down
+DROP TABLE IF EXISTS user_roles;
+DROP TABLE IF EXISTS roles;
+DROP TABLE IF EXISTS user_channel_state;
+DROP TABLE IF EXISTS user_settings;
+DROP TABLE IF EXISTS emojis;
+DROP TABLE IF EXISTS attachments;
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS channels;
+DROP TABLE IF EXISTS servers;
+DROP TABLE IF EXISTS users;

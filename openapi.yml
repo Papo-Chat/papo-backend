@@ -1,0 +1,2019 @@
+openapi: 3.0.3
+info:
+  title: Papo API
+  description: |
+    API do Papo — chat self-hosted (Go + Echo + PostgreSQL + WebSockets).
+
+    Convenções:
+    - Autenticação via cookie HttpOnly `Auth` (JWT).
+    - Erros seguem RFC 7807 (`application/problem+json`) e toda resposta
+      inclui o header `X-Request-ID`.
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+    description: Backend local
+tags:
+  - name: Health
+  - name: Auth
+  - name: Users
+  - name: Servers
+  - name: Channels
+  - name: Messages
+  - name: Roles
+  - name: UserRoles
+  - name: Emojis
+  - name: Attachments
+  - name: Search
+  - name: WebSocket
+
+security:
+  - cookieAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: Servidor no ar
+          content:
+            text/plain:
+              example: OK
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Cria novo usuário
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Usuário criado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Servidor não público sem autorização temporária (execute /auth/loginServer antes)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/Banned'
+        '409':
+          description: Username já existe
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Faz login e define o cookie Auth (HttpOnly)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: "Login bem-sucedido (Set-Cookie: Auth=jwt)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Credenciais inválidas ou servidor não público sem autorização temporária (execute /auth/loginServer antes)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/Banned'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/loginServer:
+    post:
+      tags: [Auth]
+      summary: Valida a senha do servidor e define o cookie Auth com token temporário (30min)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginServerRequest'
+      responses:
+        '200':
+          description: "Senha válida (Set-Cookie: Auth=temp_token; Max-Age=1800)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginServerResponse'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Senha do servidor incorreta
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/Banned'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/whoami:
+    get:
+      tags: [Auth]
+      summary: Retorna o usuário autenticado com settings
+      responses:
+        '200':
+          description: Usuário autenticado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhoamiResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Faz logout (remove o cookie Auth; JWT stateless)
+      security: []
+      responses:
+        '204':
+          description: Logout bem-sucedido (Set-Cookie expira o Auth)
+
+  /users/profile:
+    get:
+      tags: [Users]
+      summary: Perfil do usuário autenticado (com avatar)
+      responses:
+        '200':
+          description: Perfil do usuário
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users:
+    get:
+      tags: [Users]
+      summary: Lista usuários (Limite de 100 por requisição, use cursor com since + last_id para paginar)
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Timestamp ISO 8601 (polling de novos usuários)
+        - name: last_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: ID do último usuário da página anterior (cursor exato usado com since)
+      responses:
+        '200':
+          description: Lista de usuários
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserSummary'
+                  has_more:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/settings:
+    put:
+      tags: [Users]
+      summary: Atualiza as configurações do usuário autenticado
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [config]
+              properties:
+                config:
+                  $ref: '#/components/schemas/UserConfig'
+      responses:
+        '200':
+          description: Configurações atualizadas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSettings'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{user_id}:
+    put:
+      tags: [Users]
+      summary: Atualiza nickname e status (somente o próprio usuário)
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: Perfil atualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericResponse'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{user_id}/avatar:
+    put:
+      tags: [Users]
+      summary: Atualiza o avatar (base64, GIF/JPEG/PNG, máx. 2MB)
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAvatarRequest'
+      responses:
+        '200':
+          description: Avatar atualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericResponse'
+        '400':
+          description: Avatar inválido (base64 de GIF/JPEG/PNG até 2MB)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{user_id}/password:
+    put:
+      tags: [Users]
+      summary: Altera a própria senha e reinicia a flag de reset de senha
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '200':
+          description: Senha atualizada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericResponse'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{user_id}/ban:
+    put:
+      tags: [Users]
+      summary: Bane ou desbane um usuário (banimento global)
+      description: "Permission Check: dono de um servidor ou `manage_server`"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BanUserRequest'
+      responses:
+        '200':
+          description: Estado de banimento alterado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericResponse'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{user_id}/reset:
+    post:
+      tags: [Users]
+      summary: Marca o usuário para redefinir a senha
+      description: "Permission Check: dono de um servidor ou o próprio usuário"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Flag de reset de senha definida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{user_id}/roles:
+    post:
+      tags: [UserRoles]
+      summary: Atribui role a um usuário
+      description: "Permission Check: `manage_roles`"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignRoleRequest'
+      responses:
+        '201':
+          description: Role atribuída
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRole'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{user_id}/roles/{role_id}:
+    delete:
+      tags: [UserRoles]
+      summary: Remove role de um usuário
+      description: "Permission Check: `manage_roles`"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/RoleId'
+      responses:
+        '204':
+          description: Role removida
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /servers:
+    get:
+      tags: [Servers]
+      summary: Lista servidores
+      responses:
+        '200':
+          description: Lista de servidores
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Server'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [Servers]
+      summary: Cria servidor
+      description: "Permission Check: Table Servers have no registry"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateServerRequest'
+      responses:
+        '200':
+          description: Servidor criado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateServerResponse'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /servers/{server_id}:
+    get:
+      tags: [Servers]
+      summary: Detalhes do servidor
+      parameters:
+        - $ref: '#/components/parameters/ServerId'
+      responses:
+        '200':
+          description: Detalhes do servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Server'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [Servers]
+      summary: Altera o servidor (nome, ícone, senha e visibilidade)
+      description: "Permission Check: dono do servidor ou `manage_server`"
+      parameters:
+        - $ref: '#/components/parameters/ServerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateServerRequest'
+      responses:
+        '200':
+          description: Servidor atualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Server'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /servers/{server_id}/roles:
+    get:
+      tags: [Roles]
+      summary: Lista roles do servidor
+      parameters:
+        - $ref: '#/components/parameters/ServerId'
+      responses:
+        '200':
+          description: Lista de roles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roles:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Role'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [Roles]
+      summary: Cria role no servidor
+      description: "Permission Check: `manage_roles`"
+      parameters:
+        - $ref: '#/components/parameters/ServerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoleRequest'
+      responses:
+        '201':
+          description: Role criada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Nome de role já existe no servidor
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /roles/{role_id}:
+    put:
+      tags: [Roles]
+      summary: Atualiza role
+      description: "Permission Check: `manage_roles`"
+      parameters:
+        - $ref: '#/components/parameters/RoleId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleRequest'
+      responses:
+         '200':
+           description: Role atualizada
+           content:
+             application/json:
+               schema:
+                 $ref: '#/components/schemas/Role'
+         '400':
+           description: Campo ausente ou inválido
+           content:
+             application/problem+json:
+               schema:
+                 $ref: '#/components/schemas/Error'
+         '401':
+           $ref: '#/components/responses/Unauthorized'
+         '403':
+           $ref: '#/components/responses/Forbidden'
+         '404':
+           $ref: '#/components/responses/NotFound'
+         '409':
+           description: Nome de role já existe no servidor
+           content:
+             application/problem+json:
+               schema:
+                 $ref: '#/components/schemas/Error'
+         '500':
+           $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Roles]
+      summary: Exclui role
+      description: "Permission Check: `manage_roles`"
+      parameters:
+        - $ref: '#/components/parameters/RoleId'
+      responses:
+        '204':
+          description: Role excluída
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /channels:
+    get:
+      tags: [Channels]
+      summary: Lista canais
+      parameters:
+        - name: server_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Filtro por servidor
+      responses:
+        '200':
+          description: Lista de canais
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channels:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Channel'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [Channels]
+      summary: Cria canal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChannelRequest'
+      responses:
+        '201':
+          description: Canal criado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Channel'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Nome de canal já existe
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /channels/{channel_id}:
+    delete:
+      tags: [Channels]
+      summary: Remove canal
+      description: "Permission Check: `manage_channels`"
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      responses:
+        '204':
+          description: Canal removido
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /channels/{channel_id}/change_position:
+    put:
+      tags: [Channels]
+      summary: Altera a posição do canal
+      description: "Permission Check: `manage_channels`"
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeChannelPositionRequest'
+      responses:
+        '200':
+          description: Posição atualizada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Channel'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Posição do canal desatualizada
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /channels/{channel_id}/permissions:
+    get:
+      tags: [Channels]
+      summary: Lê permissões do canal por role
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      responses:
+        '200':
+          description: Permissões do canal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelPermissionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /channels/{channel_id}/permissions/{role_id}:
+    put:
+      tags: [Channels]
+      summary: Altera permissões de uma role no canal
+      description: "Permission Check: `manage_channels`"
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/RoleId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateChannelPermissionsRequest'
+      responses:
+        '200':
+          description: Permissões atualizadas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channel_id:
+                    type: string
+                    format: uuid
+                  role_id:
+                    type: string
+                    format: uuid
+                  permissions:
+                    $ref: '#/components/schemas/ChannelPermissions'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /channels/{channel_id}/messages:
+    get:
+      tags: [Messages]
+      summary: Lista mensagens do canal em ordem decrescente (Limite de 100 por Requisição, use cursor com since + last_id para paginar)
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Timestamp ISO 8601 (polling de novas mensagens)
+        - name: last_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: ID da última mensagem da página anterior (cursor exato usado com since)
+      responses:
+        '200':
+          description: Mensagens do canal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /messages:
+    post:
+      tags: [Messages]
+      summary: Envia mensagem
+      description: "Permission Check: `send_messages`"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateMessageRequest'
+      responses:
+        '201':
+          description: Mensagem criada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /messages/{message_id}:
+    put:
+      tags: [Messages]
+      summary: Edita mensagem
+      description: "Permission Check: autor da mensagem"
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMessageRequest'
+      responses:
+        '200':
+          description: Mensagem editada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Messages]
+      summary: Remove mensagem
+      description: "Permission Check: autor da mensagem ou `delete_messages`"
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '204':
+          description: Mensagem removida
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /emojis:
+    get:
+      tags: [Emojis]
+      summary: Lista emojis (Limite de 25 por requisição, use cursor com since + last_id para paginar)
+      parameters:
+        - name: server_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Filtro por servidor
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Timestamp ISO 8601 (paginação por created_at)
+        - name: last_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: ID do último emoji da página anterior (cursor exato usado com since)
+      responses:
+        '200':
+          description: Lista de emojis
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  emojis:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Emoji'
+                  has_more:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [Emojis]
+      summary: Cria emoji
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEmojiRequest'
+      responses:
+        '201':
+          description: Emoji criado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Emoji'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Nome de emoji já existe no servidor
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /emojis/{emoji_id}:
+    delete:
+      tags: [Emojis]
+      summary: Remove emoji
+      description: "Permission Check: Author ou `manage_server`"
+      parameters:
+        - $ref: '#/components/parameters/EmojiId'
+      responses:
+        '204':
+          description: Emoji removido
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /attachments/{file_id}:
+    get:
+      tags: [Attachments]
+      summary: Download de arquivo
+      description: "Permission Check: `read_channel` do canal da mensagem que possui o attachment"
+      parameters:
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Arquivo binário (Content-Type = mime type do arquivo)
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /search:
+    post:
+      tags: [Search]
+      summary: Busca com diversos parâmetros (Limite de 100 por requisição, use cursor com since + last_id para paginar)
+      description: |
+        Os resultados são limitados a canais legíveis pelo usuário autenticado
+        (canais de servidores dos quais ele é dono, canais abertos sem permissões
+        definidas ou canais em que uma das suas roles do servidor tem read_channel).
+      parameters:
+        - name: server_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Filtro por servidor
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Timestamp ISO 8601 (paginação por created_at)
+        - name: last_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: ID do último resultado da página anterior (cursor exato usado com since)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Resultados da busca
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Termo de busca ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ws:
+    get:
+      tags: [WebSocket]
+      summary: WebSocket (handshake com o mesmo cookie Auth)
+      description: |
+        Endpoint WebSocket: `ws://localhost:8080/ws`. O JWT do cookie `Auth`
+        é validado no handshake. Eventos (conforme README):
+        | Event             | Direção  | Payload                                                        |
+        |-------------------|----------|----------------------------------------------------------------|
+        | `message`         | outbound | `{ type: "message", id, channel_id, author_id, content, attachments?, created_at }` |
+        | `message_edit`    | outbound | `{ type: "message_edit", id, channel_id, content, edited_at }` |
+        | `message_delete`  | outbound | `{ type: "message_delete", id, channel_id }`                   |
+        | `channel_create`  | outbound | `{ type: "channel_create", channel_id, server_id, name, position }` |
+        | `channel_update`  | outbound | `{ type: "channel_update", channel_id, server_id, name, position }` |
+        | `channel_delete`  | outbound | `{ type: "channel_delete", channel_id, server_id }`            |
+        | `typing`          | inbound  | `{ type: "typing", channel_id }`                               |
+        | `typing`          | outbound | `{ type: "typing", channel_id, user_id, is_typing }`           |
+        | `presence_update` | outbound | `{ type: "presence_update", user_id, status, status_message }` |
+        | `heartbeat`       | inbound  | `{ type: "heartbeat" }`                                        |
+        | `heartbeat_ack`   | outbound | `{ type: "heartbeat_ack" }`                                    |
+        | `error`           | outbound | `{ type: "error", message, code? }`                            |
+      responses:
+        '101':
+          description: WebSocket upgrade
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: Auth
+      description: JWT em cookie HttpOnly (Path=/, Secure, SameSite=Strict)
+
+  parameters:
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ServerId:
+      name: server_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ChannelId:
+      name: channel_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RoleId:
+      name: role_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    MessageId:
+      name: message_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    EmojiId:
+      name: emoji_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthorized:
+      description: Token ausente, inválido ou expirado
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Autenticado, mas sem permissão
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Recurso não encontrado
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Banned:
+      description: IP/usuário banido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: Erro interno do servidor
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      description: Erro RFC 7807 (application/problem+json)
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          example: https://papo.com/errors/invalid-param
+        title:
+          type: string
+          example: Parâmetro inválido
+        status:
+          type: integer
+          example: 400
+        detail:
+          type: string
+          example: Campo 'username' é obrigatório
+        instance:
+          type: string
+          example: /auth/login
+
+    GenericResponse:
+      type: object
+      properties:
+        response:
+          type: string
+          example: User status updated successfully
+
+    RegisterRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    RegisterResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    LoginResponse:
+      type: object
+      properties:
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            username:
+              type: string
+        token:
+          type: string
+          description: JWT (também definido no cookie Auth)
+
+    LoginServerRequest:
+      type: object
+      required: [server_password]
+      properties:
+        server_password:
+          type: string
+
+    LoginServerResponse:
+      type: object
+      properties:
+        temp_token:
+          type: string
+          description: JWT temporário de 30min (também definido no cookie Auth)
+
+    UserSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        nickname:
+          type: string
+          nullable: true
+        status_message:
+          type: string
+          nullable: true
+        status_updated_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        nickname:
+          type: string
+          nullable: true
+        avatar_blob:
+          type: string
+          format: byte
+          description: Avatar em base64
+        avatar_format:
+          type: string
+          example: PNG
+        status_message:
+          type: string
+          nullable: true
+        status_updated_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    WhoamiResponse:
+      allOf:
+        - $ref: '#/components/schemas/UserProfile'
+        - type: object
+          properties:
+            settings:
+              type: object
+              properties:
+                version:
+                  type: integer
+                config:
+                  $ref: '#/components/schemas/UserConfig'
+
+    UserSettings:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        config:
+          $ref: '#/components/schemas/UserConfig'
+        updated_at:
+          type: string
+          format: date-time
+
+    UserConfig:
+      type: object
+      properties:
+        theme:
+          type: string
+          enum: [dark, light, system]
+        notifications:
+          $ref: '#/components/schemas/Notifications'
+        display:
+          $ref: '#/components/schemas/Display'
+
+    Notifications:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        messagePreview:
+          type: boolean
+        sound:
+          type: boolean
+        mentions:
+          type: boolean
+
+    Display:
+      type: object
+      properties:
+        fontSize:
+          type: string
+          enum: [small, medium, huge]
+        messageDensity:
+          type: string
+          enum: [compact, normal, comfortable]
+        showTimestamps:
+          type: boolean
+        showAvatars:
+          type: boolean
+
+    UpdateUserRequest:
+      type: object
+      required: [nickname, status]
+      properties:
+        nickname:
+          type: string
+          maxLength: 32
+        status:
+          type: string
+          maxLength: 64
+
+    UpdateAvatarRequest:
+      type: object
+      required: [avatar, avatar_format]
+      properties:
+        avatar:
+          type: string
+          description: Base64 de GIF, JPEG ou PNG (máx. 2MB)
+        avatar_format:
+          type: string
+          enum: [GIF, JPEG, PNG]
+
+    ChangePasswordRequest:
+      type: object
+      required: [password]
+      properties:
+        password:
+          type: string
+          description: Nova senha do usuário
+
+    BanUserRequest:
+      type: object
+      required: [ban_state]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: ID do usuário (o id da URL é o autoritativo)
+        ban_state:
+          type: boolean
+          description: true para banir, false para desbanir
+
+    UpdateServerRequest:
+      type: object
+      required: [name]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: ID do servidor (o id da URL é o autoritativo)
+        name:
+          type: string
+        icon_blob:
+          type: string
+          format: byte
+          description: Ícone em base64 (GIF/JPEG/PNG, máx. 2MB); vazio remove o ícone
+        icon_format:
+          type: string
+          enum: [GIF, JPEG, PNG]
+        password:
+          type: string
+          description: Senha do servidor; obrigatória quando o servidor ficar privado (public=false)
+        public:
+          type: boolean
+          description: Servidor público; ausente mantém a visibilidade atual
+
+    CreateServerRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        icon_blob:
+          type: string
+          format: byte
+          description: Ícone em base64 (GIF/JPEG/PNG, máx. 2MB)
+        icon_format:
+          type: string
+          enum: [GIF, JPEG, PNG]
+        password:
+          type: string
+          description: Senha do servidor; obrigatória quando public=false
+        public:
+          type: boolean
+          description: Servidor público; ausente significa público (default do schema)
+
+    CreateServerResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        icon_blob:
+          type: string
+          format: byte
+        icon_format:
+          type: string
+        owner_id:
+          type: string
+          format: uuid
+        owner_username:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    Server:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        icon_blob:
+          type: string
+          format: byte
+          description: Ícone em base64
+        icon_format:
+          type: string
+          example: PNG
+        owner_id:
+          type: string
+          format: uuid
+        public:
+          type: boolean
+          description: Servidor público
+        owner_username:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        channel_count:
+          type: integer
+        member_count:
+          type: integer
+        role_count:
+          type: integer
+          nullable: true
+          description: Presente somente em GET /servers/{server_id}
+
+    Channel:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        server_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+          enum: [text, category]
+        position:
+          type: integer
+          description: Posição do canal na visualização do servidor (1-based)
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChannelPermissionEntry'
+        created_at:
+          type: string
+          format: date-time
+        last_message:
+          $ref: '#/components/schemas/Message'
+
+    ChannelPermissionEntry:
+      type: object
+      properties:
+        role_id:
+          type: string
+          format: uuid
+        role_name:
+          type: string
+        permissions:
+          $ref: '#/components/schemas/ChannelPermissions'
+
+    ChannelPermissions:
+      type: object
+      properties:
+        read_channel:
+          type: boolean
+        send_messages:
+          type: boolean
+        delete_messages:
+          type: boolean
+
+    ChannelPermissionsResponse:
+      type: object
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChannelPermissionEntry'
+
+    CreateChannelRequest:
+      type: object
+      required: [server_id, name]
+      properties:
+        server_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+
+    ChangeChannelPositionRequest:
+      type: object
+      required: [old_position, new_position]
+      properties:
+        old_position:
+          type: integer
+        new_position:
+          type: integer
+
+    UpdateChannelPermissionsRequest:
+      type: object
+      required: [permissions]
+      properties:
+        permissions:
+          $ref: '#/components/schemas/ChannelPermissions'
+
+    Message:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+          format: uuid
+        channel_id:
+          type: string
+          format: uuid
+        author_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        edited_at:
+          type: string
+          format: date-time
+          nullable: true
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Attachment'
+          description: >
+            O schema (attachments.messages_id) permite múltiplos attachments
+            por mensagem.
+
+    MessageListResponse:
+      type: object
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        has_more:
+          type: boolean
+
+    CreateMessageRequest:
+      type: object
+      required: [channel_id]
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+        attachments:
+          type: array
+          items:
+            type: string
+            format: binary
+
+    UpdateMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+
+    Attachment:
+      type: object
+      description: >
+        Informação mínima do attachment exposta nas respostas de mensagens
+        (listagem, criação e edição).
+      properties:
+        id:
+          type: string
+          format: uuid
+        mime_type:
+          type: string
+        original_file_name:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+
+    Role:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        server_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        color:
+          type: string
+          nullable: true
+          example: '#FF0000'
+        permissions:
+          $ref: '#/components/schemas/RolePermissions'
+        created_at:
+          type: string
+          format: date-time
+
+    RolePermissions:
+      type: object
+      properties:
+        manage_server:
+          type: boolean
+        manage_channels:
+          type: boolean
+        manage_roles:
+          type: boolean
+        ban_members:
+          type: boolean
+        pin_message:
+          type: boolean
+        everyone_message:
+          type: boolean
+        send_attachment:
+          type: boolean
+
+    CreateRoleRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        color:
+          type: string
+        permissions:
+          $ref: '#/components/schemas/RolePermissions'
+
+    UpdateRoleRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        color:
+          type: string
+        permissions:
+          $ref: '#/components/schemas/RolePermissions'
+
+    UserRole:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        role_id:
+          type: string
+          format: uuid
+        assigned_at:
+          type: string
+          format: date-time
+
+    AssignRoleRequest:
+      type: object
+      required: [role_id]
+      properties:
+        role_id:
+          type: string
+          format: uuid
+
+    Emoji:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        server_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        format:
+          type: string
+          enum: [GIF, JPEG, PNG]
+        image_blob:
+          type: string
+          format: byte
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+
+    CreateEmojiRequest:
+      type: object
+      required: [server_id, name, image_blob, format]
+      properties:
+        server_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        image_blob:
+          type: string
+          format: byte
+        format:
+          type: string
+          enum: [GIF, JPEG, PNG]
+
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+        has_more:
+          type: boolean
+          description: Indica se existe próxima página (cursor since + last_id)
+
+    SearchRequest:
+      type: object
+      description: Pelo menos 1 campo obrigatório; os filtros podem ser combinados
+      properties:
+        text:
+          type: string
+          description: Termo de busca
+        author:
+          type: string
+          format: uuid
+          description: Filtro por autor da mensagem
+        order:
+          type: string
+          enum: [asc, desc]
+          description: Ordem dos resultados por data
+        date_start:
+          type: string
+          format: date
+          description: Data inicial do filtro (inclusive)
+        date_end:
+          type: string
+          format: date
+          description: Data final do filtro (inclusive)
+        contains_attachment:
+          type: boolean
+          description: Filtra mensagens com attachment
+
+    SearchResult:
+      type: object
+      properties:
+        type:
+          type: string
+          example: message
+        id:
+          type: string
+          format: uuid
+        content:
+          type: string
+        channel_id:
+          type: string
+          format: uuid
+        channel_name:
+          type: string
+        server_id:
+          type: string
+          format: uuid
+        author_id:
+          type: string
+          format: uuid
+        author_username:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        score:
+          type: number
+          format: double

@@ -1,0 +1,67 @@
+# Go
+*.exe
+*.out
+*.swp
+*~
+.DS_Store
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Node / SvelteKit
+node_modules
+.svelte-kit
+.svelte
+kit/
+vite.config.ts
+package-lock.json
+yarn.lock
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.kilo
+
+# Docker
+# Note: Docker Compose e arquivos de configuração devem ser commitados,
+# mas arquivos gerados no runtime (como logs do container) não.
+
+# Log files
+*.log
+logs/
+
+# Attachments (arquivos uploadados pelos usuários)
+attachments/
+!attachments/.gitkeep
+
+# Database
+*.sqlite
+*.db
+
+# Build outputs
+dist
+build
+*.svelte-kit
+
+# Temporary files
+tmp
+temp
+*.tmp
+*.temp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+#Dev
+README_Internal.md
+PROJECT_ROADMAP.md
+AGENTS.md
+
