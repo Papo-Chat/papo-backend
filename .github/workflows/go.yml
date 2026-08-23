@@ -67,7 +67,14 @@ jobs:
           AUTH_RATE_BURST: "10"
           RATE_LIMIT: "20"
           RATE_BURST: "40"
-        run: go test -v -race ./...
+        run: go test -v -coverprofile=coverage.txt -covermode=atomic ./...
+
+      - name: Upload para o Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.txt
+          fail_ci_if_error: true 
 
       - name: Vet
         run: go vet ./...
