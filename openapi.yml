@@ -1222,7 +1222,7 @@ paths:
         | `typing`         | outbound  | `{ "typing", channel_id, user_id, is_typing }`                                    |
         | `avatar_update`  | outbound  | `{ "avatar_update", user_id }`                                                    |
         | `presence_update`| outbound  | `{ "presence_update", user_id, status, status_message, nickname }`                |  
-        | `presence_sync  `| unicast   | `{ "presence_sync", (user_id, status, status_message)[] }`                        |  
+        | `presence_sync  `| unicast   | `{ "presence_sync", (user_id, status, status_message, nickname)[] }`              |  
         | `heartbeat`      | inbound   | `{ "heartbeat" }`                                                                 |
         | `heartbeat_ack`  | outbound  | `{ "heartbeat_ack" }`                                                             |
         | `error`          | outbound  | `{ "error", message, code? }`                                                     |
