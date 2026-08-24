@@ -189,10 +189,10 @@ func UpdateUserHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao atualizar o perfil do usuário")
 	}
 
-	// Notifica os clientes conectados do novo status (presence_update); se o
-	// usuário estiver offline, o estado efêmero é atualizado apenas na próxima
-	// conexão.
-	websocket.GetHub().UpdateStatusMessage(userID, req.Status)
+	// Notifica os clientes conectados do novo nickname e status
+	// (presence_update); se o usuário estiver offline, o estado efêmero é
+	// atualizado apenas na próxima conexão.
+	websocket.GetHub().UpdateStatusMessage(userID, req.Status, req.Nickname)
 
 	return c.JSON(http.StatusOK, map[string]string{
 		"response": "User status updated successfully",
@@ -243,6 +243,12 @@ func UpdateAvatarHandler(baseURL string, c echo.Context) error {
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
 			"internal", "Erro interno", "falha ao atualizar o avatar do usuário")
 	}
+
+	// Notifica os clientes conectados da atualização do avatar (avatar_update).
+	websocket.GetHub().Broadcast(websocket.AvatarUpdateOutbound{
+		Type:   websocket.EventTypeAvatarUpdate,
+		UserID: userID,
+	})
 
 	return c.JSON(http.StatusOK, map[string]string{
 		"response": "User avatar updated successfully",

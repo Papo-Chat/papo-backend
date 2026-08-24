@@ -32,6 +32,7 @@ type PresenceStore struct {
 type presenceEntry struct {
 	connections   int
 	statusMessage *string
+	nickname      *string
 }
 
 // NewPresenceStore cria um PresenceStore vazio.
@@ -40,17 +41,17 @@ func NewPresenceStore() *PresenceStore {
 }
 
 // AddConnection registra uma conexão ativa do usuário.
-// statusMessage é usado apenas na primeira conexão (criação da entrada); as
-// demais conexões não a alteram (a atualização em runtime é feita por
-// SetStatusMessage).
+// statusMessage e nickname são usados apenas na primeira conexão (criação da
+// entrada); as demais conexões não as alteram (a atualização em runtime é
+// feita por SetStatusMessage e SetNickname).
 // Retorna true quando o usuário transiciona de offline para online.
-func (p *PresenceStore) AddConnection(userID string, statusMessage *string) bool {
+func (p *PresenceStore) AddConnection(userID string, statusMessage, nickname *string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	entry, ok := p.users[userID]
 	if !ok {
-		p.users[userID] = &presenceEntry{connections: 1, statusMessage: statusMessage}
+		p.users[userID] = &presenceEntry{connections: 1, statusMessage: statusMessage, nickname: nickname}
 		return true
 	}
 	entry.connections++
@@ -90,6 +91,20 @@ func (p *PresenceStore) SetStatusMessage(userID string, statusMessage *string) b
 	return true
 }
 
+// SetNickname atualiza o nickname de um usuário online.
+// Retorna false quando o usuário está offline.
+func (p *PresenceStore) SetNickname(userID string, nickname *string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	entry, ok := p.users[userID]
+	if !ok {
+		return false
+	}
+	entry.nickname = nickname
+	return true
+}
+
 // StatusMessage retorna a mensagem de status de um usuário online, ou nil
 // quando o usuário está offline ou não tem mensagem.
 func (p *PresenceStore) StatusMessage(userID string) *string {
@@ -98,6 +113,18 @@ func (p *PresenceStore) StatusMessage(userID string) *string {
 
 	if entry, ok := p.users[userID]; ok {
 		return entry.statusMessage
+	}
+	return nil
+}
+
+// Nickname retorna o nickname de um usuário online, ou nil quando o usuário
+// está offline ou não tem nickname.
+func (p *PresenceStore) Nickname(userID string) *string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if entry, ok := p.users[userID]; ok {
+		return entry.nickname
 	}
 	return nil
 }

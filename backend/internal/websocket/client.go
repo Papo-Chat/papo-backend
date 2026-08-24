@@ -42,6 +42,7 @@ type Client struct {
 	conn          *websocket.Conn
 	userID        string
 	statusMessage *string
+	nickname      *string
 	send          chan []byte
 
 	// mu protege closed e o fechamento do canal send, garantindo que Send
@@ -56,13 +57,15 @@ type Client struct {
 
 // NewClient cria um Client com canal de envio bufferizado.
 // statusMessage é a mensagem de status persistida do usuário
-// (users.status_message), carregada pelo handler na conexão.
-func NewClient(hub *Hub, conn *websocket.Conn, userID string, statusMessage *string) *Client {
+// (users.status_message) e nickname é o nickname persistido (users.nickname),
+// ambos carregados pelo handler na conexão.
+func NewClient(hub *Hub, conn *websocket.Conn, userID string, statusMessage, nickname *string) *Client {
 	return &Client{
 		hub:           hub,
 		conn:          conn,
 		userID:        userID,
 		statusMessage: statusMessage,
+		nickname:      nickname,
 		send:          make(chan []byte, sendBufferSize),
 	}
 }
@@ -70,8 +73,8 @@ func NewClient(hub *Hub, conn *websocket.Conn, userID string, statusMessage *str
 // Connect registra a conexão autenticada no Hub e inicia os pumps de leitura
 // e escrita. O upgrade HTTP deve ter sido feito pelo handler e o Hub.Run
 // deve estar ativo.
-func Connect(hub *Hub, conn *websocket.Conn, userID string, statusMessage *string) *Client {
-	client := NewClient(hub, conn, userID, statusMessage)
+func Connect(hub *Hub, conn *websocket.Conn, userID string, statusMessage, nickname *string) *Client {
+	client := NewClient(hub, conn, userID, statusMessage, nickname)
 	hub.Register(client)
 	go client.WritePump()
 	go client.ReadPump()

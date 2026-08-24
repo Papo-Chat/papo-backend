@@ -17,6 +17,7 @@ const (
 	EventTypeChannelUpdate  EventType = "channel_update"
 	EventTypeChannelDelete  EventType = "channel_delete"
 	EventTypeTyping         EventType = "typing"
+	EventTypeAvatarUpdate   EventType = "avatar_update"
 	EventTypePresenceUpdate EventType = "presence_update"
 	EventTypePresenceSync   EventType = "presence_sync"
 	EventTypeHeartbeat      EventType = "heartbeat"
@@ -111,12 +112,20 @@ type TypingOutbound struct {
 	IsTyping  bool      `json:"is_typing"`
 }
 
+// AvatarUpdateOutbound é o evento de atualização de avatar distribuído aos
+// clientes.
+type AvatarUpdateOutbound struct {
+	Type   EventType `json:"type"`
+	UserID string    `json:"user_id"`
+}
+
 // PresenceUpdateOutbound é o evento de presença/status distribuído aos clientes.
 type PresenceUpdateOutbound struct {
 	Type          EventType `json:"type"`
 	UserID        string    `json:"user_id"`
 	Status        string    `json:"status"`                   //online/offline
 	StatusMessage *string   `json:"status_message,omitempty"` //mensagem pessoal
+	Nickname      *string   `json:"nickname,omitempty"`       //apelido do usuário
 }
 
 // PresenceSyncOutbound é a lista de membros online enviada ao cliente no

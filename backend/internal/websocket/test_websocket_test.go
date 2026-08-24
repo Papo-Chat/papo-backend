@@ -115,6 +115,13 @@ func newWSHub(t *testing.T) *Hub {
 	return hub
 }
 
+// wsTestUser é o perfil persistido de um usuário de teste, carregado na
+// conexão (mesmo fluxo do handler GET /ws).
+type wsTestUser struct {
+	statusMessage *string
+	nickname      *string
+}
+
 // wsTestServer é um servidor HTTP de teste que faz o upgrade para WebSocket e
 // registra a conexão no Hub com o usuário informado no query param "user"
 // (mesmo fluxo do handler GET /ws, sem a autenticação JWT).
@@ -124,7 +131,7 @@ type wsTestServer struct {
 	clients []*Client
 }
 
-func newWSTestServer(t *testing.T, hub *Hub, statusMessages map[string]*string) *wsTestServer {
+func newWSTestServer(t *testing.T, hub *Hub, users map[string]*wsTestUser) *wsTestServer {
 	t.Helper()
 	environment := &wsTestServer{}
 	upgrader := ws.Upgrader{}
@@ -134,11 +141,14 @@ func newWSTestServer(t *testing.T, hub *Hub, statusMessages map[string]*string) 
 		if err != nil {
 			return
 		}
-		var statusMessage *string
-		if statusMessages != nil {
-			statusMessage = statusMessages[userID]
+		var statusMessage, nickname *string
+		if users != nil {
+			if u := users[userID]; u != nil {
+				statusMessage = u.statusMessage
+				nickname = u.nickname
+			}
 		}
-		client := Connect(hub, conn, userID, statusMessage)
+		client := Connect(hub, conn, userID, statusMessage, nickname)
 		environment.mu.Lock()
 		environment.clients = append(environment.clients, client)
 		environment.mu.Unlock()
@@ -183,6 +193,7 @@ type wsEvent struct {
 	IsTyping      bool            `json:"is_typing"`
 	Status        string          `json:"status"`
 	StatusMessage *string         `json:"status_message"`
+	Nickname      *string         `json:"nickname"`
 	Members       []wsEventMember `json:"members"`
 }
 
@@ -472,6 +483,7 @@ func TestEventTypeIsInbound(t *testing.T) {
 		{"typing", EventTypeTyping, true},
 		{"heartbeat", EventTypeHeartbeat, true},
 		{"message", EventTypeMessage, false},
+		{"avatar_update", EventTypeAvatarUpdate, false},
 		{"message_edit", EventTypeMessageEdit, false},
 		{"message_delete", EventTypeMessageDelete, false},
 		{"channel_create", EventTypeChannelCreate, false},
@@ -497,10 +509,10 @@ func TestPresenceStore(t *testing.T) {
 	t.Run("transições online/offline", func(t *testing.T) {
 		p := NewPresenceStore()
 
-		if !p.AddConnection("user_a", nil) {
+		if !p.AddConnection("user_a", nil, nil) {
 			t.Error("a primeira conexão deveria transicionar para online")
 		}
-		if p.AddConnection("user_a", nil) {
+		if p.AddConnection("user_a", nil, nil) {
 			t.Error("a segunda conexão do mesmo usuário não deveria transicionar")
 		}
 		if p.RemoveConnection("user_a") {
@@ -525,7 +537,7 @@ func TestPresenceStore(t *testing.T) {
 			t.Errorf("StatusMessage de usuário offline deveria ser nil, obtive %v", got)
 		}
 
-		p.AddConnection("user_a", &oi)
+		p.AddConnection("user_a", &oi, nil)
 		if got := p.StatusMessage("user_a"); got == nil || *got != "oi" {
 			t.Errorf("StatusMessage deveria ser a mensagem da primeira conexão, obtive %v", got)
 		}
@@ -538,11 +550,44 @@ func TestPresenceStore(t *testing.T) {
 		}
 	})
 
+	t.Run("nickname", func(t *testing.T) {
+		p := NewPresenceStore()
+		nick := "nick"
+
+		if p.SetNickname("user_a", &nick) {
+			t.Error("SetNickname em usuário offline deveria retornar false")
+		}
+		if got := p.Nickname("user_a"); got != nil {
+			t.Errorf("Nickname de usuário offline deveria ser nil, obtive %v", got)
+		}
+
+		p.AddConnection("user_a", nil, &nick)
+		if got := p.Nickname("user_a"); got == nil || *got != "nick" {
+			t.Errorf("Nickname deveria ser o nickname da primeira conexão, obtive %v", got)
+		}
+
+		// A segunda conexão não sobrescreve o nickname da entrada.
+		outro := "outro"
+		if p.AddConnection("user_a", nil, &outro) {
+			t.Error("a segunda conexão do mesmo usuário não deveria transicionar")
+		}
+		if got := p.Nickname("user_a"); got == nil || *got != "nick" {
+			t.Errorf("a segunda conexão não deveria alterar o nickname, obtive %v", got)
+		}
+
+		if !p.SetNickname("user_a", nil) {
+			t.Error("SetNickname em usuário online deveria retornar true")
+		}
+		if got := p.Nickname("user_a"); got != nil {
+			t.Errorf("Nickname deveria ter sido limpo, obtive %v", got)
+		}
+	})
+
 	t.Run("OnlineMembers ordenado por user_id", func(t *testing.T) {
 		p := NewPresenceStore()
 		z := "status zeta"
-		p.AddConnection("zeta", &z)
-		p.AddConnection("alpha", nil)
+		p.AddConnection("zeta", &z, nil)
+		p.AddConnection("alpha", nil, nil)
 
 		members := p.OnlineMembers()
 		if len(members) != 2 {
@@ -571,7 +616,7 @@ func TestPresenceStore(t *testing.T) {
 func TestHubPresenceSyncOnConnect(t *testing.T) {
 	status := "status de teste"
 	hub := newWSHub(t)
-	env := newWSTestServer(t, hub, map[string]*string{"user_a": &status})
+	env := newWSTestServer(t, hub, map[string]*wsTestUser{"user_a": {statusMessage: &status}})
 
 	conn := env.dial(t, "user_a")
 	event := readEvent(t, conn)
@@ -619,7 +664,7 @@ func TestHubPresenceUpdateOnJoinAndLeave(t *testing.T) {
 func TestHubMultipleConnectionsSameUser(t *testing.T) {
 	status := "status original"
 	hub := newWSHub(t)
-	env := newWSTestServer(t, hub, map[string]*string{"user_a": &status})
+	env := newWSTestServer(t, hub, map[string]*wsTestUser{"user_a": {statusMessage: &status}})
 
 	connB := env.dial(t, "user_b")
 	readEvent(t, connB) // presence_sync
@@ -715,6 +760,35 @@ func TestHubBroadcastToUsers(t *testing.T) {
 	expectNoEvent(t, connB, wsNoEventTimeout)
 }
 
+func TestHubBroadcastAvatarUpdate(t *testing.T) {
+	hub := newWSHub(t)
+	env := newWSTestServer(t, hub, nil)
+
+	connA := env.dial(t, "user_a")
+	readEvent(t, connA)
+	connB := env.dial(t, "user_b")
+	readEvent(t, connB)
+	readEvent(t, connA) // presence_update user_b online
+
+	// avatar_update é global: todos os clientes conectados recebem.
+	hub.Broadcast(AvatarUpdateOutbound{
+		Type:   EventTypeAvatarUpdate,
+		UserID: "user_a",
+	})
+
+	for name, conn := range map[string]*ws.Conn{"user_a": connA, "user_b": connB} {
+		t.Run(name, func(t *testing.T) {
+			event := readEvent(t, conn)
+			if event.Type != string(EventTypeAvatarUpdate) {
+				t.Fatalf("esperava evento avatar_update, obtive %q", event.Type)
+			}
+			if event.UserID != "user_a" {
+				t.Errorf("user_id inesperado: %q", event.UserID)
+			}
+		})
+	}
+}
+
 func TestHubUpdateStatusMessage(t *testing.T) {
 	hub := newWSHub(t)
 	env := newWSTestServer(t, hub, nil)
@@ -726,7 +800,7 @@ func TestHubUpdateStatusMessage(t *testing.T) {
 	readEvent(t, connA) // presence_update user_b online
 
 	newStatus := "novo status"
-	if !hub.UpdateStatusMessage("user_b", &newStatus) {
+	if !hub.UpdateStatusMessage("user_b", &newStatus, nil) {
 		t.Fatal("UpdateStatusMessage em usuário online deveria retornar true")
 	}
 	event := readEvent(t, connA)
@@ -737,10 +811,99 @@ func TestHubUpdateStatusMessage(t *testing.T) {
 		t.Errorf("status_message inesperado: %v", event.StatusMessage)
 	}
 
-	if hub.UpdateStatusMessage("user_offline", &newStatus) {
+	if hub.UpdateStatusMessage("user_offline", &newStatus, nil) {
 		t.Error("UpdateStatusMessage em usuário offline deveria retornar false")
 	}
 	expectNoEvent(t, connA, wsNoEventTimeout)
+}
+
+func TestHubPresenceUpdateWithNickname(t *testing.T) {
+	t.Run("nickname na transição e na atualização", func(t *testing.T) {
+		hub := newWSHub(t)
+		nickB := "nick_b"
+		statusB := "status de b"
+		env := newWSTestServer(t, hub, map[string]*wsTestUser{"user_b": {statusMessage: &statusB, nickname: &nickB}})
+
+		connA := env.dial(t, "user_a")
+		readEvent(t, connA) // presence_sync
+
+		// user_b conecta com nickname: user_a recebe presence_update com o nickname.
+		connB := env.dial(t, "user_b")
+		readEvent(t, connB) // presence_sync
+		event := readEvent(t, connA)
+		if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_b" || event.Status != StatusOnline {
+			t.Fatalf("esperava presence_update online do user_b, obtive %+v", event)
+		}
+		if event.StatusMessage == nil || *event.StatusMessage != statusB {
+			t.Errorf("status_message inesperado: %v", event.StatusMessage)
+		}
+		if event.Nickname == nil || *event.Nickname != nickB {
+			t.Errorf("nickname inesperado: %v", event.Nickname)
+		}
+
+		// Atualização em runtime (PUT /users/:id): status e nickname mudam juntos.
+		newStatus := "novo status"
+		newNick := "novo nick"
+		if !hub.UpdateStatusMessage("user_b", &newStatus, &newNick) {
+			t.Fatal("UpdateStatusMessage em usuário online deveria retornar true")
+		}
+		event = readEvent(t, connA)
+		if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_b" || event.Status != StatusOnline {
+			t.Fatalf("esperava presence_update do user_b, obtive %+v", event)
+		}
+		if event.StatusMessage == nil || *event.StatusMessage != newStatus {
+			t.Errorf("status_message inesperado: %v", event.StatusMessage)
+		}
+		if event.Nickname == nil || *event.Nickname != newNick {
+			t.Errorf("nickname inesperado: %v", event.Nickname)
+		}
+
+		// O evento offline carrega o último nickname conhecido.
+		connB.Close()
+		event = readEvent(t, connA)
+		if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_b" || event.Status != StatusOffline {
+			t.Fatalf("esperava presence_update offline do user_b, obtive %+v", event)
+		}
+		if event.Nickname == nil || *event.Nickname != newNick {
+			t.Errorf("o offline deveria carregar o último nickname, obtive %v", event.Nickname)
+		}
+		if event.StatusMessage != nil {
+			t.Errorf("o offline não deveria carregar status_message, obtive %v", event.StatusMessage)
+		}
+
+		// User_b está offline: nada a atualizar e nenhum evento.
+		if hub.UpdateStatusMessage("user_b", &newStatus, &newNick) {
+			t.Error("UpdateStatusMessage em usuário offline deveria retornar false")
+		}
+		expectNoEvent(t, connA, wsNoEventTimeout)
+	})
+
+	t.Run("limpeza omite os campos", func(t *testing.T) {
+		hub := newWSHub(t)
+		nick := "nick"
+		status := "status"
+		env := newWSTestServer(t, hub, map[string]*wsTestUser{"user_b": {statusMessage: &status, nickname: &nick}})
+
+		connA := env.dial(t, "user_a")
+		readEvent(t, connA) // presence_sync
+		connB := env.dial(t, "user_b")
+		readEvent(t, connB) // presence_sync
+		readEvent(t, connA) // presence_update user_b online
+
+		if !hub.UpdateStatusMessage("user_b", nil, nil) {
+			t.Fatal("UpdateStatusMessage em usuário online deveria retornar true")
+		}
+		event := readEvent(t, connA)
+		if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_b" || event.Status != StatusOnline {
+			t.Fatalf("esperava presence_update do user_b, obtive %+v", event)
+		}
+		if event.StatusMessage != nil {
+			t.Errorf("status_message deveria ter sido omitido, obtive %v", event.StatusMessage)
+		}
+		if event.Nickname != nil {
+			t.Errorf("nickname deveria ter sido omitido, obtive %v", event.Nickname)
+		}
+	})
 }
 
 func TestHubShutdownClosesConnections(t *testing.T) {
@@ -827,6 +990,7 @@ func TestClientHandleInboundEvents(t *testing.T) {
 		{"json inválido", "isto não é json"},
 		{"tipo ausente", `{"foo":"bar"}`},
 		{"tipo outbound usado como inbound", `{"type":"message","id":"m1"}`},
+		{"avatar_update usado como inbound", `{"type":"avatar_update","user_id":"u1"}`},
 		{"typing sem canal", `{"type":"typing"}`},
 		{"typing com canal vazio", `{"type":"typing","channel_id":""}`},
 	}

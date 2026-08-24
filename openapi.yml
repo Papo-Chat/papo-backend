@@ -1210,20 +1210,22 @@ paths:
       description: |
         Endpoint WebSocket: `ws://localhost:8080/ws`. O JWT do cookie `Auth`
         é validado no handshake. Eventos (conforme README):
-        | Event             | Direção  | Payload                                                        |
-        |-------------------|----------|----------------------------------------------------------------|
-        | `message`         | outbound | `{ type: "message", id, channel_id, author_id, content, attachments?, created_at }` |
-        | `message_edit`    | outbound | `{ type: "message_edit", id, channel_id, content, edited_at }` |
-        | `message_delete`  | outbound | `{ type: "message_delete", id, channel_id }`                   |
-        | `channel_create`  | outbound | `{ type: "channel_create", channel_id, server_id, name, position }` |
-        | `channel_update`  | outbound | `{ type: "channel_update", channel_id, server_id, name, position }` |
-        | `channel_delete`  | outbound | `{ type: "channel_delete", channel_id, server_id }`            |
-        | `typing`          | inbound  | `{ type: "typing", channel_id }`                               |
-        | `typing`          | outbound | `{ type: "typing", channel_id, user_id, is_typing }`           |
-        | `presence_update` | outbound | `{ type: "presence_update", user_id, status, status_message, nickname }` |
-        | `heartbeat`       | inbound  | `{ type: "heartbeat" }`                                        |
-        | `heartbeat_ack`   | outbound | `{ type: "heartbeat_ack" }`                                    |
-        | `error`           | outbound | `{ type: "error", message, code? }`                            |
+        | Event            | Direction | Payload                                                                           |
+        | ---------        | --------- | ---------------------------------------------------------------------             |
+        | `message`        | outbound  | `{ "type", id, channel_id, author_id, content, attachments, created_at }`         |
+        | `message_edit`   | outbound  | `{ "message_edit", id, channel_id, content, edited_at }`                          |
+        | `message_delete` | outbound  | `{ "message_delete", id, channel_id }`                                            |
+        | `channel_create` | outbound  | `{ "channel_create", channel_id, server_id, name, position }`                     |
+        | `channel_update` | outbound  | `{ "channel_update", channel_id, server_id, name, position }`                     |
+        | `channel_delete` | outbound  | `{ "channel_delete", channel_id, server_id }`                                     |
+        | `typing`         | inbound   | `{ "typing", channel_id }`                                                        |
+        | `typing`         | outbound  | `{ "typing", channel_id, user_id, is_typing }`                                    |
+        | `avatar_update`  | outbound  | `{ "avatar_update", user_id }`                                                    |
+        | `presence_update`| outbound  | `{ "presence_update", user_id, status, status_message, nickname }`                |  
+        | `presence_sync  `| unicast   | `{ "presence_sync", (user_id, status, status_message)[] }`                        |  
+        | `heartbeat`      | inbound   | `{ "heartbeat" }`                                                                 |
+        | `heartbeat_ack`  | outbound  | `{ "heartbeat_ack" }`                                                             |
+        | `error`          | outbound  | `{ "error", message, code? }`                                                     |
       responses:
         '101':
           description: WebSocket upgrade

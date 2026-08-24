@@ -218,13 +218,14 @@ func (h *Hub) broadcastExcept(event any, exclude *Client) {
 // online), exceto o próprio cliente em conexão, que já recebe o estado
 // completo no presence_sync.
 func (h *Hub) presenceOnline(c *Client) {
-	becameOnline := h.presence.AddConnection(c.userID, c.statusMessage)
+	becameOnline := h.presence.AddConnection(c.userID, c.statusMessage, c.nickname)
 	if becameOnline {
 		h.broadcastExcept(PresenceUpdateOutbound{
 			Type:          EventTypePresenceUpdate,
 			UserID:        c.userID,
 			Status:        StatusOnline,
 			StatusMessage: h.presence.StatusMessage(c.userID),
+			Nickname:      h.presence.Nickname(c.userID),
 		}, c)
 	}
 
@@ -237,30 +238,34 @@ func (h *Hub) presenceOnline(c *Client) {
 // presenceOffline libera a conexão do cliente na presença. Quando esta era a
 // última conexão do usuário, notifica os clientes (presence_update offline).
 func (h *Hub) presenceOffline(c *Client) {
+	nickname := h.presence.Nickname(c.userID)
 	if !h.presence.RemoveConnection(c.userID) {
 		return
 	}
 
 	h.Broadcast(PresenceUpdateOutbound{
-		Type:   EventTypePresenceUpdate,
-		UserID: c.userID,
-		Status: StatusOffline,
+		Type:     EventTypePresenceUpdate,
+		UserID:   c.userID,
+		Status:   StatusOffline,
+		Nickname: nickname,
 	})
 }
 
-// UpdateStatusMessage atualiza a mensagem de status de um usuário online e
-// notifica os clientes (presence_update).
+// UpdateStatusMessage atualiza o nickname e a mensagem de status de um
+// usuário online e notifica os clientes (presence_update).
 // Retorna false quando o usuário está offline (nada a atualizar ou notificar).
-func (h *Hub) UpdateStatusMessage(userID string, statusMessage *string) bool {
+func (h *Hub) UpdateStatusMessage(userID string, statusMessage, nickname *string) bool {
 	if !h.presence.SetStatusMessage(userID, statusMessage) {
 		return false
 	}
+	h.presence.SetNickname(userID, nickname)
 
 	h.Broadcast(PresenceUpdateOutbound{
 		Type:          EventTypePresenceUpdate,
 		UserID:        userID,
 		Status:        StatusOnline,
 		StatusMessage: h.presence.StatusMessage(userID),
+		Nickname:      h.presence.Nickname(userID),
 	})
 	return true
 }
