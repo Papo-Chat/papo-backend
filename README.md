@@ -21,6 +21,7 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [x] Backend MVP completo (endpoints, websocket, com segurança, testes e performance)
 - [ ] Implementar /users/:id/profile
 - [ ] Event para troca de avatar/nickname
+- [ ] CORS configurável via vars. (util para rede local/teste)
 - [ ] Processamento Thumbnail no backend (com oEmbed, Opengraph, segurança reforçada)
 - [ ] Processamento Icons no Backend 
 - [ ] User Profile (Descrição, banner)
