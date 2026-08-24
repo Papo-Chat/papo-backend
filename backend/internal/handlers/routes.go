@@ -33,7 +33,7 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	e.GET("/users", func(c echo.Context) error {
 		return ListUsersHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
-	e.GET("/users/profile", func(c echo.Context) error {
+	e.GET("/users/:user_id/profile", func(c echo.Context) error {
 		return ProfileHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 	e.PUT("/users/settings", func(c echo.Context) error {

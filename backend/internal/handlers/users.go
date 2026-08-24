@@ -25,21 +25,26 @@ type profileResponse struct {
 	CreatedAt       time.Time  `json:"created_at"`
 }
 
-// ProfileHandler implementa GET /users/profile.
+// ProfileHandler implementa GET /users/:user_id/profile.
+// Qualquer usuário autenticado pode consultar o perfil de qualquer usuário.
 func ProfileHandler(baseURL string, c echo.Context) error {
-	userID, ok := c.Get(middleware.UserIDContextKey).(string)
-	if !ok || userID == "" {
+	if _, ok := c.Get(middleware.UserIDContextKey).(string); !ok {
 		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
 			"unauthorized", "Token inválido ou expirado",
 			"token de autenticação ausente, inválido ou expirado")
 	}
 
-	user, err := services.Profile(c.Request().Context(), userID)
+	targetID := c.Param("user_id")
+	if targetID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "user_id ausente")
+	}
+
+	user, err := services.Profile(c.Request().Context(), targetID)
 	switch {
 	case errors.Is(err, services.ErrUserNotFound):
-		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
-			"unauthorized", "Token inválido ou expirado",
-			"token de autenticação ausente, inválido ou expirado")
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "usuário não encontrado")
 	case err != nil:
 		utils.Errorf("request_id=%s falha ao recuperar o perfil do usuário: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)

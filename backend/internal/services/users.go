@@ -79,7 +79,7 @@ func validateUserConfig(config models.UserConfig) error {
 	return nil
 }
 
-// Profile retorna o perfil do usuário autenticado, sem campos sensíveis
+// Profile retorna o perfil do usuário, sem campos sensíveis
 // (password_hash, last_ip, banned) e sem as configurações.
 func Profile(ctx context.Context, userID string) (models.User, error) {
 	if userID == "" {

@@ -180,10 +180,12 @@ paths:
         '204':
           description: Logout bem-sucedido (Set-Cookie expira o Auth)
 
-  /users/profile:
+  /users/{user_id}/profile:
     get:
       tags: [Users]
-      summary: Perfil do usuário autenticado (com avatar)
+      summary: Perfil do usuário (com avatar); qualquer usuário autenticado pode consultar
+      parameters:
+        - $ref: '#/components/parameters/UserId'
       responses:
         '200':
           description: Perfil do usuário
@@ -193,6 +195,8 @@ paths:
                 $ref: '#/components/schemas/UserProfile'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -1216,7 +1220,7 @@ paths:
         | `channel_delete`  | outbound | `{ type: "channel_delete", channel_id, server_id }`            |
         | `typing`          | inbound  | `{ type: "typing", channel_id }`                               |
         | `typing`          | outbound | `{ type: "typing", channel_id, user_id, is_typing }`           |
-        | `presence_update` | outbound | `{ type: "presence_update", user_id, status, status_message }` |
+        | `presence_update` | outbound | `{ type: "presence_update", user_id, status, status_message, nickname }` |
         | `heartbeat`       | inbound  | `{ type: "heartbeat" }`                                        |
         | `heartbeat_ack`   | outbound | `{ type: "heartbeat_ack" }`                                    |
         | `error`           | outbound | `{ type: "error", message, code? }`                            |

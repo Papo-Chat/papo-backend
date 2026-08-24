@@ -871,3 +871,134 @@ func TestPermissionRestoresBodyForHandler(t *testing.T) {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
+
+// --- CORS ---
+
+// corsTestOrigins espelha o padrão de CORS_ORIGINS (frontend local em HTTP e HTTPS).
+var corsTestOrigins = []string{"http://localhost:5173", "https://localhost:5173"}
+
+// doCORSRequest passa uma requisição pelo middleware CORS e por um handler
+// que responde 200. origin e requestMethod são headers opcionais.
+func doCORSRequest(t *testing.T, mw echo.MiddlewareFunc, method, path, origin, requestMethod string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	handler := mw(func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+
+	c := newContext(t, method, path, "")
+	if origin != "" {
+		c.Request().Header.Set(echo.HeaderOrigin, origin)
+	}
+	if requestMethod != "" {
+		c.Request().Header.Set(echo.HeaderAccessControlRequestMethod, requestMethod)
+	}
+
+	if err := handler(c); err != nil {
+		// Erros do framework (*echo.HTTPError) já são gravados no
+		// ResponseWriter; apenas erros inesperados falham o teste.
+		if _, ok := err.(*echo.HTTPError); !ok {
+			t.Fatalf("handler retornou erro inesperado: %v", err)
+		}
+	}
+	return recorder(c)
+}
+
+func TestCORSPreflightAllowsHTTPOrigin(t *testing.T) {
+	mw := CORS(corsTestOrigins)
+
+	rec := doCORSRequest(t, mw, http.MethodOptions, "/api", "http://localhost:5173", http.MethodGet)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava status 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowOrigin); got != "http://localhost:5173" {
+		t.Errorf("esperava Access-Control-Allow-Origin http://localhost:5173, obtive %q", got)
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowCredentials); got != "true" {
+		t.Errorf("esperava Access-Control-Allow-Credentials true, obtive %q", got)
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowMethods); !strings.Contains(got, http.MethodGet) {
+		t.Errorf("esperava Access-Control-Allow-Methods contendo GET, obtive %q", got)
+	}
+	if got := rec.Header().Get(echo.HeaderVary); !strings.Contains(got, echo.HeaderOrigin) {
+		t.Errorf("esperava Vary contendo Origin, obtive %q", got)
+	}
+}
+
+func TestCORSPreflightAllowsHTTPSOrigin(t *testing.T) {
+	mw := CORS(corsTestOrigins)
+
+	rec := doCORSRequest(t, mw, http.MethodOptions, "/api", "https://localhost:5173", http.MethodGet)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava status 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowOrigin); got != "https://localhost:5173" {
+		t.Errorf("esperava Access-Control-Allow-Origin https://localhost:5173, obtive %q", got)
+	}
+}
+
+func TestCORSActualRequestAllowedOrigin(t *testing.T) {
+	mw := CORS(corsTestOrigins)
+
+	rec := doCORSRequest(t, mw, http.MethodGet, "/api", "http://localhost:5173", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowOrigin); got != "http://localhost:5173" {
+		t.Errorf("esperava Access-Control-Allow-Origin http://localhost:5173, obtive %q", got)
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlExposeHeaders); !strings.Contains(got, echo.HeaderXRequestID) {
+		t.Errorf("esperava Access-Control-Expose-Headers contendo X-Request-Id, obtive %q", got)
+	}
+}
+
+// TestCORSPreflightDeniesDisallowedOrigin garante que um preflight de origin
+// não permitida não recebe Access-Control-Allow-Origin (o navegador bloqueia
+// a requisição real por falta do header).
+func TestCORSPreflightDeniesDisallowedOrigin(t *testing.T) {
+	mw := CORS(corsTestOrigins)
+
+	rec := doCORSRequest(t, mw, http.MethodOptions, "/api", "http://exemplo.invalid", http.MethodGet)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava status 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowOrigin); got != "" {
+		t.Errorf("não esperava Access-Control-Allow-Origin para origin não permitido, obtive %q", got)
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowCredentials); got != "" {
+		t.Errorf("não esperava Access-Control-Allow-Credentials para origin não permitido, obtive %q", got)
+	}
+}
+
+// TestCORSPreflightHidesUnconfiguredMethod garante que o preflight anuncia
+// apenas os métodos configurados: o navegador bloqueia a requisição real
+// quando o método pedido não está em Access-Control-Allow-Methods.
+func TestCORSPreflightHidesUnconfiguredMethod(t *testing.T) {
+	mw := CORS(corsTestOrigins)
+
+	rec := doCORSRequest(t, mw, http.MethodOptions, "/api", "http://localhost:5173", http.MethodPatch)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava status 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowMethods); strings.Contains(got, http.MethodPatch) {
+		t.Errorf("não esperava %s em Access-Control-Allow-Methods, obtive %q", http.MethodPatch, got)
+	}
+}
+
+func TestCORSWithoutOriginPassesThrough(t *testing.T) {
+	mw := CORS(corsTestOrigins)
+
+	rec := doCORSRequest(t, mw, http.MethodGet, "/api", "", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowOrigin); got != "" {
+		t.Errorf("não esperava Access-Control-Allow-Origin sem header Origin, obtive %q", got)
+	}
+}

@@ -34,6 +34,9 @@ func main() {
 
 	e := echo.New()
 
+	// CORS antes dos demais middlewares: os preflights OPTIONS recebem os
+	// cabeçalhos CORS mesmo quando as demais rotas respondem erro.
+	e.Use(middleware.CORS(cfg.CORSOrigins))
 	e.Use(echoMiddleware.RequestLogger())
 	e.Use(echoMiddleware.Recover())
 	e.Use(echoMiddleware.RequestID())

@@ -334,7 +334,7 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		path   string
 	}{
 		{http.MethodGet, "/auth/whoami"},
-		{http.MethodGet, "/users/profile"},
+		{http.MethodGet, "/users/" + userID + "/profile"},
 		{http.MethodPut, "/users/settings"},
 		{http.MethodPut, "/users/" + userID},
 		{http.MethodPut, "/users/" + userID + "/avatar"},
@@ -408,13 +408,21 @@ func TestWhoamiRouteWithAuth(t *testing.T) {
 	}
 }
 
-// TestProfileRouteWithAuth garante que GET /users/profile responde o perfil
+// TestProfileRouteWithAuth garante que GET /users/:id/profile responde o perfil
 // do usuário autenticado pelo cookie.
 func TestProfileRouteWithAuth(t *testing.T) {
 	e := newApp()
-	userID, token := registerAndLogin(t, e)
+	userID, _ := registerAndLogin(t, e)
 
-	rec := do(t, e, http.MethodGet, "/users/profile", nil, authCookie(token))
+	c := newContext(t, http.MethodGet, "/users/"+userID+"/profile", nil, "")
+	c.Set(middleware.UserIDContextKey, userID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(userID)
+	rec := recorder(c)
+
+	if err := ProfileHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ProfileHandler retornou erro: %v", err)
+	}
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
@@ -3980,8 +3988,10 @@ func TestProfileHandlerSuccess(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	c := newContext(t, http.MethodGet, "/users/profile", nil, "")
+	c := newContext(t, http.MethodGet, "/users/"+user.ID+"/profile", nil, "")
 	c.Set(middleware.UserIDContextKey, user.ID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(user.ID)
 	rec := recorder(c)
 
 	if err := ProfileHandler(testBaseURL, c); err != nil {
@@ -4050,8 +4060,10 @@ func TestProfileHandlerSuccessWithProfile(t *testing.T) {
 		t.Fatalf("falha ao atualizar perfil: %v", err)
 	}
 
-	c := newContext(t, http.MethodGet, "/users/profile", nil, "")
+	c := newContext(t, http.MethodGet, "/users/"+user.ID+"/profile", nil, "")
 	c.Set(middleware.UserIDContextKey, user.ID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(user.ID)
 	rec := recorder(c)
 
 	if err := ProfileHandler(testBaseURL, c); err != nil {
@@ -4084,19 +4096,30 @@ func TestProfileHandlerSuccessWithProfile(t *testing.T) {
 }
 
 func TestProfileHandlerUserNotFound(t *testing.T) {
-	c := newContext(t, http.MethodGet, "/users/profile", nil, "")
-	c.Set(middleware.UserIDContextKey, randUUID())
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	randomId := randUUID()
+
+	c := newContext(t, http.MethodGet, "/users/"+randomId+"/profile", nil, "")
+	c.Set(middleware.UserIDContextKey, user.ID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(randomId)
 	rec := recorder(c)
 
 	if err := ProfileHandler(testBaseURL, c); err != nil {
 		t.Fatalf("ProfileHandler retornou erro: %v", err)
 	}
-	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
-		"token de autenticação ausente, inválido ou expirado")
+
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado",
+		"usuário não encontrado")
 }
 
-func TestProfileHandlerMissingUserID(t *testing.T) {
-	c := newContext(t, http.MethodGet, "/users/profile", nil, "")
+func TestProfileHandlerMissingUserAuth(t *testing.T) {
+	randomId := randUUID()
+	c := newContext(t, http.MethodGet, "/users/"+randomId+"/profile", nil, "")
 	rec := recorder(c)
 
 	if err := ProfileHandler(testBaseURL, c); err != nil {

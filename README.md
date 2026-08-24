@@ -19,13 +19,15 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 ## Roadmap
 
 - [x] Backend MVP completo (endpoints, websocket, com segurança, testes e performance)
-- [ ] Implementar /users/:id/profile
+- [x] Implementar /users/:id/profile
 - [ ] Event para troca de avatar/nickname
-- [ ] CORS configurável via vars. (util para rede local/teste)
+- [x] CORS configurável via vars. (util para rede local/teste)
 - [ ] Processamento Thumbnail no backend (com oEmbed, Opengraph, segurança reforçada)
 - [ ] Processamento Icons no Backend 
 - [ ] User Profile (Descrição, banner)
 - [ ] Cleanup (excluir código não usado)
+   - Decidir entre multiserver ou single server e induzir o código a um.
+   - Implementar melhor maneira de carregar Cfg (memória, sem carregar IO toda hora)
 - [ ] Crons GC Attachments orfãos/tabela quebrada
 - [ ] Status Ausente/Ocupado (novo field)
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
@@ -35,6 +37,7 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [ ] Bot API
 - [ ] Suporte NoSQL (intercambeavel nas settings) ou particionamento postgresql
 - [ ] Hashed Resync para conexão instável
+- [ ] WebTransport Support 
 
 ## Arquitetura
 
@@ -105,7 +108,7 @@ Esquema completo em [`openapi.yml`](./openapi.yml).
 | Recurso | Endpoints principais |
 |---|---|
 | Auth | `/auth/register`, `/auth/login`, `/auth/loginServer`, `/auth/whoami`, `/auth/logout` |
-| Users | `/users`, `/users/profile`, `/users/:id`, `/users/:id/ban`, `/users/settings` |
+| Users | `/users`, `/users/:id/profile`, `/users/:id`, `/users/:id/ban`, `/users/settings` |
 | Servers | `/servers`, `/servers/:id`, `/servers/:id/roles` |
 | Channels | `/channels`, `/channels/:id`, `/channels/:id/change_position`, `/channels/:id/permissions` |
 | Messages | `/channels/:id/messages`, `/messages`, `/messages/:id` |
@@ -126,6 +129,7 @@ Autenticação via o mesmo cookie `Auth` da API REST, validado no handshake.
 | `typing` | inbound / outbound |
 | `presence_sync` | unicast (snapshot no connect) |
 | `presence_update` | outbound (delta) |
+| `avatar_update` | outbound |
 | `heartbeat` / `heartbeat_ack` | inbound / outbound |
 | `error` | outbound |
 
