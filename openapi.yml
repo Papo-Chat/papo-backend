@@ -1730,6 +1730,10 @@ components:
           format: uuid
         name:
           type: string
+        type:
+          type: string
+          enum: [text, category]
+          description: Tipo do canal (padrão text)
 
     ChangeChannelPositionRequest:
       type: object

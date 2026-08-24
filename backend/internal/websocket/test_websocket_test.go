@@ -293,7 +293,7 @@ func newTestServerChannel(t *testing.T, ownerID *string) (models.Server, models.
 	if err != nil {
 		t.Fatalf("falha ao criar servidor de teste: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, "chan_"+randHex(8))
+	channel, err := services.CreateChannel(testCtx(), server.ID, "chan_"+randHex(8), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal de teste: %v", err)
 	}

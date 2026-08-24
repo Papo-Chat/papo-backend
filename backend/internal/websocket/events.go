@@ -81,11 +81,12 @@ type MessageDeleteOutbound struct {
 
 // ChannelCreateOutbound é o evento de criação de canal distribuído aos clientes.
 type ChannelCreateOutbound struct {
-	Type      EventType `json:"type"`
-	ChannelID string    `json:"channel_id"`
-	ServerID  string    `json:"server_id"`
-	Name      string    `json:"name"`
-	Position  int       `json:"position"`
+	Type        EventType `json:"type"`
+	ChannelID   string    `json:"channel_id"`
+	ServerID    string    `json:"server_id"`
+	Name        string    `json:"name"`
+	ChannelType string    `json:"channel_type"`
+	Position    int       `json:"position"`
 }
 
 // ChannelUpdateOutbound é o evento de atualização de canal distribuído aos clientes.

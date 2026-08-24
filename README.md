@@ -25,8 +25,9 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [ ] Processamento Icons no Backend 
 - [ ] User Profile (Descrição, banner)
 - [ ] Cleanup (excluir código não usado)
-   - Decidir entre multiserver ou single server e induzir o código a um.
+   - Decidir entre multiserver ou single server e solidificar o código a um.
    - Implementar melhor maneira de carregar Cfg (memória, sem carregar IO toda hora)
+   - Verificar a necessidade de testes mais elegantes e abrangentes
 - [ ] Crons GC Attachments orfãos/tabela quebrada
 - [ ] Status Ausente/Ocupado (novo field)
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)

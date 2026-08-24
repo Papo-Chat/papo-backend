@@ -42,14 +42,20 @@ func ListChannels(ctx context.Context, serverID *string) ([]models.ChannelSummar
 	return storage.ListChannelSummaries(ctx, serverID)
 }
 
-// CreateChannel cria um novo canal do tipo text em um servidor
-// (README: o body de criação só tem server_id e name, então o tipo é
-// sempre "text").
+// CreateChannel cria um novo canal em um servidor
+// (README: o body de criação tem server_id, name e type; type é
+// opcional e padrão "text", aceita "text" ou "category").
 // Retorna ErrInvalidInput quando o nome está vazio ou acima de 32
-// caracteres, ErrServerNotFound quando o servidor não existe,
-// ErrChannelLimitReached quando o servidor já possui 500 canais e
-// ErrChannelNameTaken quando o nome já está em uso.
-func CreateChannel(ctx context.Context, serverID, name string) (models.ChannelSummary, error) {
+// caracteres, quando o type é inválido, ErrServerNotFound quando o
+// servidor não existe, ErrChannelLimitReached quando o servidor já
+// possui 500 canais e ErrChannelNameTaken quando o nome já está em uso.
+func CreateChannel(ctx context.Context, serverID, name, channelType string) (models.ChannelSummary, error) {
+	if channelType == "" {
+		channelType = "text"
+	}
+	if channelType != "text" && channelType != "category" {
+		return models.ChannelSummary{}, ErrInvalidInput
+	}
 	if serverID == "" || name == "" || utf8.RuneCountInString(name) > maxChannelNameLength {
 		return models.ChannelSummary{}, ErrInvalidInput
 	}
@@ -69,7 +75,7 @@ func CreateChannel(ctx context.Context, serverID, name string) (models.ChannelSu
 		return models.ChannelSummary{}, ErrChannelLimitReached
 	}
 
-	channel, err := storage.CreateChannel(ctx, serverID, name, "text")
+	channel, err := storage.CreateChannel(ctx, serverID, name, channelType)
 	if errors.Is(err, storage.ErrUniqueViolation) {
 		return models.ChannelSummary{}, ErrChannelNameTaken
 	}

@@ -38,6 +38,7 @@ func ListChannelsHandler(baseURL string, c echo.Context) error {
 type createChannelRequest struct {
 	ServerID string `json:"server_id"`
 	Name     string `json:"name"`
+	Type     string `json:"type"`
 }
 
 // CreateChannelHandler implementa POST /channels.
@@ -48,12 +49,12 @@ func CreateChannelHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	channel, err := services.CreateChannel(c.Request().Context(), req.ServerID, req.Name)
+	channel, err := services.CreateChannel(c.Request().Context(), req.ServerID, req.Name, req.Type)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"server_id e name são obrigatórios; name deve ter no máximo 32 caracteres")
+			"server_id e name são obrigatórios; name deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
 	case errors.Is(err, services.ErrServerNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "servidor não encontrado")
@@ -74,11 +75,12 @@ func CreateChannelHandler(baseURL string, c echo.Context) error {
 
 	// Distribui a criação aos clientes conectados (evento channel_create).
 	websocket.GetHub().Broadcast(websocket.ChannelCreateOutbound{
-		Type:      websocket.EventTypeChannelCreate,
-		ChannelID: channel.ID,
-		ServerID:  channel.ServerID,
-		Name:      channel.Name,
-		Position:  channel.Position,
+		Type:        websocket.EventTypeChannelCreate,
+		ChannelID:   channel.ID,
+		ServerID:    channel.ServerID,
+		Name:        channel.Name,
+		Position:    channel.Position,
+		ChannelType: channel.Type,
 	})
 
 	return c.JSON(http.StatusCreated, channel)

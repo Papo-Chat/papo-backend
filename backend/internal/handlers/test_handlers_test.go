@@ -1463,7 +1463,7 @@ func TestCreateChannelRouteInvalidInput(t *testing.T) {
 		body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": name})
 		rec := do(t, e, http.MethodPost, "/channels", body, authCookie(token))
 		assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-			"server_id e name são obrigatórios; name deve ter no máximo 32 caracteres")
+			"server_id e name são obrigatórios; name deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
 	}
 }
 
@@ -5834,7 +5834,7 @@ func TestCreateChannelHandlerMissingServerID(t *testing.T) {
 	if err := CreateChannelHandler(testBaseURL, c); err != nil {
 		t.Fatalf("CreateChannelHandler retornou erro: %v", err)
 	}
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "server_id e name são obrigatórios; name deve ter no máximo 32 caracteres")
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "server_id e name são obrigatórios; name deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
 }
 
 func TestCreateChannelHandlerMissingName(t *testing.T) {
@@ -5854,7 +5854,7 @@ func TestCreateChannelHandlerMissingName(t *testing.T) {
 	if err := CreateChannelHandler(testBaseURL, c); err != nil {
 		t.Fatalf("CreateChannelHandler retornou erro: %v", err)
 	}
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "server_id e name são obrigatórios; name deve ter no máximo 32 caracteres")
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "server_id e name são obrigatórios; name deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
 }
 
 func TestCreateChannelHandlerServerNotFound(t *testing.T) {
