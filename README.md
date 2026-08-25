@@ -21,6 +21,7 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [x] Backend MVP completo (endpoints, websocket, com segurança, testes e performance)
 - [x] Event para troca de avatar/nickname
 - [x] CORS configurável via vars. (util para rede local/teste)
+- [ ] Remover direção DESC para mensagens.
 - [ ] Validar OldPassword no reset password, seguindo padrão do openapi.yml
 - [ ] Processamento Thumbnail no backend (com oEmbed, Opengraph, segurança reforçada)
 - [ ] Processamento Icons no Backend 
