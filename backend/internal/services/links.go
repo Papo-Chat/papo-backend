@@ -142,7 +142,7 @@ func previewRateAllow(userID string) bool {
 }
 
 var (
-	previewURLRe    = regexp.MustCompile(`https?://\S+`)
+	previewURLRe    = regexp.MustCompile(`(?:https?://|www\.)\S+`)
 	trailingPunctRe = regexp.MustCompile(`[.,;!?]+$`)
 )
 
@@ -159,6 +159,10 @@ func extractPreviewURLs(content string, max int) []string {
 		cleaned := stripTrailingPunctuation(match)
 		if cleaned == "" {
 			continue
+		}
+		// URL sem scheme (www.) → assume https (nunca http).
+		if !strings.HasPrefix(cleaned, "http://") && !strings.HasPrefix(cleaned, "https://") {
+			cleaned = "https://" + cleaned
 		}
 		if _, ok := seen[cleaned]; ok {
 			continue
