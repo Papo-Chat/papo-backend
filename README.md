@@ -9,12 +9,13 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 
 ## Stack
 
-- **Go** + **Echo** — HTTP
+- **Echo** — HTTP 
 - **PGX** — PostgreSQL
 - **Gorilla WebSocket** — realtime
 - **JWT** + **Bcrypt** — autenticação
 - **Goose** — migrations
 - **Logrus** — logging
+- **Go Puro** - Sem cgo ou microserviços, binário leve e focado em rodar com o mínimo de recursos possível.
 
 ## Roadmap
 

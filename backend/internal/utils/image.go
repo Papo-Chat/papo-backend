@@ -26,8 +26,9 @@ const MaxImageDimension = 512
 
 // MaxThumbnailDimCeiling é o teto absoluto de largura/altura (px) aceito na
 // pré-check de thumbnail: bloqueia decompression bomb antes de tocar nos
-// pixels (512 * 8).
-const MaxThumbnailDimCeiling = 4096
+// pixels (512 * 32). O limite de pixels (ThumbnailMaxPixels) é a guarda real
+// de memória; este teto só rejeita dimensões patológicas.
+const MaxThumbnailDimCeiling = 16384
 
 // MaxThumbnailSize é o tamanho máximo (bytes) da thumbnail estática
 // (WebP) após o re-encode.

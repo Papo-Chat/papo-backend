@@ -50,8 +50,10 @@ func getRobotsClient() *http.Client {
 //
 // Decisão (§6.4):
 //   - 200 + parse OK → regras decidem (Allow/Disallow por path);
-//   - 404 (não existe) → permitido (sem restrição);
-//   - 401/403/5xx / timeout / parse inválido / excedeu 512KB → negado
+//   - 404 (não existe) ou 403 (ex.: bucket S3/CDN sem robots.txt) → permitido
+//     (sem restrição); 403 em /robots.txt não é sinal confiável de bloqueio —
+//     o bloqueio confiável é um 200 com Disallow;
+//   - 401/5xx / timeout / parse inválido / excedeu 512KB → negado
 //     (fail-closed).
 //
 // ROBOTS_ENABLED=false desativa o check (sempre permitido).
@@ -111,10 +113,13 @@ func fetchRobotsEntry(ctx context.Context, origin string) robotsEntry {
 	body, _, err := utils.SafeFetch(ctx, getRobotsClient(), maxRobotsBytes, robotsURL)
 	if err != nil {
 		var statusErr *utils.HTTPStatusError
-		if errors.As(err, &statusErr) && statusErr.Status == http.StatusNotFound {
+		if errors.As(err, &statusErr) &&
+			(statusErr.Status == http.StatusNotFound || statusErr.Status == http.StatusForbidden) {
+			// 404 (não existe) ou 403 (ex.: bucket S3/CDN sem robots.txt) →
+			// permitido (sem restrição).
 			return robotsEntry{allowedAll: true, fetchedAt: time.Now()}
 		}
-		// 401/403/5xx, timeout, SSRF, body > 512KB → fail-closed
+		// 401/5xx, timeout, SSRF, body > 512KB → fail-closed
 		return robotsEntry{fetchedAt: time.Now()}
 	}
 
