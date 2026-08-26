@@ -2995,51 +2995,71 @@ func newPreviewWithImageRoute(t *testing.T, e *echo.Echo, channelID, token strin
 	return preview
 }
 
-// TestGetLinkPreviewImageRouteOwner garante que o dono do servidor baixa a
-// imagem do preview via GET /link-previews/:preview_id/image com o conteúdo
-// exato do arquivo, Content-Type correto e Content-Disposition: inline.
-func TestGetLinkPreviewImageRouteOwner(t *testing.T) {
+// TestGetLinkPreviewRouteOwner garante que o dono do servidor busca o preview
+// via GET /link-previews/:preview_id em JSON, com os campos do preview e a
+// imagem em base64 (image_data) correspondente ao arquivo em disco.
+func TestGetLinkPreviewRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 	server := createServerFor(t, userID)
 	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
 	preview := newPreviewWithImageRoute(t, e, channel.ID, token)
 
-	rec := do(t, e, http.MethodGet, "/link-previews/"+preview.ID+"/image", nil, authCookie(token))
+	rec := do(t, e, http.MethodGet, "/link-previews/"+preview.ID, nil, authCookie(token))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
-	if ct := rec.Header().Get(echo.HeaderContentType); ct != "image/png" {
-		t.Errorf("esperava content-type image/png, obtive %q", ct)
+	var got struct {
+		ID            string  `json:"id"`
+		URL           string  `json:"url"`
+		ImageMimeType *string `json:"image_mime_type"`
+		ImageData     *string `json:"image_data"`
 	}
-	if cd := rec.Header().Get(echo.HeaderContentDisposition); cd != "inline" {
-		t.Errorf("esperava content-disposition inline, obtive %q", cd)
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if got.ID != preview.ID {
+		t.Errorf("esperava preview %s, obtive %s", preview.ID, got.ID)
+	}
+	if got.URL != preview.URL {
+		t.Errorf("esperava url %s, obtive %s", preview.URL, got.URL)
+	}
+	if got.ImageMimeType == nil || *got.ImageMimeType != "image/png" {
+		t.Errorf("esperava image_mime_type image/png, obtive %v", got.ImageMimeType)
+	}
+	if got.ImageData == nil {
+		t.Fatalf("esperava image_data presente")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(*got.ImageData)
+	if err != nil {
+		t.Fatalf("falha ao decodificar image_data: %v", err)
 	}
 	blob, err := os.ReadFile(*preview.ImageFilePath)
 	if err != nil {
 		t.Fatalf("falha ao ler a imagem em disco: %v", err)
 	}
-	if !bytes.Equal(rec.Body.Bytes(), blob) {
-		t.Errorf("corpo da resposta nao corresponde a imagem em disco")
+	if !bytes.Equal(decoded, blob) {
+		t.Errorf("image_data nao corresponde a imagem em disco")
 	}
 }
 
-// TestGetLinkPreviewImageRouteUnauthorized garante que a rota sem
+// TestGetLinkPreviewRouteUnauthorized garante que a rota sem
 // autenticação responde 401.
-func TestGetLinkPreviewImageRouteUnauthorized(t *testing.T) {
+func TestGetLinkPreviewRouteUnauthorized(t *testing.T) {
 	e := newApp()
 
-	rec := do(t, e, http.MethodGet, "/link-previews/00000000-0000-4000-8000-000000000000/image", nil, nil)
+	rec := do(t, e, http.MethodGet, "/link-previews/00000000-0000-4000-8000-000000000000", nil, nil)
 
 	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
 		"token de autenticação ausente, inválido ou expirado")
 }
 
-// TestGetLinkPreviewImageRouteNotFound garante que a rota responde 404 para
-// preview inexistente, preview sem imagem, preview sem vinculo com mensagem
-// e preview de canal fechado para quem não tem acesso (não vaza existência).
-func TestGetLinkPreviewImageRouteNotFound(t *testing.T) {
+// TestGetLinkPreviewRouteNotFound garante que a rota responde 404 para
+// preview inexistente, preview sem vinculo com mensagem e preview de canal
+// fechado para quem não tem acesso (não vaza existência). Preview sem imagem
+// é acessível (200, image_data nulo).
+func TestGetLinkPreviewRouteNotFound(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
 	_, strangerToken := registerAndLogin(t, e)
@@ -3047,8 +3067,8 @@ func TestGetLinkPreviewImageRouteNotFound(t *testing.T) {
 	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
 	preview := newPreviewWithImageRoute(t, e, channel.ID, ownerToken)
 
-	rec := do(t, e, http.MethodGet, "/link-previews/00000000-0000-4000-8000-000000000000/image", nil, authCookie(ownerToken))
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "imagem do preview não encontrada")
+	rec := do(t, e, http.MethodGet, "/link-previews/00000000-0000-4000-8000-000000000000", nil, authCookie(ownerToken))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "preview não encontrado")
 
 	ctx := context.Background()
 	noImg, err := storage.UpsertPreview(ctx, models.LinkPreview{
@@ -3066,8 +3086,24 @@ func TestGetLinkPreviewImageRouteNotFound(t *testing.T) {
 	if err := storage.AddMessagePreviews(ctx, msgID, []string{noImg.ID}); err != nil {
 		t.Fatalf("falha ao vincular preview: %v", err)
 	}
-	rec = do(t, e, http.MethodGet, "/link-previews/"+noImg.ID+"/image", nil, authCookie(ownerToken))
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "imagem do preview não encontrada")
+	// preview sem imagem é acessível: 200 com image_data nulo
+	rec = do(t, e, http.MethodGet, "/link-previews/"+noImg.ID, nil, authCookie(ownerToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview sem imagem deveria ser acessível, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var noImgResp struct {
+		ID        string  `json:"id"`
+		ImageData *string `json:"image_data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &noImgResp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if noImgResp.ID != noImg.ID {
+		t.Errorf("esperava preview %s, obtive %s", noImg.ID, noImgResp.ID)
+	}
+	if noImgResp.ImageData != nil {
+		t.Errorf("esperava image_data nulo, obtive %q", *noImgResp.ImageData)
+	}
 
 	unlinked, err := storage.UpsertPreview(ctx, models.LinkPreview{
 		URL:  "https://preview-route.example.com/sem-vinculo-" + randHex(8),
@@ -3076,16 +3112,16 @@ func TestGetLinkPreviewImageRouteNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertPreview retornou erro: %v", err)
 	}
-	rec = do(t, e, http.MethodGet, "/link-previews/"+unlinked.ID+"/image", nil, authCookie(ownerToken))
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "imagem do preview não encontrada")
+	rec = do(t, e, http.MethodGet, "/link-previews/"+unlinked.ID, nil, authCookie(ownerToken))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "preview não encontrado")
 
 	// canal fechado: estranho sem acesso → 404 (não 403, não vaza existência)
 	closeChannelRoute(t, e, server.ID, channel.ID, ownerToken)
-	rec = do(t, e, http.MethodGet, "/link-previews/"+preview.ID+"/image", nil, authCookie(strangerToken))
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "imagem do preview não encontrada")
+	rec = do(t, e, http.MethodGet, "/link-previews/"+preview.ID, nil, authCookie(strangerToken))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "preview não encontrado")
 
 	// dono continua acessando
-	rec = do(t, e, http.MethodGet, "/link-previews/"+preview.ID+"/image", nil, authCookie(ownerToken))
+	rec = do(t, e, http.MethodGet, "/link-previews/"+preview.ID, nil, authCookie(ownerToken))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dono deveria continuar acessando, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}

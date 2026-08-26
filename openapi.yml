@@ -1182,14 +1182,15 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /link-previews/{preview_id}/image:
+  /link-previews/{preview_id}:
     get:
       tags: [LinkPreviews]
-      summary: Imagem do link preview
+      summary: Link preview (dados + imagem em base64)
       description: >
-        Thumbnail da imagem do link preview. Permission Check: `read_channel`
-        do canal da mensagem à qual o preview está vinculado (preview sem
-        vínculo acessível → 404).
+        Dados do link preview com a imagem embutida em base64 (image_data).
+        Permission Check: `read_channel` do canal da mensagem à qual o preview
+        está vinculado (preview sem vínculo acessível → 404). Preview sem
+        imagem é acessível (image_data nulo).
       parameters:
         - name: preview_id
           in: path
@@ -1199,12 +1200,11 @@ paths:
             format: uuid
       responses:
         '200':
-          description: "Thumbnail binária (Content-Type = image/webp ou image/gif, Content-Disposition: inline)"
+          description: Preview em JSON com image_data (base64) quando existe
           content:
-            image/webp:
+            application/json:
               schema:
-                type: string
-                format: binary
+                $ref: '#/components/schemas/LinkPreviewWithImage'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -1962,6 +1962,20 @@ components:
         fetched_at:
           type: string
           format: date-time
+
+    LinkPreviewWithImage:
+      description: >
+        LinkPreview + imagem embutida em base64 (resposta de
+        GET /link-previews/{preview_id}).
+      allOf:
+        - $ref: '#/components/schemas/LinkPreview'
+        - type: object
+          properties:
+            image_data:
+              type: string
+              format: byte
+              nullable: true
+              description: Imagem do preview em base64 (null quando não há imagem)
 
     Role:
       type: object

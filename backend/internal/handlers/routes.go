@@ -125,8 +125,8 @@ func RegisterAttachmentRoutes(e *echo.Echo, cfg *config.Config) {
 
 // RegisterLinkPreviewRoutes registra as rotas de link previews.
 func RegisterLinkPreviewRoutes(e *echo.Echo, cfg *config.Config) {
-	e.GET("/link-previews/:preview_id/image", func(c echo.Context) error {
-		return GetLinkPreviewImageHandler(cfg.BaseURL, c)
+	e.GET("/link-previews/:preview_id", func(c echo.Context) error {
+		return GetLinkPreviewHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 }
 

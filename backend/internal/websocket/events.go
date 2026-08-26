@@ -23,6 +23,8 @@ const (
 	EventTypeHeartbeat      EventType = "heartbeat"
 	EventTypeHeartbeatAck   EventType = "heartbeat_ack"
 	EventTypeError          EventType = "error"
+	EventTypeNewPreview     EventType = "new_preview"
+	EventTypeRemovePreview  EventType = "remove_preview"
 )
 
 // IsInbound indica se o tipo de evento é aceito no sentido cliente ->
@@ -77,6 +79,24 @@ type MessageDeleteOutbound struct {
 	Type      EventType `json:"type"`
 	ID        string    `json:"id"`
 	ChannelID string    `json:"channel_id"`
+}
+
+// NewPreviewOutbound é o evento de link preview vinculado a uma mensagem,
+// distribuído após o processamento em background (crawl) da mensagem. Um
+// evento por preview.
+type NewPreviewOutbound struct {
+	Type      EventType `json:"type"`
+	MessageID string    `json:"message_id"`
+	PreviewID string    `json:"preview_id"`
+}
+
+// RemovePreviewOutbound é o evento de link preview removido de uma mensagem
+// (edição que substitui/limpa os previews), distribuído após o processamento
+// em background. Um evento por preview.
+type RemovePreviewOutbound struct {
+	Type      EventType `json:"type"`
+	MessageID string    `json:"message_id"`
+	PreviewID string    `json:"preview_id"`
 }
 
 // ChannelCreateOutbound é o evento de criação de canal distribuído aos clientes.

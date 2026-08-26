@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -144,6 +145,11 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 		Attachments: message.Attachments,
 	})
 
+	// Processa os link previews em background (o crawl não bloqueia a
+	// resposta); os previews chegam via WS new_preview.
+	requestID := c.Request().Header.Get(echo.HeaderXRequestID)
+	go processNewMessagePreviews(context.Background(), requestID, message.ChannelID, message.ID, userID, content)
+
 	return c.JSON(http.StatusCreated, message)
 }
 
@@ -203,6 +209,12 @@ func UpdateMessageHandler(baseURL string, c echo.Context) error {
 		EditedAt:  derefTime(message.EditedAt),
 	})
 
+	// Processa os link previews do content novo em background (o crawl não
+	// bloqueia a resposta); as mudanças chegam via WS new_preview /
+	// remove_preview.
+	requestID := c.Request().Header.Get(echo.HeaderXRequestID)
+	go processEditedMessagePreviews(context.Background(), requestID, message.ChannelID, message.ID, userID, derefString(message.Content))
+
 	return c.JSON(http.StatusOK, message)
 }
 
@@ -256,19 +268,61 @@ func DeleteMessageHandler(baseURL string, c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// broadcastChannelEvent envia um evento via WebSocket somente aos clientes
+// broadcastChannelEvent envia um evento via WebSocket no contexto da
+// requisição (ver broadcastChannelEventCtx).
+func broadcastChannelEvent(c echo.Context, channelID string, event any) {
+	broadcastChannelEventCtx(c.Request().Context(), c.Request().Header.Get(echo.HeaderXRequestID), channelID, event)
+}
+
+// broadcastChannelEventCtx envia um evento via WebSocket somente aos clientes
 // cujo usuário pode ler o canal (read_channel, mesma regra de ListMessages).
 // Em falha da autorização, o evento não é enviado (fail closed) e a falha é
-// registrada.
-func broadcastChannelEvent(c echo.Context, channelID string, event any) {
+// registrada. Aceita um ctx próprio para uso fora da requisição (goroutines
+// de background), onde o ctx da request já foi cancelado.
+func broadcastChannelEventCtx(ctx context.Context, requestID, channelID string, event any) {
 	hub := websocket.GetHub()
-	allowed, err := services.ChannelReaders(c.Request().Context(), channelID, hub.OnlineUserIDs())
+	allowed, err := services.ChannelReaders(ctx, channelID, hub.OnlineUserIDs())
 	if err != nil {
 		utils.Errorf("request_id=%s websocket: falha ao autorizar o broadcast do canal %s: %v",
-			c.Request().Header.Get(echo.HeaderXRequestID), channelID, err)
+			requestID, channelID, err)
 		return
 	}
 	hub.BroadcastToUsers(event, allowed)
+}
+
+// processNewMessagePreviews processa em background os link previews de uma
+// mensagem recém-criada e distribui os eventos new_preview (um por preview).
+// Best-effort: falhas são logadas e não afetam a mensagem já criada.
+func processNewMessagePreviews(ctx context.Context, requestID, channelID, messageID, authorID, content string) {
+	for _, p := range services.ProcessMessagePreviews(ctx, messageID, authorID, content) {
+		broadcastChannelEventCtx(ctx, requestID, channelID, websocket.NewPreviewOutbound{
+			Type:      websocket.EventTypeNewPreview,
+			MessageID: messageID,
+			PreviewID: p.ID,
+		})
+	}
+}
+
+// processEditedMessagePreviews processa em background os link previews de uma
+// mensagem editada e distribui os eventos new_preview (adicionados) e
+// remove_preview (removidos), um por preview. Best-effort: falhas são
+// logadas e não afetam a mensagem já editada.
+func processEditedMessagePreviews(ctx context.Context, requestID, channelID, messageID, authorID, content string) {
+	added, removed := services.ProcessEditedMessagePreviews(ctx, messageID, authorID, content)
+	for _, p := range added {
+		broadcastChannelEventCtx(ctx, requestID, channelID, websocket.NewPreviewOutbound{
+			Type:      websocket.EventTypeNewPreview,
+			MessageID: messageID,
+			PreviewID: p.ID,
+		})
+	}
+	for _, p := range removed {
+		broadcastChannelEventCtx(ctx, requestID, channelID, websocket.RemovePreviewOutbound{
+			Type:      websocket.EventTypeRemovePreview,
+			MessageID: messageID,
+			PreviewID: p.ID,
+		})
+	}
 }
 
 // derefString retorna o valor da ponteira de string ou "" quando nil.

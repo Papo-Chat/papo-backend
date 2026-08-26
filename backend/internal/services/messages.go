@@ -138,6 +138,11 @@ func setAttachmentThumbnails(attachments *[]models.MessageAttachment, thumbnails
 // do conteúdo (o header de content type do upload não é confiado); o
 // tamanho é calculado dos bytes gravados.
 //
+// Os link previews do content NÃO são processados aqui: o crawl bloquearia a
+// resposta. Eles são processados em background (ProcessMessagePreviews,
+// chamado por uma goroutine no handler) e chegam via WS new_preview. A
+// resposta retorna Previews nil.
+//
 // Retorna ErrInvalidInput quando channel_id ou author_id estão ausentes,
 // quando content excede 8192 caracteres, quando a mensagem não tem content
 // nem attachments ou quando um attachment tem nome inválido,
@@ -221,21 +226,18 @@ func CreateMessage(ctx context.Context, channelID, authorID, content string, att
 		setAttachmentThumbnails(&messageAttachments, thumbnails)
 	}
 
-	previews := attachMessagePreviews(ctx, message.ID, authorID, content, storage.AddMessagePreviews)
-
 	return models.MessageWithAttachment{
 		Message:     message,
 		Attachments: messageAttachments,
-		Previews:    previews,
 	}, nil
 }
 
-// attachMessagePreviews extrai URLs do content, obtém/cria os previews
-// (best-effort: qualquer falha é logada e a mensagem segue sem preview) e
-// vincula os obtidos à mensagem via linkFn. O ctx carrega o budget total
-// compartilhado entre as URLs (§6.1). Retorna os previews vinculados (vazio
-// quando não há URL no content ou todos falharam).
-func attachMessagePreviews(ctx context.Context, messageID, authorID, content string, linkFn func(context.Context, string, []string) error) []models.LinkPreview {
+// crawlPreviews extrai URLs do content e obtém/cria os previews (best-effort:
+// qualquer falha é logada e a URL segue sem preview). O ctx carrega o budget
+// total compartilhado entre as URLs (§6.1). Não vincula nada à mensagem.
+// Retorna os previews obtidos (vazio quando não há URL no content ou todos
+// falharam).
+func crawlPreviews(ctx context.Context, authorID, content string) []models.LinkPreview {
 	cfg := config.LoadConfig()
 	if !cfg.LinkPreviewEnabled || content == "" {
 		return nil
@@ -248,7 +250,6 @@ func attachMessagePreviews(ctx context.Context, messageID, authorID, content str
 	previewCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
-	previewIDs := make([]string, 0, cfg.LinkPreviewMaxURLs)
 	var previews []models.LinkPreview
 	for _, rawURL := range extractPreviewURLs(content, cfg.LinkPreviewMaxURLs) {
 		preview, err := GetOrCreatePreview(previewCtx, authorID, rawURL)
@@ -256,15 +257,28 @@ func attachMessagePreviews(ctx context.Context, messageID, authorID, content str
 			utils.Errorf("link preview para %s pulado: %v", rawURL, err)
 			continue
 		}
-		previewIDs = append(previewIDs, preview.ID)
 		previews = append(previews, preview)
 	}
 
-	// linkFn é sempre chamado (mesmo com lista vazia): na criação,
-	// AddMessagePreviews é no-op para lista vazia; na edição,
-	// ReplaceMessagePreviews limpa os vínculos antigos (o conteúdo mudou,
-	// então preview de URL que saiu do content não pode permanecer).
-	if err := linkFn(previewCtx, messageID, previewIDs); err != nil {
+	return previews
+}
+
+// ProcessMessagePreviews processa em background os link previews de uma
+// mensagem recém-criada (best-effort) e vincula os obtidos. Chamado por uma
+// goroutine após a criação da mensagem (o crawl não pode bloquear a resposta
+// HTTP). Retorna os previews vinculados (vazio quando não há URL no content
+// ou todos falharam).
+func ProcessMessagePreviews(ctx context.Context, messageID, authorID, content string) []models.LinkPreview {
+	previews := crawlPreviews(ctx, authorID, content)
+	if len(previews) == 0 {
+		return nil
+	}
+
+	previewIDs := make([]string, 0, len(previews))
+	for _, p := range previews {
+		previewIDs = append(previewIDs, p.ID)
+	}
+	if err := storage.AddMessagePreviews(ctx, messageID, previewIDs); err != nil {
 		utils.Errorf("falha ao vincular previews à mensagem %s: %v", messageID, err)
 		return nil
 	}
@@ -272,10 +286,61 @@ func attachMessagePreviews(ctx context.Context, messageID, authorID, content str
 	return previews
 }
 
+// ProcessEditedMessagePreviews processa em background os link previews de uma
+// mensagem editada (best-effort), substitui todos os vínculos e retorna os
+// previews adicionados e removidos (delta em relação aos vínculos anteriores).
+// Content vazio limpa os vínculos (todos os anteriores viram removidos).
+// Chamado por uma goroutine após a edição da mensagem.
+func ProcessEditedMessagePreviews(ctx context.Context, messageID, authorID, content string) (added, removed []models.LinkPreview) {
+	old, err := storage.ListPreviewsByMessageIDs(ctx, []string{messageID})
+	if err != nil {
+		utils.Errorf("falha ao listar previews da mensagem %s: %v", messageID, err)
+		return nil, nil
+	}
+	oldSet := old[messageID]
+	oldByID := make(map[string]models.LinkPreview, len(oldSet))
+	for _, p := range oldSet {
+		oldByID[p.ID] = p
+	}
+
+	newPreviews := crawlPreviews(ctx, authorID, content)
+	newByID := make(map[string]models.LinkPreview, len(newPreviews))
+	newIDs := make([]string, 0, len(newPreviews))
+	for _, p := range newPreviews {
+		newByID[p.ID] = p
+		newIDs = append(newIDs, p.ID)
+	}
+
+	// Substitui todos os vínculos (content vazio / sem previews → limpa): o
+	// conteúdo mudou, então preview de URL que saiu do content não pode
+	// permanecer.
+	if err := storage.ReplaceMessagePreviews(ctx, messageID, newIDs); err != nil {
+		utils.Errorf("falha ao substituir previews da mensagem %s: %v", messageID, err)
+		return nil, nil
+	}
+
+	for _, p := range newPreviews {
+		if _, ok := oldByID[p.ID]; !ok {
+			added = append(added, p)
+		}
+	}
+	for _, p := range oldSet {
+		if _, ok := newByID[p.ID]; !ok {
+			removed = append(removed, p)
+		}
+	}
+	return added, removed
+}
+
 // EditMessage edita o conteúdo de uma mensagem (README:
 // PUT /messages/:message_id). Somente o autor da mensagem pode editá-la.
 // Content vazio é aceito e limpa o texto da mensagem (NULL); os attachments
 // não são afetados.
+// Os link previews do content novo NÃO são processados aqui (o crawl
+// bloquearia a resposta): são processados em background
+// (ProcessEditedMessagePreviews, chamado por uma goroutine no handler) e as
+// mudanças chegam via WS new_preview / remove_preview. A resposta retorna
+// Previews nil.
 // Retorna ErrMessageNotFound quando a mensagem não existe, ErrInvalidInput
 // quando content excede 8192 caracteres e ErrPermissionDenied quando o
 // usuário não é o autor.
@@ -330,23 +395,13 @@ func EditMessage(ctx context.Context, messageID, authorID, content string) (mode
 		setAttachmentThumbnails(&messageAttachments, thumbnails)
 	}
 
-	// Previews: o conteúdo novo pode gerar previews diferentes → substitui
-	// todos os vínculos (best-effort). Content novo vazio → limpa os previews.
-	newContent := ""
-	if updated.Content != nil {
-		newContent = *updated.Content
-	}
-	if newContent == "" {
-		if err := storage.ReplaceMessagePreviews(ctx, updated.ID, nil); err != nil {
-			utils.Errorf("falha ao limpar previews da mensagem %s: %v", updated.ID, err)
-		}
-	}
-	previews := attachMessagePreviews(ctx, updated.ID, authorID, newContent, storage.ReplaceMessagePreviews)
-
+	// Previews NÃO são processados aqui: o crawl bloquearia a resposta. São
+	// processados em background (ProcessEditedMessagePreviews, chamado por
+	// uma goroutine no handler) e as mudanças chegam via WS new_preview /
+	// remove_preview. A resposta retorna Previews nil.
 	return models.MessageWithAttachment{
 		Message:     updated,
 		Attachments: messageAttachments,
-		Previews:    previews,
 	}, nil
 }
 

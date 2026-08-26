@@ -6046,7 +6046,7 @@ func TestGetOrCreatePreviewCacheHit(t *testing.T) {
 	}
 }
 
-func TestGetLinkPreviewImage(t *testing.T) {
+func TestGetLinkPreview(t *testing.T) {
 	ctx := testCtx()
 	cleanServers(ctx)
 	owner := newTestMessageUser(t)
@@ -6082,16 +6082,16 @@ func TestGetLinkPreviewImage(t *testing.T) {
 	}
 
 	t.Run("dono acessa", func(t *testing.T) {
-		got, err := GetLinkPreviewImage(ctx, preview.ID, owner.ID)
+		got, err := GetLinkPreview(ctx, preview.ID, owner.ID)
 		if err != nil {
-			t.Fatalf("GetLinkPreviewImage para o dono retornou erro: %v", err)
+			t.Fatalf("GetLinkPreview para o dono retornou erro: %v", err)
 		}
 		if got.ID != preview.ID {
 			t.Errorf("esperava preview %s, obtive %s", preview.ID, got.ID)
 		}
 	})
 
-	t.Run("preview sem imagem vira 404", func(t *testing.T) {
+	t.Run("preview sem imagem é acessível (retorna sem imagem)", func(t *testing.T) {
 		noImg, err := storage.UpsertPreview(ctx, models.LinkPreview{
 			URL:  "https://preview-image.example.com/sem-imagem",
 			Kind: "og",
@@ -6102,8 +6102,12 @@ func TestGetLinkPreviewImage(t *testing.T) {
 		if err := storage.AddMessagePreviews(ctx, message.ID, []string{noImg.ID}); err != nil {
 			t.Fatalf("falha ao vincular preview: %v", err)
 		}
-		if _, err := GetLinkPreviewImage(ctx, noImg.ID, owner.ID); !errors.Is(err, ErrPreviewNotFound) {
-			t.Errorf("esperava ErrPreviewNotFound para preview sem imagem, obtive %v", err)
+		got, err := GetLinkPreview(ctx, noImg.ID, owner.ID)
+		if err != nil {
+			t.Fatalf("preview sem imagem deveria ser acessível, obtive %v", err)
+		}
+		if got.ID != noImg.ID || got.ImageFilePath != nil {
+			t.Errorf("esperava preview %s sem imagem, obtive id=%s img=%v", noImg.ID, got.ID, got.ImageFilePath)
 		}
 	})
 
@@ -6116,22 +6120,22 @@ func TestGetLinkPreviewImage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("UpsertPreview retornou erro: %v", err)
 		}
-		if _, err := GetLinkPreviewImage(ctx, unlinked.ID, owner.ID); !errors.Is(err, ErrPreviewNotFound) {
+		if _, err := GetLinkPreview(ctx, unlinked.ID, owner.ID); !errors.Is(err, ErrPreviewNotFound) {
 			t.Errorf("esperava ErrPreviewNotFound para preview sem vinculo, obtive %v", err)
 		}
 	})
 
 	t.Run("preview inexistente vira 404", func(t *testing.T) {
-		if _, err := GetLinkPreviewImage(ctx, randUUID(), owner.ID); !errors.Is(err, ErrPreviewNotFound) {
+		if _, err := GetLinkPreview(ctx, randUUID(), owner.ID); !errors.Is(err, ErrPreviewNotFound) {
 			t.Errorf("esperava ErrPreviewNotFound, obtive %v", err)
 		}
 	})
 
 	t.Run("ids vazios viram 404", func(t *testing.T) {
-		if _, err := GetLinkPreviewImage(ctx, "", owner.ID); !errors.Is(err, ErrPreviewNotFound) {
+		if _, err := GetLinkPreview(ctx, "", owner.ID); !errors.Is(err, ErrPreviewNotFound) {
 			t.Errorf("previewID vazio: esperava ErrPreviewNotFound, obtive %v", err)
 		}
-		if _, err := GetLinkPreviewImage(ctx, preview.ID, ""); !errors.Is(err, ErrPreviewNotFound) {
+		if _, err := GetLinkPreview(ctx, preview.ID, ""); !errors.Is(err, ErrPreviewNotFound) {
 			t.Errorf("userID vazio: esperava ErrPreviewNotFound, obtive %v", err)
 		}
 	})
@@ -6140,13 +6144,13 @@ func TestGetLinkPreviewImage(t *testing.T) {
 	grantChannelPermission(t, server, channel, reader, models.ChannelPermission{ReadChannel: true})
 
 	t.Run("leitor com role acessa", func(t *testing.T) {
-		if _, err := GetLinkPreviewImage(ctx, preview.ID, reader.ID); err != nil {
+		if _, err := GetLinkPreview(ctx, preview.ID, reader.ID); err != nil {
 			t.Errorf("leitor com role deveria acessar, obtive %v", err)
 		}
 	})
 
 	t.Run("canal fechado vira 404 para o de fora", func(t *testing.T) {
-		if _, err := GetLinkPreviewImage(ctx, preview.ID, outsider.ID); !errors.Is(err, ErrPreviewNotFound) {
+		if _, err := GetLinkPreview(ctx, preview.ID, outsider.ID); !errors.Is(err, ErrPreviewNotFound) {
 			t.Errorf("esperava ErrPreviewNotFound (404, nao vaza existencia), obtive %v", err)
 		}
 	})
@@ -6168,15 +6172,23 @@ func TestCreateMessageLinksCachedPreview(t *testing.T) {
 		t.Fatalf("UpsertPreview retornou erro: %v", err)
 	}
 
-	msg, err := CreateMessage(ctx, channel.ID, author.ID, "veja https://msg-preview.example.com/a.", nil)
+	content := "veja https://msg-preview.example.com/a."
+	msg, err := CreateMessage(ctx, channel.ID, author.ID, content, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage retornou erro: %v", err)
 	}
-	if len(msg.Previews) != 1 {
-		t.Fatalf("esperava 1 preview na resposta, obtive %d", len(msg.Previews))
+	// previews são processados em background: a criação não retorna previews
+	if len(msg.Previews) != 0 {
+		t.Errorf("criação não deve retornar previews, obtive %v", msg.Previews)
 	}
-	if msg.Previews[0].ID != seed.ID {
-		t.Errorf("esperava preview %s, obtive %s", seed.ID, msg.Previews[0].ID)
+
+	// simula o processamento em background (goroutine do handler)
+	added := ProcessMessagePreviews(ctx, msg.ID, author.ID, content)
+	if len(added) != 1 {
+		t.Fatalf("esperava 1 preview processado, obtive %d", len(added))
+	}
+	if added[0].ID != seed.ID {
+		t.Errorf("esperava preview %s, obtive %s", seed.ID, added[0].ID)
 	}
 
 	linked, err := storage.ListPreviewsByMessageIDs(ctx, []string{msg.ID})
@@ -6209,20 +6221,33 @@ func TestEditMessageReplacesPreviews(t *testing.T) {
 		t.Fatalf("UpsertPreview B retornou erro: %v", err)
 	}
 
-	msg, err := CreateMessage(ctx, channel.ID, author.ID, "https://edit-preview.example.com/a", nil)
+	contentA := "https://edit-preview.example.com/a"
+	msg, err := CreateMessage(ctx, channel.ID, author.ID, contentA, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage retornou erro: %v", err)
 	}
-	if len(msg.Previews) != 1 || msg.Previews[0].ID != seedA.ID {
-		t.Fatalf("esperava preview A na criação, obtive %v", msg.Previews)
+	// previews são processados em background: a criação não retorna previews
+	if len(msg.Previews) != 0 {
+		t.Fatalf("criação não deve retornar previews, obtive %v", msg.Previews)
+	}
+	if added := ProcessMessagePreviews(ctx, msg.ID, author.ID, contentA); len(added) != 1 || added[0].ID != seedA.ID {
+		t.Fatalf("esperava preview A processado na criação, obtive %v", added)
 	}
 
-	edited, err := EditMessage(ctx, msg.ID, author.ID, "agora https://edit-preview.example.com/b")
+	contentB := "agora https://edit-preview.example.com/b"
+	edited, err := EditMessage(ctx, msg.ID, author.ID, contentB)
 	if err != nil {
 		t.Fatalf("EditMessage retornou erro: %v", err)
 	}
-	if len(edited.Previews) != 1 || edited.Previews[0].ID != seedB.ID {
-		t.Errorf("esperava apenas preview B após edição, obtive %v", edited.Previews)
+	if len(edited.Previews) != 0 {
+		t.Errorf("edição não deve retornar previews, obtive %v", edited.Previews)
+	}
+	added, removed := ProcessEditedMessagePreviews(ctx, msg.ID, author.ID, contentB)
+	if len(added) != 1 || added[0].ID != seedB.ID {
+		t.Errorf("esperava B adicionado após edição, obtive %v", added)
+	}
+	if len(removed) != 1 || removed[0].ID != seedA.ID {
+		t.Errorf("esperava A removido após edição, obtive %v", removed)
 	}
 	linked, err := storage.ListPreviewsByMessageIDs(ctx, []string{msg.ID})
 	if err != nil {
@@ -6238,6 +6263,13 @@ func TestEditMessageReplacesPreviews(t *testing.T) {
 	}
 	if len(cleared.Previews) != 0 {
 		t.Errorf("esperava previews limpos após content vazio, obtive %v", cleared.Previews)
+	}
+	added, removed = ProcessEditedMessagePreviews(ctx, msg.ID, author.ID, "")
+	if len(added) != 0 {
+		t.Errorf("não esperava previews adicionados após content vazio, obtive %v", added)
+	}
+	if len(removed) != 1 || removed[0].ID != seedB.ID {
+		t.Errorf("esperava B removido após content vazio, obtive %v", removed)
 	}
 	linked, err = storage.ListPreviewsByMessageIDs(ctx, []string{msg.ID})
 	if err != nil {

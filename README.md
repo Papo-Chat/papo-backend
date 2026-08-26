@@ -24,8 +24,9 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [x] Processamento Thumbnail no backend (com oEmbed, Opengraph, segurança reforçada)
 - [x] JWT obrigatória para dar start no servidor
 - [x] Build e run script sem cgo, binário menor
+- [ ] Implementar evento user_join quando um novo usuário se registrar (para o frontend conseguir adicionar a lista de usuário).
 - [ ] Processamento Icons no Backend 
-- [ ] User Profile (Descrição, banner)
+- [ ] User Profile e last_read_message (Descrição, banner)
 - [ ] Cleanup (excluir código não usado)
    - Decidir entre multiserver ou single server e solidificar o código a um.
    - Implementar melhor maneira de carregar Cfg (memória, sem carregar IO toda hora)
@@ -128,7 +129,7 @@ Esquema completo em [`openapi.yml`](./openapi.yml).
 | Channels | `/channels`, `/channels/:id`, `/channels/:id/change_position`, `/channels/:id/permissions` |
 | Messages | `/channels/:id/messages`, `/messages`, `/messages/:id` |
 | Emojis | `/emojis`, `/emojis/:id` |
-| Link Preview (Embedding) | `/link-previews/{preview_id}/image`|
+| Link Preview (Embedding) | `/link-previews/{preview_id}`|
 | Attachments | `/attachments/:id` `/attachments/:id/thumbnail` |
 | Search | `/search` |
 
@@ -141,6 +142,7 @@ Autenticação via o mesmo cookie `Auth` da API REST, validado no handshake.
 | Evento | Direção |
 |---|---|
 | `message`, `message_edit`, `message_delete` | outbound |
+| `new_preview`, `remove_preview` | outbound |
 | `channel_create`, `channel_update`, `channel_delete` | outbound |
 | `typing` | inbound / outbound |
 | `presence_sync` | unicast (snapshot no connect) |

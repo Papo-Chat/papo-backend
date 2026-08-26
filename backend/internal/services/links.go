@@ -500,11 +500,12 @@ func nullableText(s string) *string {
 	return &s
 }
 
-// GetLinkPreviewImage resolve a imagem de um preview com o MESMO check de
-// acesso da mensagem à qual ele está vinculado (read_channel do canal).
-// Preview inexistente, sem imagem ou sem vínculo com mensagem acessível →
-// ErrPreviewNotFound (404, não vaza a existência).
-func GetLinkPreviewImage(ctx context.Context, previewID, userID string) (models.LinkPreview, error) {
+// GetLinkPreview resolve um preview com o MESMO check de acesso da mensagem à
+// qual ele está vinculado (read_channel do canal). Preview inexistente ou sem
+// vínculo com mensagem acessível → ErrPreviewNotFound (404, não vaza a
+// existência). A imagem não é obrigatória: o preview é retornado mesmo sem
+// imagem (ImageFilePath nil).
+func GetLinkPreview(ctx context.Context, previewID, userID string) (models.LinkPreview, error) {
 	if previewID == "" || userID == "" {
 		return models.LinkPreview{}, ErrPreviewNotFound
 	}
@@ -515,9 +516,6 @@ func GetLinkPreviewImage(ctx context.Context, previewID, userID string) (models.
 	}
 	if err != nil {
 		return models.LinkPreview{}, err
-	}
-	if preview.ImageFilePath == nil {
-		return models.LinkPreview{}, ErrPreviewNotFound
 	}
 
 	channelID, err := storage.GetChannelIDByPreviewID(ctx, previewID)
