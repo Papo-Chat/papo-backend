@@ -91,25 +91,23 @@ backend/
 * ~3GB RAM para processamento de thumbnails e links.
 * Versão leve: 256MB-1GB RAM com processamento de thumbnails e links desativados:
 ```
-     .env:
+.env:
      THUMBNAIL_ENABLED=false
 ```
-# banco
 
 ```bash
+# banco
 cd infra && docker-compose up -d
 ```
-# migrations
 
 ```bash
+# migrations
 cd ../migrations && goose up
 ```
-
 Adicione um segredo JWT válido no .env, sem isso o servidor não vai funcionar.
 
-# backend
-
 ```bash
+# backend
 chmod +x build-and-run.sh
 ./build-and-run.sh
 ```
