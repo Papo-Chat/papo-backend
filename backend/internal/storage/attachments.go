@@ -77,6 +77,91 @@ func GetAttachmentByID(ctx context.Context, id string) (models.Attachments, erro
 	return attachment, nil
 }
 
+const thumbnailColumns = "id, attachment_id, kind, mime_type, file_path, size_bytes, width, height, created_at"
+
+func scanAttachmentThumbnail(row rowScanner) (models.AttachmentThumbnail, error) {
+	var thumbnail models.AttachmentThumbnail
+	err := row.Scan(
+		&thumbnail.ID,
+		&thumbnail.AttachmentID,
+		&thumbnail.Kind,
+		&thumbnail.MimeType,
+		&thumbnail.FilePath,
+		&thumbnail.SizeBytes,
+		&thumbnail.Width,
+		&thumbnail.Height,
+		&thumbnail.CreatedAt,
+	)
+	if err != nil {
+		return models.AttachmentThumbnail{}, err
+	}
+
+	return thumbnail, nil
+}
+
+// CreateAttachmentThumbnail insere a thumbnail de um attachment.
+// ON CONFLICT (attachment_id, kind) DO NOTHING: se já existir (upload
+// duplicado do mesmo conteúdo), mantém a primeira.
+func CreateAttachmentThumbnail(ctx context.Context, t models.AttachmentThumbnail) error {
+	_, err := GetDB().ExecContext(ctx,
+		"INSERT INTO attachment_thumbnails (attachment_id, kind, mime_type, file_path, size_bytes, width, height) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (attachment_id, kind) DO NOTHING",
+		t.AttachmentID, t.Kind, t.MimeType, t.FilePath, t.SizeBytes, t.Width, t.Height,
+	)
+	if err != nil {
+		return mapStorageError(err)
+	}
+
+	return nil
+}
+
+// GetThumbnailByAttachmentID busca a thumbnail de um attachment pelo kind.
+// Retorna ErrNotFound quando não existe.
+func GetThumbnailByAttachmentID(ctx context.Context, attachmentID, kind string) (models.AttachmentThumbnail, error) {
+	row := GetDB().QueryRowContext(ctx,
+		"SELECT "+thumbnailColumns+" FROM attachment_thumbnails WHERE attachment_id = $1 AND kind = $2",
+		attachmentID, kind,
+	)
+
+	thumbnail, err := scanAttachmentThumbnail(row)
+	if err != nil {
+		return models.AttachmentThumbnail{}, mapStorageError(err)
+	}
+
+	return thumbnail, nil
+}
+
+// ListThumbnailsByAttachmentIDs busca as thumbnails de vários attachments em
+// uma única query (evita N+1 na listagem de mensagens). O mapa é indexado por
+// attachment_id; attachments sem thumbnail não aparecem.
+func ListThumbnailsByAttachmentIDs(ctx context.Context, attachmentIDs []string) (map[string]models.AttachmentThumbnail, error) {
+	thumbnails := make(map[string]models.AttachmentThumbnail, len(attachmentIDs))
+	if len(attachmentIDs) == 0 {
+		return thumbnails, nil
+	}
+
+	rows, err := GetDB().QueryContext(ctx,
+		"SELECT "+thumbnailColumns+" FROM attachment_thumbnails WHERE attachment_id = ANY($1)",
+		attachmentIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar thumbnails: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		thumbnail, err := scanAttachmentThumbnail(rows)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao ler thumbnail: %w", err)
+		}
+		thumbnails[thumbnail.AttachmentID] = thumbnail
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao listar thumbnails: %w", err)
+	}
+
+	return thumbnails, nil
+}
+
 // ListAttachmentsByMessage lista os attachments de uma mensagem ordenados por
 // data de criação.
 func ListAttachmentsByMessage(ctx context.Context, messageID string) ([]models.Attachments, error) {

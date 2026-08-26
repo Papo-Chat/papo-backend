@@ -23,6 +23,7 @@ tags:
   - name: UserRoles
   - name: Emojis
   - name: Attachments
+  - name: LinkPreviews
   - name: Search
   - name: WebSocket
 
@@ -1149,6 +1150,68 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /attachments/{file_id}/thumbnail:
+    get:
+      tags: [Attachments]
+      summary: Download da thumbnail do arquivo
+      description: >
+        Thumbnail gerada no upload (WebP para imagens estáticas, GIF para
+        GIFs animados). Permission Check: `read_channel` do canal da mensagem
+        que possui o attachment (mesmo check do download original).
+      parameters:
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: "Thumbnail binária (Content-Type = image/webp ou image/gif, Content-Disposition: inline)"
+          content:
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /link-previews/{preview_id}/image:
+    get:
+      tags: [LinkPreviews]
+      summary: Imagem do link preview
+      description: >
+        Thumbnail da imagem do link preview. Permission Check: `read_channel`
+        do canal da mensagem à qual o preview está vinculado (preview sem
+        vínculo acessível → 404).
+      parameters:
+        - name: preview_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: "Thumbnail binária (Content-Type = image/webp ou image/gif, Content-Disposition: inline)"
+          content:
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /search:
     post:
       tags: [Search]
@@ -1781,6 +1844,13 @@ components:
           description: >
             O schema (attachments.messages_id) permite múltiplos attachments
             por mensagem.
+        previews:
+          type: array
+          items:
+            $ref: '#/components/schemas/LinkPreview'
+          description: >
+            Link previews (OpenGraph/oEmbed) extraídos do content da mensagem
+            (best-effort; vazio quando não há URL ou a extração falhou).
 
     MessageListResponse:
       type: object
@@ -1833,7 +1903,63 @@ components:
         size_bytes:
           type: integer
           format: int64
+        thumbnail_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            ID da thumbnail gerada no upload (imagens jpeg/png/webp/gif);
+            null quando não há thumbnail. Download em
+            /attachments/{file_id}/thumbnail.
         created_at:
+          type: string
+          format: date-time
+
+    LinkPreview:
+      type: object
+      description: >
+        Preview de link (OpenGraph ou oEmbed) em cache por URL normalizada.
+        kind: 'og' (OpenGraph) ou 'oembed' (provedor allowlistado).
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+          description: URL normalizada (chave do cache)
+        kind:
+          type: string
+          enum: [og, oembed]
+        title:
+          type: string
+          nullable: true
+          description: Título (máx. 200 chars, truncado)
+        description:
+          type: string
+          nullable: true
+          description: Descrição (máx. 300 chars, truncada)
+        provider_name:
+          type: string
+          nullable: true
+          description: Nome do provedor (oEmbed)
+        embed_url:
+          type: string
+          nullable: true
+          description: >
+            Embed de vídeo derivado de padrão hardcoded (MVP: apenas
+            YouTube, formato https://www.youtube.com/embed/<id>). O frontend
+            deve renderizar iframe somente se casar exatamente com esse
+            padrão.
+        image_mime_type:
+          type: string
+          nullable: true
+          description: MIME da thumbnail da imagem do preview (webp/gif)
+        image_size_bytes:
+          type: integer
+          format: int64
+          nullable: true
+        fetched_at:
           type: string
           format: date-time
 

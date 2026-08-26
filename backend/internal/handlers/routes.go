@@ -118,6 +118,16 @@ func RegisterAttachmentRoutes(e *echo.Echo, cfg *config.Config) {
 	e.GET("/attachments/:file_id", func(c echo.Context) error {
 		return DownloadAttachmentHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
+	e.GET("/attachments/:file_id/thumbnail", func(c echo.Context) error {
+		return DownloadAttachmentThumbnailHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+}
+
+// RegisterLinkPreviewRoutes registra as rotas de link previews.
+func RegisterLinkPreviewRoutes(e *echo.Echo, cfg *config.Config) {
+	e.GET("/link-previews/:preview_id/image", func(c echo.Context) error {
+		return GetLinkPreviewImageHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
 }
 
 // RegisterEmojiRoutes registra as rotas de emojis.

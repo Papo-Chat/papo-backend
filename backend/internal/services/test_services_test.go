@@ -5600,3 +5600,761 @@ func TestCreateChannelLimitReached(t *testing.T) {
 		t.Errorf("expected 500 channels, got %d", count)
 	}
 }
+
+func TestParseRobotsGroups(t *testing.T) {
+	t.Run("crawl-delay entre UAs cria grupos separados", func(t *testing.T) {
+		body := "User-agent: *\nCrawl-delay: 10\nUser-agent: PapoBot\nDisallow: /\n"
+		rules := parseRobots([]byte(body))
+		if len(rules.groups) != 2 {
+			t.Fatalf("grupos esperados 2, obtidos %d", len(rules.groups))
+		}
+		if len(rules.groups[0].agents) != 1 || rules.groups[0].agents[0] != "*" {
+			t.Errorf("agentes do grupo 0: %v", rules.groups[0].agents)
+		}
+		if len(rules.groups[1].agents) != 1 || rules.groups[1].agents[0] != "PapoBot" {
+			t.Errorf("agentes do grupo 1: %v", rules.groups[1].agents)
+		}
+		if len(rules.groups[1].disallow) != 1 || rules.groups[1].disallow[0] != "/" {
+			t.Errorf("disallow do grupo 1: %v", rules.groups[1].disallow)
+		}
+	})
+	t.Run("UAs consecutivos sem diretiva = mesmo grupo", func(t *testing.T) {
+		body := "User-agent: Googlebot\nUser-agent: PapoBot\nDisallow: /\n"
+		rules := parseRobots([]byte(body))
+		if len(rules.groups) != 1 {
+			t.Fatalf("grupo esperado 1, obtidos %d", len(rules.groups))
+		}
+		if len(rules.groups[0].agents) != 2 {
+			t.Errorf("agentes esperados 2, obtidos %v", rules.groups[0].agents)
+		}
+	})
+	t.Run("diretiva nao rastreada apos regra fecha o grupo", func(t *testing.T) {
+		body := "User-agent: *\nDisallow: /\nSitemap: https://exemplo.com/sitemap.xml\nUser-agent: PapoBot\nAllow: /\n"
+		rules := parseRobots([]byte(body))
+		if len(rules.groups) != 2 {
+			t.Fatalf("grupos esperados 2, obtidos %d", len(rules.groups))
+		}
+	})
+}
+
+func TestRobotsAllowed(t *testing.T) {
+	ua := "PapoBot/1.0 (+link preview)"
+	t.Run("sem grupo aplicavel = permitido", func(t *testing.T) {
+		rules := parseRobots([]byte("User-agent: Googlebot\nDisallow: /\n"))
+		if !robotsAllowed(rules, ua, "/qualquer") {
+			t.Error("deveria ser permitido (sem grupo para o UA)")
+		}
+	})
+	t.Run("UA mais especifico vence", func(t *testing.T) {
+		rules := parseRobots([]byte("User-agent: *\nDisallow: /\nUser-agent: PapoBot\nAllow: /\n"))
+		if !robotsAllowed(rules, ua, "/x") {
+			t.Error("grupo PapoBot (token mais longo) deveria vencer = permitido")
+		}
+	})
+	t.Run("regra mais especifica vence", func(t *testing.T) {
+		rules := parseRobots([]byte("User-agent: *\nDisallow: /\nAllow: /public\n"))
+		if !robotsAllowed(rules, ua, "/public/arquivo") {
+			t.Error("Allow mais longa deveria vencer = permitido")
+		}
+		if robotsAllowed(rules, ua, "/privado") {
+			t.Error("Disallow deveria vencer = negado")
+		}
+	})
+	t.Run("empate = Allow", func(t *testing.T) {
+		rules := parseRobots([]byte("User-agent: *\nDisallow: /a\nAllow: /a\n"))
+		if !robotsAllowed(rules, ua, "/a") {
+			t.Error("empate deveria ser permitido")
+		}
+	})
+	t.Run("wildcard e ancora", func(t *testing.T) {
+		rules := parseRobots([]byte("User-agent: *\nDisallow: /privado/*.pdf$\n"))
+		if robotsAllowed(rules, ua, "/privado/doc.pdf") {
+			t.Error("/privado/doc.pdf deveria ser negado")
+		}
+		if !robotsAllowed(rules, ua, "/privado/doc.pdf?download=1") {
+			t.Error("regra ancorada nao deve casar com query = permitido")
+		}
+	})
+	t.Run("disallow vazio permite tudo", func(t *testing.T) {
+		rules := parseRobots([]byte("User-agent: *\nDisallow:\n"))
+		if !robotsAllowed(rules, ua, "/x") {
+			t.Error("Disallow vazio deveria permitir tudo")
+		}
+	})
+}
+
+func TestEnsureAttachmentThumbnailEnabledFlag(t *testing.T) {
+	ctx := testCtx()
+
+	makePNG := func(t *testing.T) []byte {
+		t.Helper()
+		img := image.NewNRGBA(image.Rect(0, 0, 64, 32))
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatalf("falha ao codificar PNG: %v", err)
+		}
+		return buf.Bytes()
+	}
+
+	runCase := func(t *testing.T, enabled string) (attachmentID, blobFile string) {
+		content := makePNG(t)
+		attachment, err := storage.CreateAttachment(ctx, models.Attachments{
+			OriginalFileName: "teste.png",
+			MimeType:         "image/png",
+			FilePath:         "teste/blob.png",
+			SizeBytes:        int64(len(content)),
+			ShaHash:          randHex(32),
+		})
+		if err != nil {
+			t.Fatalf("CreateAttachment: %v", err)
+		}
+		blobFile = filepath.Join(t.TempDir(), "blob.png")
+		if err := os.WriteFile(blobFile, content, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		t.Setenv("THUMBNAIL_ENABLED", enabled)
+		ensureAttachmentThumbnail(ctx, attachment.ID, blobFile, "image/png")
+		return attachment.ID, blobFile
+	}
+
+	t.Run("desabilitado nao gera thumbnail", func(t *testing.T) {
+		attachmentID, blobFile := runCase(t, "false")
+		if _, err := storage.GetThumbnailByAttachmentID(ctx, attachmentID, thumbnailKind); !errors.Is(err, storage.ErrNotFound) {
+			t.Errorf("thumbnail nao deveria existir, err = %v", err)
+		}
+		if _, err := os.Stat(blobFile + ".preview.webp"); !os.IsNotExist(err) {
+			t.Error("arquivo .preview.webp nao deveria existir")
+		}
+	})
+
+	t.Run("habilitado gera thumbnail webp", func(t *testing.T) {
+		attachmentID, blobFile := runCase(t, "true")
+		thumb, err := storage.GetThumbnailByAttachmentID(ctx, attachmentID, thumbnailKind)
+		if err != nil {
+			t.Fatalf("GetThumbnailByAttachmentID: %v", err)
+		}
+		if thumb.MimeType != "image/webp" {
+			t.Errorf("mime esperado image/webp, obtido %s", thumb.MimeType)
+		}
+		if _, err := os.Stat(blobFile + ".preview.webp"); err != nil {
+			t.Errorf("arquivo .preview.webp deveria existir: %v", err)
+		}
+	})
+}
+
+func TestDownloadPreviewImageDisabled(t *testing.T) {
+	cfg := config.LoadConfig()
+	cfg.ThumbnailEnabled = false
+	if _, _, _, err := downloadPreviewImage(testCtx(), cfg, "https://exemplo.com/imagem.png"); err == nil {
+		t.Error("THUMBNAIL_ENABLED=false deveria retornar erro (sem fetch)")
+	}
+}
+
+func TestExtractPreviewURLs(t *testing.T) {
+	cases := []struct {
+		content string
+		max     int
+		want    []string
+	}{
+		{"veja https://a.com/x e https://b.com/y", 2, []string{"https://a.com/x", "https://b.com/y"}},
+		{"https://a.com/x https://b.com/y https://c.com/z", 2, []string{"https://a.com/x", "https://b.com/y"}},
+		{"https://a.com/x e https://a.com/x de novo", 2, []string{"https://a.com/x"}},
+		{"https://a.com/x.,", 2, []string{"https://a.com/x"}},
+		{"(https://a.com/b(c).)", 2, []string{"https://a.com/b(c)"}},
+		{"(https://a.com/b(c))", 2, []string{"https://a.com/b(c)"}},
+		{"sem url aqui", 2, nil},
+		{"ftp://a.com/x", 2, nil},
+		{"https://a.com/x", 0, []string{"https://a.com/x"}},
+	}
+	for _, tc := range cases {
+		got := extractPreviewURLs(tc.content, tc.max)
+		if len(got) != len(tc.want) {
+			t.Errorf("extractPreviewURLs(%q, %d) = %v, esperado %v", tc.content, tc.max, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("extractPreviewURLs(%q, %d)[%d] = %q, esperado %q", tc.content, tc.max, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
+func TestStripTrailingPunctuation(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"https://x.com/a.", "https://x.com/a"},
+		{"https://x.com/a!!", "https://x.com/a"},
+		{"https://x.com/a(b).", "https://x.com/a(b)"},
+		{"https://x.com/a(b)", "https://x.com/a(b)"},
+		{"https://x.com/a(b))", "https://x.com/a(b)"},
+	}
+	for _, tc := range cases {
+		if got := stripTrailingPunctuation(tc.in); got != tc.want {
+			t.Errorf("stripTrailingPunctuation(%q) = %q, esperado %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestParseOpenGraph(t *testing.T) {
+	page, err := url.Parse("https://exemplo.com/noticias/post-1?ref=x")
+	if err != nil {
+		t.Fatalf("url.Parse retornou erro: %v", err)
+	}
+
+	t.Run("og completo", func(t *testing.T) {
+		body := []byte(`<html><head>
+			<title>Título da página</title>
+			<meta property="og:title" content="OG Title">
+			<meta property="og:description" content="OG Desc">
+			<meta property="og:image" content="https://cdn.exemplo.com/img.png">
+		</head><body></body></html>`)
+		title, desc, img := parseOpenGraph(body, page)
+		if title != "OG Title" {
+			t.Errorf("title = %q, esperado %q", title, "OG Title")
+		}
+		if desc != "OG Desc" {
+			t.Errorf("description = %q, esperado %q", desc, "OG Desc")
+		}
+		if img != "https://cdn.exemplo.com/img.png" {
+			t.Errorf("image = %q, esperado URL absoluta do og:image", img)
+		}
+	})
+
+	t.Run("fallback twitter e pagina", func(t *testing.T) {
+		body := []byte(`<html><head>
+			<title>Página Title</title>
+			<meta name="twitter:title" content="TW Title">
+			<meta name="description" content="Página Desc">
+			<meta name="twitter:image" content="https://cdn.exemplo.com/tw.png">
+		</head><body></body></html>`)
+		title, desc, img := parseOpenGraph(body, page)
+		if title != "TW Title" {
+			t.Errorf("title = %q, esperado fallback twitter", title)
+		}
+		if desc != "Página Desc" {
+			t.Errorf("description = %q, esperado meta name=description", desc)
+		}
+		if img != "https://cdn.exemplo.com/tw.png" {
+			t.Errorf("image = %q, esperado twitter:image", img)
+		}
+	})
+
+	t.Run("title da pagina quando nao ha meta", func(t *testing.T) {
+		body := []byte(`<html><head><title>Só o Title</title></head><body></body></html>`)
+		title, desc, img := parseOpenGraph(body, page)
+		if title != "Só o Title" {
+			t.Errorf("title = %q, esperado <title> da página", title)
+		}
+		if desc != "" || img != "" {
+			t.Errorf("desc/img deveriam ser vazios, obtive %q/%q", desc, img)
+		}
+	})
+
+	t.Run("imagem relativa resolvida contra a pagina", func(t *testing.T) {
+		body := []byte(`<html><head>
+			<meta property="og:image" content="/midias/img.png">
+		</head><body></body></html>`)
+		_, _, img := parseOpenGraph(body, page)
+		if img != "https://exemplo.com/midias/img.png" {
+			t.Errorf("image = %q, esperado resolvida contra a URL da página", img)
+		}
+	})
+
+	t.Run("corpo vazio", func(t *testing.T) {
+		title, desc, img := parseOpenGraph(nil, page)
+		if title != "" || desc != "" || img != "" {
+			t.Errorf("corpo vazio deveria retornar tudo vazio, obtive %q/%q/%q", title, desc, img)
+		}
+	})
+}
+
+func TestYoutubeEmbedURL(t *testing.T) {
+	cases := []struct{ raw, want string }{
+		{"https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://www.youtube.com/embed/dQw4w9WgXcQ"},
+		{"https://m.youtube.com/watch?v=dQw4w9WgXcQ", "https://www.youtube.com/embed/dQw4w9WgXcQ"},
+		{"https://youtu.be/dQw4w9WgXcQ", "https://www.youtube.com/embed/dQw4w9WgXcQ"},
+		{"https://youtube.com/shorts/dQw4w9WgXcQ", "https://www.youtube.com/embed/dQw4w9WgXcQ"},
+		{"https://youtube.com/embed/dQw4w9WgXcQ", "https://www.youtube.com/embed/dQw4w9WgXcQ"},
+		{"https://youtube.com/watch", ""},
+		{"https://youtube.com/watch?v=curto", ""},
+		{"https://youtu.be/dQw4w9WgXcQ/extra", ""},
+		{"https://vimeo.com/123", ""},
+		{"https://youtube.com/", ""},
+	}
+	for _, tc := range cases {
+		u, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatalf("url.Parse(%q) retornou erro: %v", tc.raw, err)
+		}
+		if got := youtubeEmbedURL(u); got != tc.want {
+			t.Errorf("youtubeEmbedURL(%q) = %q, esperado %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestOembedProviderHost(t *testing.T) {
+	cases := []struct{ host, want string }{
+		{"youtube.com", "youtube.com"},
+		{"m.youtube.com", "youtube.com"},
+		{"www.youtube.com", "youtube.com"},
+		{"x.com", "x.com"},
+		{"www.x.com", "x.com"},
+		{"notyoutube.com", ""},
+		{"myx.com", ""},
+		{"example.com", ""},
+	}
+	for _, tc := range cases {
+		if got := oembedProviderHost(tc.host); got != tc.want {
+			t.Errorf("oembedProviderHost(%q) = %q, esperado %q", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestNormalizeHost(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"WWW.Example.COM", "example.com"},
+		{"m.youtube.com", "youtube.com"},
+		{"www.m.youtube.com", "youtube.com"},
+		{"x.com", "x.com"},
+	}
+	for _, tc := range cases {
+		if got := normalizeHost(tc.in); got != tc.want {
+			t.Errorf("normalizeHost(%q) = %q, esperado %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestRobotsTargetPath(t *testing.T) {
+	cases := []struct{ raw, want string }{
+		{"https://exemplo.com/a/b?c=1", "/a/b?c=1"},
+		{"https://exemplo.com", "/"},
+		{"https://exemplo.com/", "/"},
+		{"https://exemplo.com/x", "/x"},
+	}
+	for _, tc := range cases {
+		u, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatalf("url.Parse(%q) retornou erro: %v", tc.raw, err)
+		}
+		if got := robotsTargetPath(u); got != tc.want {
+			t.Errorf("robotsTargetPath(%q) = %q, esperado %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestTruncateRune(t *testing.T) {
+	if got := truncateRune("abcdef", 3); got != "abc" {
+		t.Errorf("truncateRune longo = %q, esperado %q", got, "abc")
+	}
+	if got := truncateRune("abc", 5); got != "abc" {
+		t.Errorf("truncateRune curto = %q, esperado inalterado", got)
+	}
+	if got := truncateRune("olá ☺ mundo", 4); got != "olá " {
+		t.Errorf("truncateRune UTF-8 = %q, esperado 4 runes %q", got, "olá ")
+	}
+	if got := truncateRune("abc", 0); got != "abc" {
+		t.Errorf("truncateRune n<=0 = %q, esperado inalterado", got)
+	}
+}
+
+func TestNullableTextAndFirstNonEmpty(t *testing.T) {
+	if nullableText("") != nil {
+		t.Error("nullableText(\"\") deveria ser nil")
+	}
+	if s := nullableText("x"); s == nil || *s != "x" {
+		t.Errorf("nullableText(\"x\") = %v, esperado ponteiro para x", s)
+	}
+	if got := firstNonEmpty("", "a", "b"); got != "a" {
+		t.Errorf("firstNonEmpty = %q, esperado %q", got, "a")
+	}
+	if got := firstNonEmpty("", ""); got != "" {
+		t.Errorf("firstNonEmpty tudo vazio = %q, esperado vazio", got)
+	}
+}
+
+func TestGetOrCreatePreviewCacheHit(t *testing.T) {
+	ctx := testCtx()
+	user := newTestMessageUser(t)
+
+	title := "Título em cache"
+	seed, err := storage.UpsertPreview(ctx, models.LinkPreview{
+		URL:   "https://cache-hit.example.com/pagina",
+		Kind:  "og",
+		Title: &title,
+	})
+	if err != nil {
+		t.Fatalf("UpsertPreview retornou erro: %v", err)
+	}
+
+	got, err := GetOrCreatePreview(ctx, user.ID, "https://cache-hit.example.com/pagina")
+	if err != nil {
+		t.Fatalf("GetOrCreatePreview com cache hit retornou erro (deveria evitar rede): %v", err)
+	}
+	if got.ID != seed.ID {
+		t.Errorf("esperava o mesmo id do preview em cache, obtive %s (esperado %s)", got.ID, seed.ID)
+	}
+	if got.Title == nil || *got.Title != title {
+		t.Errorf("esperava title %q do cache, obtive %v", title, got.Title)
+	}
+}
+
+func TestGetLinkPreviewImage(t *testing.T) {
+	ctx := testCtx()
+	cleanServers(ctx)
+	owner := newTestMessageUser(t)
+	reader := newTestMessageUser(t)
+	outsider := newTestMessageUser(t)
+	server, channel := newTestMessageChannel(t, &owner.ID)
+
+	imgPath := filepath.Join(t.TempDir(), "preview.png")
+	imgBytes := pngAvatarBytes(16, 16)
+	if err := os.WriteFile(imgPath, imgBytes, 0o644); err != nil {
+		t.Fatalf("falha ao gravar imagem de apoio: %v", err)
+	}
+	mime := "image/png"
+	size := int64(len(imgBytes))
+
+	preview, err := storage.UpsertPreview(ctx, models.LinkPreview{
+		URL:            "https://preview-image.example.com/pagina",
+		Kind:           "og",
+		ImageFilePath:  &imgPath,
+		ImageMimeType:  &mime,
+		ImageSizeBytes: &size,
+	})
+	if err != nil {
+		t.Fatalf("UpsertPreview retornou erro: %v", err)
+	}
+
+	message, err := storage.CreateMessage(ctx, channel.ID, owner.ID, "mensagem com preview", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	if err := storage.AddMessagePreviews(ctx, message.ID, []string{preview.ID}); err != nil {
+		t.Fatalf("falha ao vincular preview à mensagem: %v", err)
+	}
+
+	t.Run("dono acessa", func(t *testing.T) {
+		got, err := GetLinkPreviewImage(ctx, preview.ID, owner.ID)
+		if err != nil {
+			t.Fatalf("GetLinkPreviewImage para o dono retornou erro: %v", err)
+		}
+		if got.ID != preview.ID {
+			t.Errorf("esperava preview %s, obtive %s", preview.ID, got.ID)
+		}
+	})
+
+	t.Run("preview sem imagem vira 404", func(t *testing.T) {
+		noImg, err := storage.UpsertPreview(ctx, models.LinkPreview{
+			URL:  "https://preview-image.example.com/sem-imagem",
+			Kind: "og",
+		})
+		if err != nil {
+			t.Fatalf("UpsertPreview retornou erro: %v", err)
+		}
+		if err := storage.AddMessagePreviews(ctx, message.ID, []string{noImg.ID}); err != nil {
+			t.Fatalf("falha ao vincular preview: %v", err)
+		}
+		if _, err := GetLinkPreviewImage(ctx, noImg.ID, owner.ID); !errors.Is(err, ErrPreviewNotFound) {
+			t.Errorf("esperava ErrPreviewNotFound para preview sem imagem, obtive %v", err)
+		}
+	})
+
+	t.Run("preview sem vinculo vira 404", func(t *testing.T) {
+		unlinked, err := storage.UpsertPreview(ctx, models.LinkPreview{
+			URL:           "https://preview-image.example.com/sem-vinculo",
+			Kind:          "og",
+			ImageFilePath: &imgPath,
+		})
+		if err != nil {
+			t.Fatalf("UpsertPreview retornou erro: %v", err)
+		}
+		if _, err := GetLinkPreviewImage(ctx, unlinked.ID, owner.ID); !errors.Is(err, ErrPreviewNotFound) {
+			t.Errorf("esperava ErrPreviewNotFound para preview sem vinculo, obtive %v", err)
+		}
+	})
+
+	t.Run("preview inexistente vira 404", func(t *testing.T) {
+		if _, err := GetLinkPreviewImage(ctx, randUUID(), owner.ID); !errors.Is(err, ErrPreviewNotFound) {
+			t.Errorf("esperava ErrPreviewNotFound, obtive %v", err)
+		}
+	})
+
+	t.Run("ids vazios viram 404", func(t *testing.T) {
+		if _, err := GetLinkPreviewImage(ctx, "", owner.ID); !errors.Is(err, ErrPreviewNotFound) {
+			t.Errorf("previewID vazio: esperava ErrPreviewNotFound, obtive %v", err)
+		}
+		if _, err := GetLinkPreviewImage(ctx, preview.ID, ""); !errors.Is(err, ErrPreviewNotFound) {
+			t.Errorf("userID vazio: esperava ErrPreviewNotFound, obtive %v", err)
+		}
+	})
+
+	// Fecha o canal: o reader ganha a role, o outsider fica de fora.
+	grantChannelPermission(t, server, channel, reader, models.ChannelPermission{ReadChannel: true})
+
+	t.Run("leitor com role acessa", func(t *testing.T) {
+		if _, err := GetLinkPreviewImage(ctx, preview.ID, reader.ID); err != nil {
+			t.Errorf("leitor com role deveria acessar, obtive %v", err)
+		}
+	})
+
+	t.Run("canal fechado vira 404 para o de fora", func(t *testing.T) {
+		if _, err := GetLinkPreviewImage(ctx, preview.ID, outsider.ID); !errors.Is(err, ErrPreviewNotFound) {
+			t.Errorf("esperava ErrPreviewNotFound (404, nao vaza existencia), obtive %v", err)
+		}
+	})
+}
+
+func TestCreateMessageLinksCachedPreview(t *testing.T) {
+	ctx := testCtx()
+	cleanServers(ctx)
+	author := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &author.ID)
+
+	title := "Preview da mensagem"
+	seed, err := storage.UpsertPreview(ctx, models.LinkPreview{
+		URL:   "https://msg-preview.example.com/a",
+		Kind:  "og",
+		Title: &title,
+	})
+	if err != nil {
+		t.Fatalf("UpsertPreview retornou erro: %v", err)
+	}
+
+	msg, err := CreateMessage(ctx, channel.ID, author.ID, "veja https://msg-preview.example.com/a.", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	if len(msg.Previews) != 1 {
+		t.Fatalf("esperava 1 preview na resposta, obtive %d", len(msg.Previews))
+	}
+	if msg.Previews[0].ID != seed.ID {
+		t.Errorf("esperava preview %s, obtive %s", seed.ID, msg.Previews[0].ID)
+	}
+
+	linked, err := storage.ListPreviewsByMessageIDs(ctx, []string{msg.ID})
+	if err != nil {
+		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[msg.ID]) != 1 || linked[msg.ID][0].ID != seed.ID {
+		t.Errorf("preview nao ficou vinculado a mensagem no banco: %v", linked)
+	}
+}
+
+func TestEditMessageReplacesPreviews(t *testing.T) {
+	ctx := testCtx()
+	cleanServers(ctx)
+	author := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &author.ID)
+
+	titleA := "A"
+	titleB := "B"
+	seedA, err := storage.UpsertPreview(ctx, models.LinkPreview{
+		URL: "https://edit-preview.example.com/a", Kind: "og", Title: &titleA,
+	})
+	if err != nil {
+		t.Fatalf("UpsertPreview A retornou erro: %v", err)
+	}
+	seedB, err := storage.UpsertPreview(ctx, models.LinkPreview{
+		URL: "https://edit-preview.example.com/b", Kind: "og", Title: &titleB,
+	})
+	if err != nil {
+		t.Fatalf("UpsertPreview B retornou erro: %v", err)
+	}
+
+	msg, err := CreateMessage(ctx, channel.ID, author.ID, "https://edit-preview.example.com/a", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	if len(msg.Previews) != 1 || msg.Previews[0].ID != seedA.ID {
+		t.Fatalf("esperava preview A na criação, obtive %v", msg.Previews)
+	}
+
+	edited, err := EditMessage(ctx, msg.ID, author.ID, "agora https://edit-preview.example.com/b")
+	if err != nil {
+		t.Fatalf("EditMessage retornou erro: %v", err)
+	}
+	if len(edited.Previews) != 1 || edited.Previews[0].ID != seedB.ID {
+		t.Errorf("esperava apenas preview B após edição, obtive %v", edited.Previews)
+	}
+	linked, err := storage.ListPreviewsByMessageIDs(ctx, []string{msg.ID})
+	if err != nil {
+		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[msg.ID]) != 1 || linked[msg.ID][0].ID != seedB.ID {
+		t.Errorf("preview A deveria ter sido removido no banco, obtive %v", linked)
+	}
+
+	cleared, err := EditMessage(ctx, msg.ID, author.ID, "")
+	if err != nil {
+		t.Fatalf("EditMessage com content vazio retornou erro: %v", err)
+	}
+	if len(cleared.Previews) != 0 {
+		t.Errorf("esperava previews limpos após content vazio, obtive %v", cleared.Previews)
+	}
+	linked, err = storage.ListPreviewsByMessageIDs(ctx, []string{msg.ID})
+	if err != nil {
+		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[msg.ID]) != 0 {
+		t.Errorf("vinculos deveriam ter sido limpos no banco, obtive %v", linked)
+	}
+}
+
+func TestDownloadAttachmentThumbnail(t *testing.T) {
+	ctx := testCtx()
+	cleanServers(ctx)
+	author := newTestMessageUser(t)
+	reader := newTestMessageUser(t)
+	outsider := newTestMessageUser(t)
+	server, channel := newTestMessageChannel(t, &author.ID)
+
+	pngBytes := pngAvatarBytes(64, 32)
+	attachment, err := storage.CreateAttachment(ctx, models.Attachments{
+		OriginalFileName: "foto.png",
+		MimeType:         "image/png",
+		FilePath:         "teste/blob.png",
+		SizeBytes:        int64(len(pngBytes)),
+		ShaHash:          randHex(32),
+		CreatedBy:        &author.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateAttachment retornou erro: %v", err)
+	}
+	blobFile := filepath.Join(t.TempDir(), "blob.png")
+	if err := os.WriteFile(blobFile, pngBytes, 0o644); err != nil {
+		t.Fatalf("falha ao gravar blob de apoio: %v", err)
+	}
+	ensureAttachmentThumbnail(ctx, attachment.ID, blobFile, "image/png")
+
+	message, err := storage.CreateMessage(ctx, channel.ID, author.ID, "com imagem", []string{attachment.ID})
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	_ = message
+
+	t.Run("dono baixa a thumbnail", func(t *testing.T) {
+		thumb, err := DownloadAttachmentThumbnail(ctx, attachment.ID, author.ID)
+		if err != nil {
+			t.Fatalf("DownloadAttachmentThumbnail para o autor retornou erro: %v", err)
+		}
+		if thumb.AttachmentID != attachment.ID {
+			t.Errorf("esperava attachment %s, obtive %s", attachment.ID, thumb.AttachmentID)
+		}
+		if thumb.MimeType != "image/webp" {
+			t.Errorf("esperava mime image/webp, obtive %s", thumb.MimeType)
+		}
+		if _, err := os.Stat(thumb.FilePath); err != nil {
+			t.Errorf("arquivo da thumbnail deveria existir: %v", err)
+		}
+	})
+
+	// Canal fechado: o reader ganha a role, o outsider fica de fora.
+	grantChannelPermission(t, server, channel, reader, models.ChannelPermission{ReadChannel: true})
+
+	t.Run("leitor com role baixa", func(t *testing.T) {
+		if _, err := DownloadAttachmentThumbnail(ctx, attachment.ID, reader.ID); err != nil {
+			t.Errorf("leitor com role deveria baixar, obtive %v", err)
+		}
+	})
+
+	t.Run("canal fechado nega o outsider", func(t *testing.T) {
+		if _, err := DownloadAttachmentThumbnail(ctx, attachment.ID, outsider.ID); !errors.Is(err, ErrPermissionDenied) {
+			t.Errorf("esperava ErrPermissionDenied, obtive %v", err)
+		}
+	})
+
+	t.Run("sem thumbnail vira 404", func(t *testing.T) {
+		plain, err := storage.CreateAttachment(ctx, models.Attachments{
+			OriginalFileName: "texto.txt",
+			MimeType:         "text/plain",
+			FilePath:         "teste/blob.txt",
+			SizeBytes:        10,
+			ShaHash:          randHex(32),
+		})
+		if err != nil {
+			t.Fatalf("CreateAttachment retornou erro: %v", err)
+		}
+		if _, err := storage.CreateMessage(ctx, channel.ID, author.ID, "texto", []string{plain.ID}); err != nil {
+			t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+		}
+		if _, err := DownloadAttachmentThumbnail(ctx, plain.ID, author.ID); !errors.Is(err, ErrAttachmentNotFound) {
+			t.Errorf("esperava ErrAttachmentNotFound, obtive %v", err)
+		}
+	})
+
+	t.Run("attachment inexistente vira 404", func(t *testing.T) {
+		if _, err := DownloadAttachmentThumbnail(ctx, randUUID(), author.ID); !errors.Is(err, ErrAttachmentNotFound) {
+			t.Errorf("esperava ErrAttachmentNotFound, obtive %v", err)
+		}
+	})
+
+	t.Run("ids vazios", func(t *testing.T) {
+		if _, err := DownloadAttachmentThumbnail(ctx, "", author.ID); !errors.Is(err, ErrAttachmentNotFound) {
+			t.Errorf("fileID vazio: esperava ErrAttachmentNotFound, obtive %v", err)
+		}
+		if _, err := DownloadAttachmentThumbnail(ctx, attachment.ID, ""); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("userID vazio: esperava ErrInvalidInput, obtive %v", err)
+		}
+	})
+}
+
+func TestListMessagesWithThumbnailsAndPreviews(t *testing.T) {
+	ctx := testCtx()
+	cleanServers(ctx)
+	author := newTestMessageUser(t)
+	_, channel := newTestMessageChannel(t, &author.ID)
+
+	pngBytes := pngAvatarBytes(64, 32)
+	attachment, err := storage.CreateAttachment(ctx, models.Attachments{
+		OriginalFileName: "foto.png",
+		MimeType:         "image/png",
+		FilePath:         "teste/blob.png",
+		SizeBytes:        int64(len(pngBytes)),
+		ShaHash:          randHex(32),
+		CreatedBy:        &author.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateAttachment retornou erro: %v", err)
+	}
+	blobFile := filepath.Join(t.TempDir(), "blob.png")
+	if err := os.WriteFile(blobFile, pngBytes, 0o644); err != nil {
+		t.Fatalf("falha ao gravar blob de apoio: %v", err)
+	}
+	ensureAttachmentThumbnail(ctx, attachment.ID, blobFile, "image/png")
+
+	title := "Preview da listagem"
+	seed, err := storage.UpsertPreview(ctx, models.LinkPreview{
+		URL:   "https://list-preview.example.com/x",
+		Kind:  "og",
+		Title: &title,
+	})
+	if err != nil {
+		t.Fatalf("UpsertPreview retornou erro: %v", err)
+	}
+
+	message, err := storage.CreateMessage(ctx, channel.ID, author.ID, "https://list-preview.example.com/x", []string{attachment.ID})
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	if err := storage.AddMessagePreviews(ctx, message.ID, []string{seed.ID}); err != nil {
+		t.Fatalf("falha ao vincular preview: %v", err)
+	}
+
+	list, err := ListMessages(ctx, channel.ID, author.ID, nil, "")
+	if err != nil {
+		t.Fatalf("ListMessages retornou erro: %v", err)
+	}
+	if len(list.Messages) != 1 {
+		t.Fatalf("esperava 1 mensagem, obtive %d", len(list.Messages))
+	}
+	m := list.Messages[0]
+	if len(m.Previews) != 1 || m.Previews[0].ID != seed.ID {
+		t.Errorf("mensagem deveria carregar o preview, obtive %v", m.Previews)
+	}
+	if len(m.Attachments) != 1 {
+		t.Fatalf("mensagem deveria carregar 1 attachment, obtive %d", len(m.Attachments))
+	}
+	if m.Attachments[0].ThumbnailID == nil {
+		t.Error("attachment deveria carregar o ThumbnailID")
+	}
+}

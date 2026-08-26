@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"papo/internal/config"
 	"papo/internal/models"
 	"papo/internal/storage"
 	"papo/internal/utils"
@@ -79,7 +80,40 @@ func ListMessages(ctx context.Context, channelID, userID string, since *time.Tim
 		messages = messages[:messageListLimit]
 	}
 
+	messageIDs := make([]string, 0, len(messages))
+	attachmentIDs := make([]string, 0)
+	for _, m := range messages {
+		messageIDs = append(messageIDs, m.ID)
+		for _, a := range m.Attachments {
+			attachmentIDs = append(attachmentIDs, a.ID)
+		}
+	}
+
+	previewsByMessage, err := storage.ListPreviewsByMessageIDs(ctx, messageIDs)
+	if err != nil {
+		return models.MessageList{}, err
+	}
+	thumbnails, err := storage.ListThumbnailsByAttachmentIDs(ctx, attachmentIDs)
+	if err != nil {
+		return models.MessageList{}, err
+	}
+	for i := range messages {
+		messages[i].Previews = previewsByMessage[messages[i].ID]
+		setAttachmentThumbnails(&messages[i].Attachments, thumbnails)
+	}
+
 	return models.MessageList{ChannelID: channelID, Messages: messages, HasMore: hasMore}, nil
+}
+
+// setAttachmentThumbnails popula o ThumbnailID dos attachments a partir do
+// mapa (vazio/ausente → ThumbnailID nil).
+func setAttachmentThumbnails(attachments *[]models.MessageAttachment, thumbnails map[string]models.AttachmentThumbnail) {
+	for i := range *attachments {
+		if thumb, ok := thumbnails[(*attachments)[i].ID]; ok {
+			id := thumb.ID
+			(*attachments)[i].ThumbnailID = &id
+		}
+	}
 }
 
 // CreateMessage cria uma nova mensagem em um canal (README: POST /messages),
@@ -178,7 +212,64 @@ func CreateMessage(ctx context.Context, channelID, authorID, content string, att
 		return models.MessageWithAttachment{}, err
 	}
 
-	return models.MessageWithAttachment{Message: message, Attachments: toMessageAttachments(createdAttachments)}, nil
+	messageAttachments := toMessageAttachments(createdAttachments)
+	if len(attachmentIDs) > 0 {
+		thumbnails, err := storage.ListThumbnailsByAttachmentIDs(ctx, attachmentIDs)
+		if err != nil {
+			return models.MessageWithAttachment{}, err
+		}
+		setAttachmentThumbnails(&messageAttachments, thumbnails)
+	}
+
+	previews := attachMessagePreviews(ctx, message.ID, authorID, content, storage.AddMessagePreviews)
+
+	return models.MessageWithAttachment{
+		Message:     message,
+		Attachments: messageAttachments,
+		Previews:    previews,
+	}, nil
+}
+
+// attachMessagePreviews extrai URLs do content, obtém/cria os previews
+// (best-effort: qualquer falha é logada e a mensagem segue sem preview) e
+// vincula os obtidos à mensagem via linkFn. O ctx carrega o budget total
+// compartilhado entre as URLs (§6.1). Retorna os previews vinculados (vazio
+// quando não há URL no content ou todos falharam).
+func attachMessagePreviews(ctx context.Context, messageID, authorID, content string, linkFn func(context.Context, string, []string) error) []models.LinkPreview {
+	cfg := config.LoadConfig()
+	if !cfg.LinkPreviewEnabled || content == "" {
+		return nil
+	}
+
+	budget := cfg.LinkPreviewTimeout
+	if budget <= 0 {
+		budget = 8 * time.Second
+	}
+	previewCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	previewIDs := make([]string, 0, cfg.LinkPreviewMaxURLs)
+	var previews []models.LinkPreview
+	for _, rawURL := range extractPreviewURLs(content, cfg.LinkPreviewMaxURLs) {
+		preview, err := GetOrCreatePreview(previewCtx, authorID, rawURL)
+		if err != nil {
+			utils.Errorf("link preview para %s pulado: %v", rawURL, err)
+			continue
+		}
+		previewIDs = append(previewIDs, preview.ID)
+		previews = append(previews, preview)
+	}
+
+	// linkFn é sempre chamado (mesmo com lista vazia): na criação,
+	// AddMessagePreviews é no-op para lista vazia; na edição,
+	// ReplaceMessagePreviews limpa os vínculos antigos (o conteúdo mudou,
+	// então preview de URL que saiu do content não pode permanecer).
+	if err := linkFn(previewCtx, messageID, previewIDs); err != nil {
+		utils.Errorf("falha ao vincular previews à mensagem %s: %v", messageID, err)
+		return nil
+	}
+
+	return previews
 }
 
 // EditMessage edita o conteúdo de uma mensagem (README:
@@ -226,8 +317,37 @@ func EditMessage(ctx context.Context, messageID, authorID, content string) (mode
 	if err != nil {
 		return models.MessageWithAttachment{}, err
 	}
+	messageAttachments := toMessageAttachments(attachments)
+	if len(attachments) > 0 {
+		attachmentIDs := make([]string, 0, len(attachments))
+		for _, a := range attachments {
+			attachmentIDs = append(attachmentIDs, a.ID)
+		}
+		thumbnails, err := storage.ListThumbnailsByAttachmentIDs(ctx, attachmentIDs)
+		if err != nil {
+			return models.MessageWithAttachment{}, err
+		}
+		setAttachmentThumbnails(&messageAttachments, thumbnails)
+	}
 
-	return models.MessageWithAttachment{Message: updated, Attachments: toMessageAttachments(attachments)}, nil
+	// Previews: o conteúdo novo pode gerar previews diferentes → substitui
+	// todos os vínculos (best-effort). Content novo vazio → limpa os previews.
+	newContent := ""
+	if updated.Content != nil {
+		newContent = *updated.Content
+	}
+	if newContent == "" {
+		if err := storage.ReplaceMessagePreviews(ctx, updated.ID, nil); err != nil {
+			utils.Errorf("falha ao limpar previews da mensagem %s: %v", updated.ID, err)
+		}
+	}
+	previews := attachMessagePreviews(ctx, updated.ID, authorID, newContent, storage.ReplaceMessagePreviews)
+
+	return models.MessageWithAttachment{
+		Message:     updated,
+		Attachments: messageAttachments,
+		Previews:    previews,
+	}, nil
 }
 
 // toMessageAttachments converte os attachments completos na informação mínima

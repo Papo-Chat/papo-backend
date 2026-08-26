@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
@@ -21,6 +22,27 @@ type Config struct {
 	RateLimit         int
 	RateBurst         int
 	CORSOrigins       []string
+
+	// Thumbnails de imagens (attachment e preview)
+	ThumbnailEnabled   bool
+	ThumbnailMaxDim    int
+	GIFThumbnailMaxDim int
+	ThumbnailMaxPixels int
+	ThumbnailTimeout   time.Duration
+	ThumbnailMaxConc   int
+
+	// Link preview (OpenGraph/oEmbed)
+	LinkPreviewEnabled    bool
+	LinkPreviewTimeout    time.Duration
+	LinkPreviewMaxURLs    int
+	LinkPreviewCacheTTL   time.Duration
+	OutboundMaxConc       int
+	RobotsEnabled         bool
+	RobotsCacheTTL        time.Duration
+	PreviewFetchRateGlob  int
+	PreviewFetchRateUser  int
+	PreviewTitleMax       int
+	PreviewDescriptionMax int
 }
 
 func LoadConfig() *Config {
@@ -39,6 +61,25 @@ func LoadConfig() *Config {
 	CORSOrigins := getEnvList("CORS_ORIGINS",
 		[]string{"http://localhost:5173", "https://localhost:5173"})
 
+	ThumbnailEnabled := getEnvBool("THUMBNAIL_ENABLED", true)
+	ThumbnailMaxDim := getEnvInt("THUMBNAIL_MAX_DIM", 512)
+	GIFThumbnailMaxDim := getEnvInt("GIF_THUMBNAIL_MAX_DIM", 128)
+	ThumbnailMaxPixels := getEnvInt("THUMBNAIL_MAX_PIXELS", 50000000)
+	ThumbnailTimeout := time.Duration(getEnvInt("THUMBNAIL_TIMEOUT", 5)) * time.Second
+	ThumbnailMaxConc := getEnvInt("THUMBNAIL_MAX_CONCURRENCY", 4)
+
+	LinkPreviewEnabled := getEnvBool("LINK_PREVIEW_ENABLED", true)
+	LinkPreviewTimeout := time.Duration(getEnvInt("LINK_PREVIEW_TIMEOUT", 8)) * time.Second
+	LinkPreviewMaxURLs := getEnvInt("LINK_PREVIEW_MAX_URLS", 2)
+	LinkPreviewCacheTTL := time.Duration(getEnvInt("LINK_PREVIEW_CACHE_TTL", 86400)) * time.Second
+	OutboundMaxConc := getEnvInt("OUTBOUND_MAX_CONCURRENCY", 4)
+	RobotsEnabled := getEnvBool("ROBOTS_ENABLED", true)
+	RobotsCacheTTL := time.Duration(getEnvInt("ROBOTS_CACHE_TTL", 3600)) * time.Second
+	PreviewFetchRateGlob := getEnvInt("PREVIEW_FETCH_RATE_GLOBAL", 30)
+	PreviewFetchRateUser := getEnvInt("PREVIEW_FETCH_RATE_PER_USER", 10)
+	PreviewTitleMax := getEnvInt("PREVIEW_TITLE_MAX", 200)
+	PreviewDescriptionMax := getEnvInt("PREVIEW_DESCRIPTION_MAX", 300)
+
 	return &Config{
 		ServerPort:        getEnv("SERVER_PORT", ""),
 		DatabaseURL:       getEnv("DATABASE_URL", ""),
@@ -51,6 +92,25 @@ func LoadConfig() *Config {
 		RateLimit:         RateLimit,
 		RateBurst:         RateBurst,
 		CORSOrigins:       CORSOrigins,
+
+		ThumbnailEnabled:   ThumbnailEnabled,
+		ThumbnailMaxDim:    ThumbnailMaxDim,
+		GIFThumbnailMaxDim: GIFThumbnailMaxDim,
+		ThumbnailMaxPixels: ThumbnailMaxPixels,
+		ThumbnailTimeout:   ThumbnailTimeout,
+		ThumbnailMaxConc:   ThumbnailMaxConc,
+
+		LinkPreviewEnabled:    LinkPreviewEnabled,
+		LinkPreviewTimeout:    LinkPreviewTimeout,
+		LinkPreviewMaxURLs:    LinkPreviewMaxURLs,
+		LinkPreviewCacheTTL:   LinkPreviewCacheTTL,
+		OutboundMaxConc:       OutboundMaxConc,
+		RobotsEnabled:         RobotsEnabled,
+		RobotsCacheTTL:        RobotsCacheTTL,
+		PreviewFetchRateGlob:  PreviewFetchRateGlob,
+		PreviewFetchRateUser:  PreviewFetchRateUser,
+		PreviewTitleMax:       PreviewTitleMax,
+		PreviewDescriptionMax: PreviewDescriptionMax,
 	}
 }
 
@@ -71,6 +131,19 @@ func getEnvInt(key string, defaultValue int) int {
 			return parsed
 		}
 		logrus.Info("Valor inválido para " + key + ", usando padrão " + strconv.Itoa(defaultValue))
+	}
+
+	return defaultValue
+}
+
+// getEnvBool lê uma variável de ambiente booleana (strconv.ParseBool).
+// Valores ausentes ou inválidos usam o padrão.
+func getEnvBool(key string, defaultValue bool) bool {
+	if value, exists := os.LookupEnv(key); exists {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			return parsed
+		}
+		logrus.Info("Valor inválido para " + key + ", usando padrão " + strconv.FormatBool(defaultValue))
 	}
 
 	return defaultValue

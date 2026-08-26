@@ -80,3 +80,71 @@ func DownloadAttachmentHandler(baseURL string, c echo.Context) error {
 
 	return nil
 }
+
+// DownloadAttachmentThumbnailHandler implementa GET
+// /attachments/:file_id/thumbnail. Mesmo check de acesso do download
+// original (read_channel do canal da mensagem). A resposta é a thumbnail
+// (WebP para imagens estáticas, GIF para GIFs) com Content-Disposition:
+// inline (usada diretamente em <img>).
+func DownloadAttachmentThumbnailHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	thumbnail, err := services.DownloadAttachmentThumbnail(c.Request().Context(), c.Param("file_id"), userID)
+	switch {
+	case errors.Is(err, services.ErrAttachmentNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "thumbnail não encontrada")
+	case errors.Is(err, services.ErrChannelNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "canal não encontrado")
+	case errors.Is(err, services.ErrPermissionDenied):
+		return utils.SendProblem(c, baseURL, http.StatusForbidden,
+			"forbidden", "Acesso negado",
+			"usuário não tem permissão para ver a thumbnail")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao buscar thumbnail: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao buscar a thumbnail")
+	}
+
+	file, err := os.Open(thumbnail.FilePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "thumbnail não encontrada")
+	}
+	if err != nil {
+		utils.Errorf("request_id=%s falha ao abrir o blob da thumbnail: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao buscar a thumbnail")
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		utils.Errorf("request_id=%s falha ao ler o blob da thumbnail: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao buscar a thumbnail")
+	}
+
+	resp := c.Response()
+	resp.Header().Set(echo.HeaderContentType, thumbnail.MimeType)
+	resp.Header().Set(echo.HeaderContentDisposition, "inline")
+	resp.Header().Set(echo.HeaderContentLength, strconv.FormatInt(info.Size(), 10))
+	resp.WriteHeader(http.StatusOK)
+
+	if _, err := io.Copy(resp, file); err != nil {
+		utils.Errorf("request_id=%s falha ao enviar a thumbnail: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return err
+	}
+
+	return nil
+}

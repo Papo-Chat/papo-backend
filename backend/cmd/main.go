@@ -53,6 +53,7 @@ func main() {
 	handlers.RegisterChannelRoutes(e, cfg)
 	handlers.RegisterMessageRoutes(e, cfg)
 	handlers.RegisterAttachmentRoutes(e, cfg)
+	handlers.RegisterLinkPreviewRoutes(e, cfg)
 	handlers.RegisterEmojiRoutes(e, cfg)
 	handlers.RegisterRoleRoutes(e, cfg)
 	handlers.RegisterSearchRoutes(e, cfg)

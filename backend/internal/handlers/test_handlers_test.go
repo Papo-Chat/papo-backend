@@ -119,6 +119,7 @@ func newApp() *echo.Echo {
 	RegisterChannelRoutes(e, cfg)
 	RegisterMessageRoutes(e, cfg)
 	RegisterAttachmentRoutes(e, cfg)
+	RegisterLinkPreviewRoutes(e, cfg)
 	RegisterEmojiRoutes(e, cfg)
 	RegisterRoleRoutes(e, cfg)
 	RegisterSearchRoutes(e, cfg)
@@ -2841,6 +2842,253 @@ func TestDownloadAttachmentRouteMissingBlob(t *testing.T) {
 	rec := do(t, e, http.MethodGet, "/attachments/"+attachment.ID, nil, authCookie(token))
 
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "arquivo não encontrado")
+}
+
+// newMessageWithRealImageRoute cria uma mensagem com um PNG real (a
+// thumbnail é gerada em background pelo pipeline de attachments).
+func newMessageWithRealImageRoute(t *testing.T, e *echo.Echo, channelID, token string, png []byte) models.Attachments {
+	t.Helper()
+
+	rec := doMultipart(t, e, http.MethodPost, "/messages",
+		map[string]string{"channel_id": channelID, "content": "com imagem real"},
+		map[string][][2]string{"attachments": {{"foto.png", string(png)}}}, authCookie(token))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var created models.MessageWithAttachment
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(created.Attachments) != 1 {
+		t.Fatalf("esperava 1 attachment, obtive %d", len(created.Attachments))
+	}
+	stored, err := storage.GetAttachmentByID(context.Background(), created.Attachments[0].ID)
+	if err != nil {
+		t.Fatalf("GetAttachmentByID retornou erro: %v", err)
+	}
+	return stored
+}
+
+// TestDownloadAttachmentThumbnailRouteOwner garante que o dono baixa a
+// thumbnail via GET /attachments/:file_id/thumbnail recebendo o WebP com
+// Content-Disposition: inline e o Content-Length correto.
+func TestDownloadAttachmentThumbnailRouteOwner(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	server := createServerFor(t, userID)
+	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	attachment := newMessageWithRealImageRoute(t, e, channel.ID, token, pngAvatarBytes(64, 32))
+
+	thumb, err := storage.GetThumbnailByAttachmentID(context.Background(), attachment.ID, "preview")
+	if err != nil {
+		t.Fatalf("thumbnail nao deveria ter falhado na geracao: %v", err)
+	}
+
+	rec := do(t, e, http.MethodGet, "/attachments/"+attachment.ID+"/thumbnail", nil, authCookie(token))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get(echo.HeaderContentType); ct != "image/webp" {
+		t.Errorf("esperava content-type image/webp, obtive %q", ct)
+	}
+	if cd := rec.Header().Get(echo.HeaderContentDisposition); cd != "inline" {
+		t.Errorf("esperava content-disposition inline, obtive %q", cd)
+	}
+	if cl := rec.Header().Get(echo.HeaderContentLength); cl != fmt.Sprint(thumb.SizeBytes) {
+		t.Errorf("esperava content-length %d, obtive %q", thumb.SizeBytes, cl)
+	}
+	blob, err := os.ReadFile(thumb.FilePath)
+	if err != nil {
+		t.Fatalf("falha ao ler a thumbnail em disco: %v", err)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), blob) {
+		t.Errorf("corpo do download nao corresponde a thumbnail em disco")
+	}
+}
+
+// TestDownloadAttachmentThumbnailRouteUnauthorized garante que a rota sem
+// autenticação responde 401.
+func TestDownloadAttachmentThumbnailRouteUnauthorized(t *testing.T) {
+	e := newApp()
+
+	rec := do(t, e, http.MethodGet, "/attachments/00000000-0000-4000-8000-000000000000/thumbnail", nil, nil)
+
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+// TestDownloadAttachmentThumbnailRouteForbidden garante que um usuário sem
+// read_channel em canal fechado é negado com 403.
+func TestDownloadAttachmentThumbnailRouteForbidden(t *testing.T) {
+	e := newApp()
+	ownerID, ownerToken := registerAndLogin(t, e)
+	_, strangerToken := registerAndLogin(t, e)
+	server := createServerFor(t, ownerID)
+	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	closeChannelRoute(t, e, server.ID, channel.ID, ownerToken)
+	attachment := newMessageWithRealImageRoute(t, e, channel.ID, ownerToken, pngAvatarBytes(64, 32))
+
+	rec := do(t, e, http.MethodGet, "/attachments/"+attachment.ID+"/thumbnail", nil, authCookie(strangerToken))
+
+	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
+		"usuário não tem permissão para ver a thumbnail")
+}
+
+// TestDownloadAttachmentThumbnailRouteNotFound garante que a rota responde
+// 404 para attachment inexistente e para attachment sem thumbnail.
+func TestDownloadAttachmentThumbnailRouteNotFound(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	server := createServerFor(t, userID)
+	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+
+	rec := do(t, e, http.MethodGet, "/attachments/00000000-0000-4000-8000-000000000000/thumbnail", nil, authCookie(token))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "thumbnail não encontrada")
+
+	// PNG inválido (só magic bytes) → sem thumbnail gerada
+	attachment := newMessageWithAttachmentRoute(t, e, channel.ID, token)
+	rec = do(t, e, http.MethodGet, "/attachments/"+attachment.ID+"/thumbnail", nil, authCookie(token))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "thumbnail não encontrada")
+}
+
+// newPreviewWithImageRoute grava um preview com imagem real em disco e o
+// vincula a uma mensagem nova no canal informado.
+func newPreviewWithImageRoute(t *testing.T, e *echo.Echo, channelID, token string) models.LinkPreview {
+	t.Helper()
+	ctx := context.Background()
+
+	img := pngAvatarBytes(16, 16)
+	imgPath := filepath.Join(t.TempDir(), "preview.png")
+	if err := os.WriteFile(imgPath, img, 0o644); err != nil {
+		t.Fatalf("falha ao gravar imagem de apoio: %v", err)
+	}
+	mime := "image/png"
+	size := int64(len(img))
+	// URL unica por chamada: UpsertPreview faz ON CONFLICT (url) DO UPDATE,
+	// entao uma URL fixa seria compartilhada entre testes e o preview ficaria
+	// vinculado a mensagens de canais diferentes.
+	preview, err := storage.UpsertPreview(ctx, models.LinkPreview{
+		URL:            "https://preview-route.example.com/pagina-" + randHex(8),
+		Kind:           "og",
+		ImageFilePath:  &imgPath,
+		ImageMimeType:  &mime,
+		ImageSizeBytes: &size,
+	})
+	if err != nil {
+		t.Fatalf("UpsertPreview retornou erro: %v", err)
+	}
+
+	rec := doMultipart(t, e, http.MethodPost, "/messages",
+		map[string]string{"channel_id": channelID, "content": "mensagem de apoio"},
+		nil, authCookie(token))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("esperava status 201 ao criar mensagem, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var created models.MessageWithAttachment
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if err := storage.AddMessagePreviews(ctx, created.Message.ID, []string{preview.ID}); err != nil {
+		t.Fatalf("falha ao vincular preview à mensagem: %v", err)
+	}
+	return preview
+}
+
+// TestGetLinkPreviewImageRouteOwner garante que o dono do servidor baixa a
+// imagem do preview via GET /link-previews/:preview_id/image com o conteúdo
+// exato do arquivo, Content-Type correto e Content-Disposition: inline.
+func TestGetLinkPreviewImageRouteOwner(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	server := createServerFor(t, userID)
+	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	preview := newPreviewWithImageRoute(t, e, channel.ID, token)
+
+	rec := do(t, e, http.MethodGet, "/link-previews/"+preview.ID+"/image", nil, authCookie(token))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get(echo.HeaderContentType); ct != "image/png" {
+		t.Errorf("esperava content-type image/png, obtive %q", ct)
+	}
+	if cd := rec.Header().Get(echo.HeaderContentDisposition); cd != "inline" {
+		t.Errorf("esperava content-disposition inline, obtive %q", cd)
+	}
+	blob, err := os.ReadFile(*preview.ImageFilePath)
+	if err != nil {
+		t.Fatalf("falha ao ler a imagem em disco: %v", err)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), blob) {
+		t.Errorf("corpo da resposta nao corresponde a imagem em disco")
+	}
+}
+
+// TestGetLinkPreviewImageRouteUnauthorized garante que a rota sem
+// autenticação responde 401.
+func TestGetLinkPreviewImageRouteUnauthorized(t *testing.T) {
+	e := newApp()
+
+	rec := do(t, e, http.MethodGet, "/link-previews/00000000-0000-4000-8000-000000000000/image", nil, nil)
+
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+// TestGetLinkPreviewImageRouteNotFound garante que a rota responde 404 para
+// preview inexistente, preview sem imagem, preview sem vinculo com mensagem
+// e preview de canal fechado para quem não tem acesso (não vaza existência).
+func TestGetLinkPreviewImageRouteNotFound(t *testing.T) {
+	e := newApp()
+	ownerID, ownerToken := registerAndLogin(t, e)
+	_, strangerToken := registerAndLogin(t, e)
+	server := createServerFor(t, ownerID)
+	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	preview := newPreviewWithImageRoute(t, e, channel.ID, ownerToken)
+
+	rec := do(t, e, http.MethodGet, "/link-previews/00000000-0000-4000-8000-000000000000/image", nil, authCookie(ownerToken))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "imagem do preview não encontrada")
+
+	ctx := context.Background()
+	noImg, err := storage.UpsertPreview(ctx, models.LinkPreview{
+		URL:  "https://preview-route.example.com/sem-imagem-" + randHex(8),
+		Kind: "og",
+	})
+	if err != nil {
+		t.Fatalf("UpsertPreview retornou erro: %v", err)
+	}
+	var msgID string
+	if err := storage.GetDB().QueryRowContext(ctx,
+		"SELECT id FROM messages WHERE channel_id = $1 LIMIT 1", channel.ID).Scan(&msgID); err != nil {
+		t.Fatalf("falha ao buscar mensagem de apoio: %v", err)
+	}
+	if err := storage.AddMessagePreviews(ctx, msgID, []string{noImg.ID}); err != nil {
+		t.Fatalf("falha ao vincular preview: %v", err)
+	}
+	rec = do(t, e, http.MethodGet, "/link-previews/"+noImg.ID+"/image", nil, authCookie(ownerToken))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "imagem do preview não encontrada")
+
+	unlinked, err := storage.UpsertPreview(ctx, models.LinkPreview{
+		URL:  "https://preview-route.example.com/sem-vinculo-" + randHex(8),
+		Kind: "og",
+	})
+	if err != nil {
+		t.Fatalf("UpsertPreview retornou erro: %v", err)
+	}
+	rec = do(t, e, http.MethodGet, "/link-previews/"+unlinked.ID+"/image", nil, authCookie(ownerToken))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "imagem do preview não encontrada")
+
+	// canal fechado: estranho sem acesso → 404 (não 403, não vaza existência)
+	closeChannelRoute(t, e, server.ID, channel.ID, ownerToken)
+	rec = do(t, e, http.MethodGet, "/link-previews/"+preview.ID+"/image", nil, authCookie(strangerToken))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "imagem do preview não encontrada")
+
+	// dono continua acessando
+	rec = do(t, e, http.MethodGet, "/link-previews/"+preview.ID+"/image", nil, authCookie(ownerToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dono deveria continuar acessando, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
 }
 
 // --- rotas de emojis (tarefa 7.4) ---

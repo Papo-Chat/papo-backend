@@ -19,14 +19,17 @@ type MessageAttachment struct {
 	MimeType         string    `json:"mime_type"`
 	OriginalFileName string    `json:"original_file_name"`
 	SizeBytes        int64     `json:"size_bytes"`
+	ThumbnailID      *string   `json:"thumbnail_id"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
-// MessageWithAttachment é a mensagem com seus attachments, como exposta pela
-// API (respostas de listagem, criação e edição de mensagens).
+// MessageWithAttachment é a mensagem com seus attachments e link previews,
+// como exposta pela API (respostas de listagem, criação e edição de
+// mensagens).
 type MessageWithAttachment struct {
 	Message
 	Attachments []MessageAttachment `json:"attachments"`
+	Previews    []LinkPreview       `json:"previews"`
 }
 
 // MessageList é a resposta de GET /channels/:channel_id/messages.

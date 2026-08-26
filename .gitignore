@@ -27,6 +27,7 @@ yarn.lock
 *.swo
 *~
 .kilo
+opencode.json
 
 # Docker
 # Note: Docker Compose e arquivos de configuração devem ser commitados,

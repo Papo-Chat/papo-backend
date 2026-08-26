@@ -3182,3 +3182,402 @@ func TestCountChannelsByServer(t *testing.T) {
 		t.Errorf("expected 0 channels for a nonexistent server, got %d", empty)
 	}
 }
+
+// --- attachment thumbnails ---
+
+func newTestAttachment(t *testing.T) models.Attachments {
+	t.Helper()
+	author := newTestUser(t)
+	attachment, err := CreateAttachment(testCtx(), models.Attachments{
+		OriginalFileName: "arquivo.txt",
+		MimeType:         "text/plain",
+		FilePath:         "attachments/" + randHex(8),
+		ShaHash:          randHex(32),
+		SizeBytes:        10,
+		CreatedBy:        &author.ID,
+	})
+	if err != nil {
+		t.Fatalf("falha ao criar attachment de apoio: %v", err)
+	}
+	return attachment
+}
+
+func TestCreateAttachmentThumbnail(t *testing.T) {
+	attachment := newTestAttachment(t)
+
+	err := CreateAttachmentThumbnail(testCtx(), models.AttachmentThumbnail{
+		AttachmentID: attachment.ID,
+		Kind:         "preview",
+		MimeType:     "image/webp",
+		FilePath:     "attachments/thumb.webp",
+		SizeBytes:    100,
+		Width:        64,
+		Height:       32,
+	})
+	if err != nil {
+		t.Fatalf("CreateAttachmentThumbnail retornou erro: %v", err)
+	}
+
+	thumb, err := GetThumbnailByAttachmentID(testCtx(), attachment.ID, "preview")
+	if err != nil {
+		t.Fatalf("GetThumbnailByAttachmentID retornou erro: %v", err)
+	}
+	if thumb.AttachmentID != attachment.ID || thumb.Kind != "preview" {
+		t.Errorf("campos attachment_id/kind incorretos: %+v", thumb)
+	}
+	if thumb.MimeType != "image/webp" || thumb.FilePath != "attachments/thumb.webp" {
+		t.Errorf("campos mime/file_path incorretos: %+v", thumb)
+	}
+	if thumb.SizeBytes != 100 || thumb.Width != 64 || thumb.Height != 32 {
+		t.Errorf("campos size/dimensao incorretos: %+v", thumb)
+	}
+	if thumb.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+
+	// ON CONFLICT DO NOTHING: a primeira thumbnail permanece
+	err = CreateAttachmentThumbnail(testCtx(), models.AttachmentThumbnail{
+		AttachmentID: attachment.ID,
+		Kind:         "preview",
+		MimeType:     "image/png",
+		FilePath:     "attachments/outra.png",
+		SizeBytes:    999,
+		Width:        1,
+		Height:       1,
+	})
+	if err != nil {
+		t.Fatalf("CreateAttachmentThumbnail duplicada retornou erro: %v", err)
+	}
+	thumb2, err := GetThumbnailByAttachmentID(testCtx(), attachment.ID, "preview")
+	if err != nil {
+		t.Fatalf("GetThumbnailByAttachmentID retornou erro: %v", err)
+	}
+	if thumb2.ID != thumb.ID || thumb2.FilePath != "attachments/thumb.webp" {
+		t.Errorf("ON CONFLICT DO NOTHING deveria manter a primeira, obtive %+v", thumb2)
+	}
+
+	// FK: attachment inexistente
+	if err := CreateAttachmentThumbnail(testCtx(), models.AttachmentThumbnail{
+		AttachmentID: randUUID(),
+		Kind:         "preview",
+	}); err == nil {
+		t.Error("esperava erro de FK para attachment inexistente")
+	}
+
+	// inexistente
+	if _, err := GetThumbnailByAttachmentID(testCtx(), randUUID(), "preview"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para thumbnail inexistente, obtive %v", err)
+	}
+}
+
+func TestListThumbnailsByAttachmentIDs(t *testing.T) {
+	att1 := newTestAttachment(t)
+	att2 := newTestAttachment(t)
+	att3 := newTestAttachment(t) // sem thumbnail
+
+	for i, att := range []models.Attachments{att1, att2} {
+		if err := CreateAttachmentThumbnail(testCtx(), models.AttachmentThumbnail{
+			AttachmentID: att.ID,
+			Kind:         "preview",
+			MimeType:     "image/webp",
+			FilePath:     "attachments/thumb" + string(rune('a'+i)) + ".webp",
+			SizeBytes:    100,
+			Width:        64,
+			Height:       32,
+		}); err != nil {
+			t.Fatalf("falha ao criar thumbnail de apoio: %v", err)
+		}
+	}
+
+	thumbs, err := ListThumbnailsByAttachmentIDs(testCtx(), []string{att1.ID, att2.ID, att3.ID})
+	if err != nil {
+		t.Fatalf("ListThumbnailsByAttachmentIDs retornou erro: %v", err)
+	}
+	if len(thumbs) != 2 {
+		t.Fatalf("esperava 2 thumbnails (attachment sem thumbnail nao aparece), obtive %d", len(thumbs))
+	}
+	if thumbs[att1.ID].ID == "" || thumbs[att2.ID].ID == "" {
+		t.Error("mapa deveria ser indexado por attachment_id")
+	}
+	if _, ok := thumbs[att3.ID]; ok {
+		t.Error("attachment sem thumbnail nao deveria aparecer no mapa")
+	}
+
+	empty, err := ListThumbnailsByAttachmentIDs(testCtx(), nil)
+	if err != nil {
+		t.Fatalf("ListThumbnailsByAttachmentIDs com lista vazia retornou erro: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("lista vazia deveria retornar mapa vazio, obtive %d", len(empty))
+	}
+}
+
+func TestAttachmentThumbnailCascadeOnMessageDelete(t *testing.T) {
+	author := newTestUser(t)
+	server := newTestServer(t, nil)
+	channel := newTestChannel(t, server.ID)
+	attachment := newTestAttachment(t)
+
+	if err := CreateAttachmentThumbnail(testCtx(), models.AttachmentThumbnail{
+		AttachmentID: attachment.ID,
+		Kind:         "preview",
+		MimeType:     "image/webp",
+		FilePath:     "attachments/thumb.webp",
+		SizeBytes:    100,
+		Width:        64,
+		Height:       32,
+	}); err != nil {
+		t.Fatalf("falha ao criar thumbnail de apoio: %v", err)
+	}
+
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "com anexo", []string{attachment.ID})
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	if err := DeleteMessage(testCtx(), message.ID); err != nil {
+		t.Fatalf("DeleteMessage retornou erro: %v", err)
+	}
+
+	if _, err := GetThumbnailByAttachmentID(testCtx(), attachment.ID, "preview"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("thumbnail deveria ter sido removida em cascata, obtive %v", err)
+	}
+}
+
+// --- link previews ---
+
+func newTestPreview(t *testing.T, url string) models.LinkPreview {
+	t.Helper()
+	title := "título"
+	preview, err := UpsertPreview(testCtx(), models.LinkPreview{
+		URL:   url,
+		Kind:  "og",
+		Title: &title,
+	})
+	if err != nil {
+		t.Fatalf("falha ao criar preview de apoio: %v", err)
+	}
+	return preview
+}
+
+func TestUpsertPreview(t *testing.T) {
+	p1, err := UpsertPreview(testCtx(), models.LinkPreview{
+		URL:   "https://upsert.example.com/pagina",
+		Kind:  "og",
+		Title: strPtr("A"),
+	})
+	if err != nil {
+		t.Fatalf("UpsertPreview retornou erro: %v", err)
+	}
+	if p1.ID == "" || p1.FetchedAt.IsZero() {
+		t.Errorf("esperava id e fetched_at preenchidos: %+v", p1)
+	}
+
+	p2, err := UpsertPreview(testCtx(), models.LinkPreview{
+		URL:   "https://upsert.example.com/pagina",
+		Kind:  "og",
+		Title: strPtr("B"),
+	})
+	if err != nil {
+		t.Fatalf("UpsertPreview (update) retornou erro: %v", err)
+	}
+	if p2.ID != p1.ID {
+		t.Errorf("upsert da mesma URL deveria manter o mesmo id, obtive %s (esperado %s)", p2.ID, p1.ID)
+	}
+	if p2.Title == nil || *p2.Title != "B" {
+		t.Errorf("upsert deveria atualizar o title, obtive %v", p2.Title)
+	}
+
+	byURL, err := GetPreviewByURL(testCtx(), "https://upsert.example.com/pagina")
+	if err != nil {
+		t.Fatalf("GetPreviewByURL retornou erro: %v", err)
+	}
+	if byURL.Title == nil || *byURL.Title != "B" {
+		t.Errorf("GetPreviewByURL deveria retornar o title atualizado, obtive %v", byURL.Title)
+	}
+
+	byID, err := GetPreviewByID(testCtx(), p1.ID)
+	if err != nil {
+		t.Fatalf("GetPreviewByID retornou erro: %v", err)
+	}
+	if byID.URL != "https://upsert.example.com/pagina" {
+		t.Errorf("GetPreviewByID retornou URL incorreta: %q", byID.URL)
+	}
+
+	if _, err := GetPreviewByURL(testCtx(), "https://nao-existe.example.com"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para URL inexistente, obtive %v", err)
+	}
+	if _, err := GetPreviewByID(testCtx(), randUUID()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+func TestAddMessagePreviews(t *testing.T) {
+	author := newTestUser(t)
+	server := newTestServer(t, nil)
+	channel := newTestChannel(t, server.ID)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "msg", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	p1 := newTestPreview(t, "https://add.example.com/1")
+	p2 := newTestPreview(t, "https://add.example.com/2")
+
+	if err := AddMessagePreviews(testCtx(), message.ID, []string{p1.ID, p2.ID}); err != nil {
+		t.Fatalf("AddMessagePreviews retornou erro: %v", err)
+	}
+	linked, err := ListPreviewsByMessageIDs(testCtx(), []string{message.ID})
+	if err != nil {
+		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[message.ID]) != 2 {
+		t.Fatalf("esperava 2 previews vinculados, obtive %d", len(linked[message.ID]))
+	}
+
+	// duplicados são ignorados
+	if err := AddMessagePreviews(testCtx(), message.ID, []string{p1.ID, p2.ID}); err != nil {
+		t.Fatalf("AddMessagePreviews duplicada retornou erro: %v", err)
+	}
+	linked, err = ListPreviewsByMessageIDs(testCtx(), []string{message.ID})
+	if err != nil {
+		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[message.ID]) != 2 {
+		t.Errorf("duplicados deveriam ser ignorados, obtive %d", len(linked[message.ID]))
+	}
+
+	// lista vazia é no-op
+	if err := AddMessagePreviews(testCtx(), message.ID, nil); err != nil {
+		t.Errorf("AddMessagePreviews com lista vazia deveria ser no-op, obtive %v", err)
+	}
+
+	// FK: mensagem inexistente
+	if err := AddMessagePreviews(testCtx(), randUUID(), []string{p1.ID}); err == nil {
+		t.Error("esperava erro de FK para mensagem inexistente")
+	}
+	// FK: preview inexistente
+	if err := AddMessagePreviews(testCtx(), message.ID, []string{randUUID()}); err == nil {
+		t.Error("esperava erro de FK para preview inexistente")
+	}
+}
+
+func TestReplaceMessagePreviews(t *testing.T) {
+	author := newTestUser(t)
+	server := newTestServer(t, nil)
+	channel := newTestChannel(t, server.ID)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "msg", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	p1 := newTestPreview(t, "https://replace.example.com/1")
+	p2 := newTestPreview(t, "https://replace.example.com/2")
+	p3 := newTestPreview(t, "https://replace.example.com/3")
+
+	if err := AddMessagePreviews(testCtx(), message.ID, []string{p1.ID}); err != nil {
+		t.Fatalf("AddMessagePreviews retornou erro: %v", err)
+	}
+	if err := ReplaceMessagePreviews(testCtx(), message.ID, []string{p2.ID, p3.ID}); err != nil {
+		t.Fatalf("ReplaceMessagePreviews retornou erro: %v", err)
+	}
+	linked, err := ListPreviewsByMessageIDs(testCtx(), []string{message.ID})
+	if err != nil {
+		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+	}
+	ids := make(map[string]bool, len(linked[message.ID]))
+	for _, p := range linked[message.ID] {
+		ids[p.ID] = true
+	}
+	if len(ids) != 2 || !ids[p2.ID] || !ids[p3.ID] || ids[p1.ID] {
+		t.Errorf("replace deveria trocar p1 por p2+p3, obtive %v", ids)
+	}
+
+	if err := ReplaceMessagePreviews(testCtx(), message.ID, nil); err != nil {
+		t.Fatalf("ReplaceMessagePreviews (limpeza) retornou erro: %v", err)
+	}
+	linked, err = ListPreviewsByMessageIDs(testCtx(), []string{message.ID})
+	if err != nil {
+		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[message.ID]) != 0 {
+		t.Errorf("lista vazia deveria limpar os vinculos, obtive %d", len(linked[message.ID]))
+	}
+}
+
+func TestListPreviewsByMessageIDs(t *testing.T) {
+	author := newTestUser(t)
+	server := newTestServer(t, nil)
+	channel := newTestChannel(t, server.ID)
+
+	m1, err := CreateMessage(testCtx(), channel.ID, author.ID, "m1", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	m2, err := CreateMessage(testCtx(), channel.ID, author.ID, "m2", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	m3, err := CreateMessage(testCtx(), channel.ID, author.ID, "m3", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+
+	p1 := newTestPreview(t, "https://list.example.com/1")
+	p2 := newTestPreview(t, "https://list.example.com/2")
+	p3 := newTestPreview(t, "https://list.example.com/3")
+
+	if err := AddMessagePreviews(testCtx(), m1.ID, []string{p1.ID, p2.ID}); err != nil {
+		t.Fatalf("AddMessagePreviews retornou erro: %v", err)
+	}
+	if err := AddMessagePreviews(testCtx(), m2.ID, []string{p3.ID}); err != nil {
+		t.Fatalf("AddMessagePreviews retornou erro: %v", err)
+	}
+
+	linked, err := ListPreviewsByMessageIDs(testCtx(), []string{m1.ID, m2.ID, m3.ID})
+	if err != nil {
+		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[m1.ID]) != 2 {
+		t.Errorf("m1 deveria ter 2 previews, obtive %d", len(linked[m1.ID]))
+	}
+	if len(linked[m2.ID]) != 1 || linked[m2.ID][0].ID != p3.ID {
+		t.Errorf("m2 deveria ter o preview p3, obtive %v", linked[m2.ID])
+	}
+	if _, ok := linked[m3.ID]; ok {
+		t.Error("mensagem sem preview nao deveria aparecer no mapa")
+	}
+
+	empty, err := ListPreviewsByMessageIDs(testCtx(), nil)
+	if err != nil {
+		t.Fatalf("ListPreviewsByMessageIDs com lista vazia retornou erro: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("lista vazia deveria retornar mapa vazio, obtive %d", len(empty))
+	}
+}
+
+func TestGetChannelIDByPreviewID(t *testing.T) {
+	author := newTestUser(t)
+	server := newTestServer(t, nil)
+	channel := newTestChannel(t, server.ID)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "msg", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+
+	p1 := newTestPreview(t, "https://channel.example.com/1")
+	if err := AddMessagePreviews(testCtx(), message.ID, []string{p1.ID}); err != nil {
+		t.Fatalf("AddMessagePreviews retornou erro: %v", err)
+	}
+
+	channelID, err := GetChannelIDByPreviewID(testCtx(), p1.ID)
+	if err != nil {
+		t.Fatalf("GetChannelIDByPreviewID retornou erro: %v", err)
+	}
+	if channelID != channel.ID {
+		t.Errorf("esperava channel %s, obtive %s", channel.ID, channelID)
+	}
+
+	unlinked := newTestPreview(t, "https://channel.example.com/2")
+	if _, err := GetChannelIDByPreviewID(testCtx(), unlinked.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("preview sem vinculo deveria retornar ErrNotFound, obtive %v", err)
+	}
+}

@@ -21,7 +21,7 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [x] Backend MVP completo (endpoints, websocket, com segurança, testes e performance)
 - [x] Event para troca de avatar/nickname
 - [x] CORS configurável via vars. (util para rede local/teste)
-- [ ] Processamento Thumbnail no backend (com oEmbed, Opengraph, segurança reforçada)
+- [x] Processamento Thumbnail no backend (com oEmbed, Opengraph, segurança reforçada)
 - [ ] Processamento Icons no Backend 
 - [ ] User Profile (Descrição, banner)
 - [ ] Cleanup (excluir código não usado)
@@ -81,10 +81,17 @@ backend/
 - **Servidor público ou com senha.** Acesso público é só conectar na URL; servidor privado exige senha, validada contra usuário já autenticado (sessão via cookie `HttpOnly` + JWT).
 - **Servidor autoritativo.** O cliente nunca é fonte de verdade — permissão, presença, validação de arquivo e estado de canal são sempre decididos e persistidos no backend.
 - **Attachments endereçados por conteúdo** (SHA-256), com deduplicação automática.
+- **Thumbnail e Link Preview** Processamento de thumbnails muito robusto com etiqueta para robots.txt (oEmbed, OpenGraph, Youtube etc.)
 
-## Rodando localmente
+## Rodando localmente ou em VPS Simples
 
-Pré-requisitos: Go 1.21+, Docker (para o Postgres), [Goose](https://github.com/pressly/goose).
+* Pré-requisitos: Go 1.21+, Docker (para o Postgres), [Goose](https://github.com/pressly/goose).
+* ~3GB RAM para processamento de thumbnails e links.
+* Versão leve: 256MB-1GB RAM com processamento de thumbnails e links desativados:
+```
+     .env:
+     THUMBNAIL_ENABLED=false
+```
 
 ```bash
 # banco
@@ -113,7 +120,8 @@ Esquema completo em [`openapi.yml`](./openapi.yml).
 | Channels | `/channels`, `/channels/:id`, `/channels/:id/change_position`, `/channels/:id/permissions` |
 | Messages | `/channels/:id/messages`, `/messages`, `/messages/:id` |
 | Emojis | `/emojis`, `/emojis/:id` |
-| Attachments | `/attachments/:id` |
+| Link Preview (Embedding) | `/link-previews/{preview_id}/image`|
+| Attachments | `/attachments/:id` `/attachments/:id/thumbnail` |
 | Search | `/search` |
 
 Erros seguem RFC 7807 (`application/problem+json`), com header `X-Request-ID` em toda resposta.
