@@ -85,15 +85,17 @@ backend/
 - **Attachments endereçados por conteúdo** (SHA-256), com deduplicação automática.
 - **Thumbnail e Link Preview** Processamento de thumbnails muito robusto com etiqueta para robots.txt (oEmbed, OpenGraph, Youtube etc.)
 
-## Rodando localmente ou em VPS Simples
 
 * Pré-requisitos: Go 1.21+, Docker (para o Postgres), [Goose](https://github.com/pressly/goose).
 * ~3GB RAM para processamento de thumbnails e links.
+
 * Versão leve: 256MB-1GB RAM com processamento de thumbnails e links desativados:
 ```
 .env:
      THUMBNAIL_ENABLED=false
 ```
+
+## Rodando localmente ou em VPS Simples
 
 ```bash
 # banco
