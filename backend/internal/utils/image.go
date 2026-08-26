@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/gif"
 	_ "image/jpeg" // registra decoder JPEG para image.Decode/DecodeConfig
+	_ "image/png"  // registra decoder PNG para image.Decode/DecodeConfig
 	"math"
 	"net/http"
 	"time"

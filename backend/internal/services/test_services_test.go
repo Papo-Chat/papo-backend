@@ -5683,6 +5683,54 @@ func TestRobotsAllowed(t *testing.T) {
 	})
 }
 
+func TestRobotsEntryTTL(t *testing.T) {
+	normal := 3600 * time.Second
+	t.Run("fail-closed usa TTL curto", func(t *testing.T) {
+		entry := robotsEntry{allowedAll: false, rules: nil}
+		if got := robotsEntryTTL(entry, normal); got != robotsFailTTL {
+			t.Errorf("TTL fail-closed = %v, esperado %v", got, robotsFailTTL)
+		}
+	})
+	t.Run("sucesso com regras usa TTL normal", func(t *testing.T) {
+		entry := robotsEntry{rules: &robotsRules{}}
+		if got := robotsEntryTTL(entry, normal); got != normal {
+			t.Errorf("TTL sucesso = %v, esperado %v", got, normal)
+		}
+	})
+	t.Run("404 (allowedAll) usa TTL normal", func(t *testing.T) {
+		entry := robotsEntry{allowedAll: true}
+		if got := robotsEntryTTL(entry, normal); got != normal {
+			t.Errorf("TTL allowedAll = %v, esperado %v", got, normal)
+		}
+	})
+}
+
+// TestRobotsAllowedCacheHit exercita o RobotsAllowed real nos caminhos de
+// cache (sem rede): fail-closed fresco → negado; sucesso fresco → permitido.
+func TestRobotsAllowedCacheHit(t *testing.T) {
+	origin := "https://cache-hit.invalid"
+	u, _ := url.Parse(origin + "/algo")
+	ctx := context.Background()
+
+	robotsCacheMu.Lock()
+	robotsCache[origin] = robotsEntry{allowedAll: false, rules: nil, fetchedAt: time.Now()}
+	robotsCacheMu.Unlock()
+	if RobotsAllowed(ctx, u) {
+		t.Error("fail-closed fresco deveria ser negado")
+	}
+
+	robotsCacheMu.Lock()
+	robotsCache[origin] = robotsEntry{allowedAll: true, rules: nil, fetchedAt: time.Now()}
+	robotsCacheMu.Unlock()
+	if !RobotsAllowed(ctx, u) {
+		t.Error("sucesso fresco deveria ser permitido")
+	}
+
+	robotsCacheMu.Lock()
+	delete(robotsCache, origin)
+	robotsCacheMu.Unlock()
+}
+
 func TestEnsureAttachmentThumbnailEnabledFlag(t *testing.T) {
 	ctx := testCtx()
 

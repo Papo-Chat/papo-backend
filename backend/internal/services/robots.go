@@ -30,6 +30,11 @@ var (
 	robotsClientOn sync.Once
 )
 
+// robotsFailTTL: entradas fail-closed (fetch/parse falhou: timeout, 429,
+// 5xx) são revalidadas bem antes do TTL normal — uma falha transitória não
+// pode bloquear a origem por um TTL inteiro (1h).
+const robotsFailTTL = 30 * time.Second
+
 // getRobotsClient retorna o client SSRF-safe dedicado ao fetch de robots.txt
 // (timeout 2s, §6.4).
 func getRobotsClient() *http.Client {
@@ -61,7 +66,7 @@ func RobotsAllowed(ctx context.Context, target *url.URL) bool {
 	robotsCacheMu.RLock()
 	entry, ok := robotsCache[origin]
 	robotsCacheMu.RUnlock()
-	if ok && time.Since(entry.fetchedAt) < cfg.RobotsCacheTTL {
+	if ok && time.Since(entry.fetchedAt) < robotsEntryTTL(entry, cfg.RobotsCacheTTL) {
 		if entry.allowedAll {
 			return true
 		}
@@ -84,6 +89,16 @@ func RobotsAllowed(ctx context.Context, target *url.URL) bool {
 		return robotsAllowed(entry.rules, utils.SafeClientUserAgent, robotsTargetPath(target))
 	}
 	return false
+}
+
+// robotsEntryTTL retorna o TTL de cache de uma entrada: entradas fail-closed
+// (fetch/parse falhou) usam robotsFailTTL — uma falha transitória (timeout,
+// 429) não pode bloquear a origem por um TTL inteiro.
+func robotsEntryTTL(entry robotsEntry, normalTTL time.Duration) time.Duration {
+	if entry.rules == nil && !entry.allowedAll {
+		return robotsFailTTL
+	}
+	return normalTTL
 }
 
 // fetchRobotsEntry busca e parseia o robots.txt da origem (teto 512KB).

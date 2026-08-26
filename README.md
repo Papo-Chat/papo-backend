@@ -23,6 +23,7 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [x] CORS configurável via vars. (util para rede local/teste)
 - [x] Processamento Thumbnail no backend (com oEmbed, Opengraph, segurança reforçada)
 - [x] JWT obrigatória para dar start no servidor
+- [x] Build e run script sem cgo, binário menor
 - [ ] Processamento Icons no Backend 
 - [ ] User Profile (Descrição, banner)
 - [ ] Cleanup (excluir código não usado)
@@ -93,20 +94,24 @@ backend/
      .env:
      THUMBNAIL_ENABLED=false
 ```
+# banco
 
 ```bash
-# banco
 cd infra && docker-compose up -d
-
+```
 # migrations
+
+```bash
 cd ../migrations && goose up
+```
 
 Adicione um segredo JWT válido no .env, sem isso o servidor não vai funcionar.
 
 # backend
-cd ../backend
-go mod tidy
-go run cmd/main.go
+
+```bash
+chmod +x build-and-run.sh
+./build-and-run.sh
 ```
 
 Backend sobe em `http://localhost:8080`, WebSocket em `ws://localhost:8080/ws`.

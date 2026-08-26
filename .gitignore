@@ -49,6 +49,7 @@ attachments/
 dist
 build
 *.svelte-kit
+papo-server
 
 # Temporary files
 tmp
