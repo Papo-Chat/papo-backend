@@ -26,14 +26,15 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [x] JWT obrigatória para dar start no servidor
 - [x] Build e run script sem cgo, binário menor
 - [ ] Implementar evento user_join quando um novo usuário se registrar (para o frontend conseguir adicionar a lista de usuário).
+- [ ] Status Ausente/Ocupado (novo field)
 - [ ] Processamento Icons no Backend 
+- [ ] Seek (HTTP206) para attachment de vídeos 
 - [ ] User Profile e last_read_message (Descrição, banner)
 - [ ] Cleanup (excluir código não usado)
    - Decidir entre multiserver ou single server e solidificar o código a um.
    - Implementar melhor maneira de carregar Cfg (memória, sem carregar IO toda hora)
    - Verificar a necessidade de testes mais elegantes e abrangentes
 - [ ] Crons GC Attachments orfãos/tabela quebrada
-- [ ] Status Ausente/Ocupado (novo field)
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
 - [ ] React Mensagens
 - [ ] Direct Messages
