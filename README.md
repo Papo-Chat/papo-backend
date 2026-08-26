@@ -22,6 +22,7 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [x] Event para troca de avatar/nickname
 - [x] CORS configurável via vars. (util para rede local/teste)
 - [x] Processamento Thumbnail no backend (com oEmbed, Opengraph, segurança reforçada)
+- [x] JWT obrigatória para dar start no servidor
 - [ ] Processamento Icons no Backend 
 - [ ] User Profile (Descrição, banner)
 - [ ] Cleanup (excluir código não usado)
@@ -99,6 +100,8 @@ cd infra && docker-compose up -d
 
 # migrations
 cd ../migrations && goose up
+
+Adicione um segredo JWT válido no .env, sem isso o servidor não vai funcionar.
 
 # backend
 cd ../backend

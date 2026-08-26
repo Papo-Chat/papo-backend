@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,8 +20,28 @@ import (
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
 )
 
+// minJWTSecretLength é o tamanho mínimo (em bytes) do segredo HMAC-SHA256
+// (256 bits, recomendação OWASP/NIST para HS256).
+const minJWTSecretLength = 32
+
+// validateJWTSecret valida o segredo usado para assinar/validar os tokens
+// HS256. O servidor não deve iniciar sem uma chave válida.
+func validateJWTSecret(secret string) error {
+	if secret == "" {
+		return errors.New("JWT_SECRET ausente: defina a variável de ambiente JWT_SECRET para iniciar o servidor")
+	}
+	if len(secret) < minJWTSecretLength {
+		return fmt.Errorf("JWT_SECRET muito curto: use pelo menos %d caracteres", minJWTSecretLength)
+	}
+	return nil
+}
+
 func main() {
 	cfg := config.LoadConfig()
+
+	if err := validateJWTSecret(cfg.JWTSecret); err != nil {
+		utils.Fatal(err.Error())
+	}
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	// Inicializa a conexão com PostgreSQL
