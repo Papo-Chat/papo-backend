@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -57,6 +58,16 @@ func ListEmojis(ctx context.Context, serverID *string, since *time.Time, lastID 
 		emojis = emojis[:emojiListLimit]
 	}
 
+	// Resolve o blob da imagem e o formato (derivado do MIME da tabela media).
+	for i := range emojis {
+		blob, err := MediaContent(emojis[i].ImageMedia)
+		if err != nil {
+			return models.EmojiList{}, err
+		}
+		emojis[i].ImageBlob = blob
+		emojis[i].Format = mimeToFormat(emojis[i].MimeType)
+	}
+
 	return models.EmojiList{Emojis: emojis, HasMore: hasMore}, nil
 }
 
@@ -106,14 +117,24 @@ func CreateEmoji(ctx context.Context, serverID, name, format, imageBlob, created
 		return models.Emoji{}, ErrEmojiLimitReached
 	}
 
+	sha, _, err := StoreMediaFromBytes(ctx, decoded, formatToMime(upperFormat))
+	if err != nil {
+		return models.Emoji{}, fmt.Errorf("falha ao gravar a imagem do emoji: %w", err)
+	}
+
 	createdByPtr := createdBy
-	emoji, err := storage.CreateEmoji(ctx, serverID, name, upperFormat, decoded, &createdByPtr)
+	emoji, err := storage.CreateEmoji(ctx, serverID, name, sha, &createdByPtr)
 	if errors.Is(err, storage.ErrUniqueViolation) {
 		return models.Emoji{}, ErrEmojiNameTaken
 	}
 	if err != nil {
 		return models.Emoji{}, err
 	}
+
+	// O blob já está em memória (acabou de ser enviado); o formato é derivado
+	// do MIME gravado na tabela media.
+	emoji.ImageBlob = decoded
+	emoji.Format = mimeToFormat(emoji.MimeType)
 
 	return emoji, nil
 }

@@ -160,7 +160,7 @@ func ListMessagesWithAttachmentsByChannel(ctx context.Context, channelID string,
 	fetch := limit + 1
 
 	query := "SELECT p.id, p.channel_id, p.author_id, p.content, p.created_at, p.edited_at, " +
-		"a.id, a.mime_type, a.original_file_name, a.size_bytes, a.created_at " +
+		"a.id, m.mime_type, a.original_file_name, m.size_bytes, a.created_at " +
 		"FROM (SELECT " + messageColumns + " FROM messages WHERE channel_id = $1"
 	args := []any{channelID}
 
@@ -180,6 +180,7 @@ func ListMessagesWithAttachmentsByChannel(ctx context.Context, channelID string,
 	args = append(args, fetch)
 
 	query += ") p LEFT JOIN attachments a ON a.messages_id = p.id " +
+		"LEFT JOIN media m ON m.sha_hash = a.media_sha_hash " +
 		"ORDER BY p.created_at DESC, p.id DESC, a.created_at, a.id"
 
 	rows, err := GetDB().QueryContext(ctx, query, args...)

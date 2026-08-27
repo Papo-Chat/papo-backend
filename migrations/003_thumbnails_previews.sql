@@ -6,9 +6,7 @@ CREATE TABLE IF NOT EXISTS attachment_thumbnails (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attachment_id UUID NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
     kind TEXT NOT NULL,
-    mime_type TEXT NOT NULL,
-    file_path TEXT NOT NULL,
-    size_bytes BIGINT NOT NULL,
+    media_sha_hash TEXT NOT NULL REFERENCES media(sha_hash),
     width INT NOT NULL,
     height INT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -23,9 +21,7 @@ CREATE TABLE IF NOT EXISTS link_previews (
     description TEXT,
     provider_name TEXT,
     embed_url TEXT,
-    image_file_path TEXT,
-    image_mime_type TEXT,
-    image_size_bytes BIGINT,
+    image_media TEXT REFERENCES media(sha_hash),
     fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

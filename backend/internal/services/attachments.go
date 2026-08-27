@@ -30,10 +30,6 @@ const maxAttachmentSize = 100 * 1024 * 1024
 // maxAttachmentNameLength é o tamanho máximo do nome do attachment (128, README).
 const maxAttachmentNameLength = 128
 
-// attachmentsBaseDir é a pasta (relativa ao diretório de trabalho do backend)
-// onde os blobs de attachment são guardados em content-addressable storage.
-const attachmentsBaseDir = "attachments"
-
 // AttachmentInput é o conteúdo de um arquivo enviado em um upload (upload
 // avulso ou como attachment de uma mensagem). Apenas o nome e os bytes são
 // recebidos: o MIME type é detectado a partir do conteúdo e o tamanho é
@@ -44,8 +40,8 @@ type AttachmentInput struct {
 }
 
 // UploadAttachment recebe o conteúdo de um upload, calcula o sha256, registra
-// o attachment no banco e salva o blob em content-addressable storage
-// (attachments/ab/cd/<hash>), se o hash não estiver duplicado.
+// o blob na tabela media (content-addressable storage, media/ab/cd/<hash>) e
+// o attachment no banco (referência pelo sha_hash do blob).
 //
 // O nome recebido é sanitizado e o MIME type é detectado a partir do
 // conteúdo (o header de content type do upload não é confiado).
@@ -98,6 +94,9 @@ func DownloadAttachmentThumbnail(ctx context.Context, fileID, userID string) (mo
 		return models.AttachmentThumbnail{}, err
 	}
 
+	// O caminho do blob em disco é derivado do sha_hash (content-addressable).
+	thumbnail.FilePath = mediaBlobPath(thumbnail.MediaShaHash)
+
 	return thumbnail, nil
 }
 
@@ -124,6 +123,9 @@ func resolveReadableAttachment(ctx context.Context, fileID, userID string) (mode
 	if err != nil {
 		return models.Attachments{}, err
 	}
+
+	// O caminho do blob em disco é derivado do sha_hash (content-addressable).
+	attachment.FilePath = mediaBlobPath(attachment.MediaShaHash)
 
 	if attachment.MessagesID == nil {
 		return models.Attachments{}, ErrAttachmentNotFound
@@ -158,12 +160,11 @@ func resolveReadableAttachment(ctx context.Context, fileID, userID string) (mode
 	return attachment, nil
 }
 
-// storeAttachment grava um attachment em duas etapas, não atômicas entre si:
-//  1. insere o registro no banco (com o sha_hash do conteúdo);
-//  2. grava o blob no storage, apenas se o sha_hash não estiver duplicado.
-//
-// O campo sha_hash é o sinal de deduplicação: se já existe um attachment com
-// o mesmo hash, o blob do conteúdo já está em disco e a gravação é pulada.
+// storeAttachment grava um attachment em etapas, não atômicas entre si:
+//  1. insere o blob na tabela media (deduplicação pelo sha256 do conteúdo);
+//  2. move o arquivo temporário para o caminho content-addressable
+//     (se o blob já existe, o rename reescreve o mesmo conteúdo — inofensivo);
+//  3. insere o registro do attachment referenciando o blob pelo sha_hash.
 func storeAttachment(ctx context.Context, input AttachmentInput, userID string) (models.Attachments, error) {
 	fileName := utils.SanitizeFileName(input.OriginalFileName)
 	if fileName == "" || utf8.RuneCountInString(fileName) > maxAttachmentNameLength {
@@ -181,33 +182,28 @@ func storeAttachment(ctx context.Context, input AttachmentInput, userID string) 
 		return models.Attachments{}, err
 	}
 
-	duplicated, err := storage.ExistsAttachmentByHash(ctx, hash)
-	if err != nil {
+	if _, _, err := storage.InsertMediaIfAbsent(ctx, hash, mimeType, size); err != nil {
+		return models.Attachments{}, err
+	}
+
+	if err := moveToBlob(tmpName, hash); err != nil {
 		return models.Attachments{}, err
 	}
 
 	attachment, err := storage.CreateAttachment(ctx, models.Attachments{
 		OriginalFileName: fileName,
-		MimeType:         mimeType,
-		FilePath:         blobPath(hash),
-		ShaHash:          hash,
-		SizeBytes:        size,
+		MediaShaHash:     hash,
 		CreatedBy:        &userID,
 	})
 	if err != nil {
 		return models.Attachments{}, err
 	}
-
-	if !duplicated {
-		if err := moveToBlob(tmpName, hash); err != nil {
-			return models.Attachments{}, err
-		}
-	}
+	attachment.FilePath = mediaBlobPath(hash)
 
 	// Thumbnail (best-effort): só para MIMEs de imagem processáveis.
 	// Qualquer falha é logada e ignorada — nunca quebra o upload.
 	if isProcessableImage(mimeType) {
-		ensureAttachmentThumbnail(ctx, attachment.ID, blobPath(hash), mimeType)
+		ensureAttachmentThumbnail(ctx, attachment.ID, mediaBlobPath(hash), mimeType)
 	}
 
 	return attachment, nil
@@ -261,8 +257,8 @@ func releaseThumbnailSlot() {
 }
 
 // ensureAttachmentThumbnail gera a thumbnail do attachment (best-effort):
-// lê o blob, gera (com semáforo de concorrência) e grava o blob thumbnail em
-// CAS (blobPath + ".preview.<ext>") + registro no banco. Qualquer falha é
+// lê o blob, gera (com semáforo de concorrência) e grava a thumbnail na
+// tabela media (content-addressable) + registro no banco. Qualquer falha é
 // logada e ignorada. Se já existir thumbnail para o attachment (upload
 // duplicado), não faz nada. THUMBNAIL_ENABLED=false desliga totalmente o
 // processamento (modo ultra-light: só a validação de entrada permanece).
@@ -304,17 +300,8 @@ func ensureAttachmentThumbnail(ctx context.Context, attachmentID, blobFile, mime
 		return
 	}
 
-	ext := "webp"
-	if thumbMime == "image/gif" {
-		ext = "gif"
-	}
-	thumbPath := blobFile + ".preview." + ext
-
-	if err := os.MkdirAll(filepath.Dir(thumbPath), 0o755); err != nil {
-		utils.Errorf("falha ao criar pasta da thumbnail de %s: %v", attachmentID, err)
-		return
-	}
-	if err := os.WriteFile(thumbPath, thumb, 0o644); err != nil {
+	thumbHash, _, err := StoreMediaFromBytes(ctx, thumb, thumbMime)
+	if err != nil {
 		utils.Errorf("falha ao gravar thumbnail de %s: %v", attachmentID, err)
 		return
 	}
@@ -322,15 +309,10 @@ func ensureAttachmentThumbnail(ctx context.Context, attachmentID, blobFile, mime
 	if err := storage.CreateAttachmentThumbnail(ctx, models.AttachmentThumbnail{
 		AttachmentID: attachmentID,
 		Kind:         thumbnailKind,
-		MimeType:     thumbMime,
-		FilePath:     thumbPath,
-		SizeBytes:    int64(len(thumb)),
+		MediaShaHash: thumbHash,
 		Width:        width,
 		Height:       height,
 	}); err != nil {
-		// blob sem registro vira órfão: remove (a rotina de manutenção também
-		// cobre).
-		removeIfExists(thumbPath)
 		utils.Errorf("falha ao registrar thumbnail de %s: %v", attachmentID, err)
 		return
 	}
@@ -342,11 +324,11 @@ func ensureAttachmentThumbnail(ctx context.Context, attachmentID, blobFile, mime
 // chamador). Retorna ErrAttachmentTooLarge quando o conteúdo excede o
 // tamanho máximo.
 func hashToTempFile(content io.Reader) (string, int64, string, error) {
-	if err := os.MkdirAll(attachmentsBaseDir, 0o755); err != nil {
-		return "", 0, "", fmt.Errorf("falha ao criar pasta de attachments: %w", err)
+	if err := os.MkdirAll(mediaBaseDir, 0o755); err != nil {
+		return "", 0, "", fmt.Errorf("falha ao criar pasta de mídia: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(attachmentsBaseDir, ".upload-*")
+	tmp, err := os.CreateTemp(mediaBaseDir, ".upload-*")
 	if err != nil {
 		return "", 0, "", fmt.Errorf("falha ao criar arquivo temporário: %w", err)
 	}
@@ -379,16 +361,10 @@ func hashToTempFile(content io.Reader) (string, int64, string, error) {
 	return hash, size, tmpName, nil
 }
 
-// blobPath retorna o caminho do blob no content-addressable storage: os 2
-// primeiros bytes (4 hex) do hash viram subpastas para não estourar o limite
-// de arquivos por diretório.
-func blobPath(hash string) string {
-	return filepath.Join(attachmentsBaseDir, hash[:2], hash[2:4], hash)
-}
-
-// moveToBlob move o arquivo temporário para o caminho final do blob.
+// moveToBlob move o arquivo temporário para o caminho final do blob
+// (mediaBlobPath).
 func moveToBlob(tmpName, hash string) error {
-	target := blobPath(hash)
+	target := mediaBlobPath(hash)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("falha ao criar subpasta do blob: %w", err)
 	}

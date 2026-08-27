@@ -5,10 +5,14 @@ import (
 	"sync"
 )
 
-// Statuses efêmeros de presença (README: online/offline, não persistidos).
+// Statuses de presença. online/offline são efêmeros (conexão ativa);
+// away/busy são persistidos pelo usuário (users.status) e valem enquanto o
+// usuário está online.
 const (
 	StatusOnline  = "online"
 	StatusOffline = "offline"
+	StatusAway    = "away"
+	StatusBusy    = "busy"
 )
 
 // PresenceMember é uma entrada da lista de membros online enviada no
@@ -33,6 +37,7 @@ type presenceEntry struct {
 	connections   int
 	statusMessage *string
 	nickname      *string
+	persisted     *string
 }
 
 // NewPresenceStore cria um PresenceStore vazio.
@@ -41,17 +46,18 @@ func NewPresenceStore() *PresenceStore {
 }
 
 // AddConnection registra uma conexão ativa do usuário.
-// statusMessage e nickname são usados apenas na primeira conexão (criação da
-// entrada); as demais conexões não as alteram (a atualização em runtime é
-// feita por SetStatusMessage e SetNickname).
+// statusMessage, nickname e persisted (status away/busy persistido) são
+// usados apenas na primeira conexão (criação da entrada); as demais conexões
+// não as alteram (a atualização em runtime é feita por SetStatusMessage,
+// SetNickname e SetPersistedStatus).
 // Retorna true quando o usuário transiciona de offline para online.
-func (p *PresenceStore) AddConnection(userID string, statusMessage, nickname *string) bool {
+func (p *PresenceStore) AddConnection(userID string, statusMessage, nickname, persisted *string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	entry, ok := p.users[userID]
 	if !ok {
-		p.users[userID] = &presenceEntry{connections: 1, statusMessage: statusMessage, nickname: nickname}
+		p.users[userID] = &presenceEntry{connections: 1, statusMessage: statusMessage, nickname: nickname, persisted: persisted}
 		return true
 	}
 	entry.connections++
@@ -105,6 +111,37 @@ func (p *PresenceStore) SetNickname(userID string, nickname *string) bool {
 	return true
 }
 
+// SetPersistedStatus atualiza o status persistido (away/busy; nil remove) de
+// um usuário online. Retorna false quando o usuário está offline.
+func (p *PresenceStore) SetPersistedStatus(userID string, persisted *string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	entry, ok := p.users[userID]
+	if !ok {
+		return false
+	}
+	entry.persisted = persisted
+	return true
+}
+
+// EffectiveStatus retorna o status efetivo do usuário: offline quando não
+// há conexão ativa; away/busy quando há status persistido; online nos demais
+// casos.
+func (p *PresenceStore) EffectiveStatus(userID string) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	entry, ok := p.users[userID]
+	if !ok {
+		return StatusOffline
+	}
+	if entry.persisted != nil {
+		return *entry.persisted
+	}
+	return StatusOnline
+}
+
 // StatusMessage retorna a mensagem de status de um usuário online, ou nil
 // quando o usuário está offline ou não tem mensagem.
 func (p *PresenceStore) StatusMessage(userID string) *string {
@@ -137,9 +174,13 @@ func (p *PresenceStore) OnlineMembers() []PresenceMember {
 
 	members := make([]PresenceMember, 0, len(p.users))
 	for userID, entry := range p.users {
+		status := StatusOnline
+		if entry.persisted != nil {
+			status = *entry.persisted
+		}
 		members = append(members, PresenceMember{
 			UserID:        userID,
-			Status:        StatusOnline,
+			Status:        status,
 			StatusMessage: entry.statusMessage,
 		})
 	}

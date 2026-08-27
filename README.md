@@ -25,9 +25,9 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [x] Processamento Thumbnail no backend (com oEmbed, Opengraph, segurança reforçada)
 - [x] JWT obrigatória para dar start no servidor
 - [x] Build e run script sem cgo, binário menor
-- [ ] Implementar evento user_join quando um novo usuário se registrar (para o frontend conseguir adicionar a lista de usuário).
-- [ ] Status Ausente/Ocupado (novo field)
-- [ ] Processamento Icons no Backend 
+- [x] Implementar evento user_join quando um novo usuário se registrar (para o frontend conseguir adicionar a lista de usuário).
+- [x] Status Ausente/Ocupado (novo field)
+- [x] Processamento Icons no Backend 
 - [ ] Seek (HTTP206) para attachment de vídeos 
 - [ ] User Profile e last_read_message (Descrição, banner)
 - [ ] Cleanup (excluir código não usado)
@@ -35,8 +35,10 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
    - Implementar melhor maneira de carregar Cfg (memória, sem carregar IO toda hora)
    - Verificar a necessidade de testes mais elegantes e abrangentes
 - [ ] Crons GC Attachments orfãos/tabela quebrada
+- [ ] Auditoria/Logs para Admins (somente-texto)
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
 - [ ] React Mensagens
+- [ ] Refresh token rotation com detecção de reuse, tabela endpoint de dispositivos conectados, endpoint de derrubar todas as conexões (inclusive atual)
 - [ ] Direct Messages
 - [ ] Moderação Automatica (Nudez/Gore)
 - [ ] Bot API
@@ -149,6 +151,7 @@ Autenticação via o mesmo cookie `Auth` da API REST, validado no handshake.
 | `typing` | inbound / outbound |
 | `presence_sync` | unicast (snapshot no connect) |
 | `presence_update` | outbound (delta) |
+| `user_join` | outbound |
 | `avatar_update` | outbound |
 | `heartbeat` / `heartbeat_ack` | inbound / outbound |
 | `error` | outbound |

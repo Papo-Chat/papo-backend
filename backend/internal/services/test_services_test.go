@@ -97,10 +97,10 @@ func runServicesTests(m *testing.M) int {
 		return 1
 	}
 
-	// remove blobs de execuções anteriores (os uploads de attachment gravam em
-	// attachments/ relativo ao diretório deste pacote de testes)
-	if err := os.RemoveAll("attachments"); err != nil {
-		fmt.Printf("aviso: falha ao limpar pasta de attachments de testes: %v\n", err)
+	// remove blobs de execuções anteriores (os uploads de mídia gravam em
+	// media/ relativo ao diretório deste pacote de testes)
+	if err := os.RemoveAll("media"); err != nil {
+		fmt.Printf("aviso: falha ao limpar pasta de mídia de testes: %v\n", err)
 	}
 
 	code := m.Run()
@@ -118,6 +118,18 @@ func cleanServers(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// newTestMediaHash grava o conteúdo no content-addressable storage (tabela
+// media + blob em disco) e retorna o sha256 — referência usada por avatar,
+// ícone, emoji, attachment, thumbnail e link preview.
+func newTestMediaHash(t *testing.T, content []byte) string {
+	t.Helper()
+	hash, _, err := StoreMediaFromBytes(testCtx(), content, "image/png")
+	if err != nil {
+		t.Fatalf("falha ao gravar mídia de apoio: %v", err)
+	}
+	return hash
 }
 
 // testDatabaseURL resolve a DSN base: TEST_DATABASE_URL > DATABASE_URL > padrão do docker-compose.
@@ -899,11 +911,24 @@ func TestUpdateAvatar(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetUserByID retornou erro: %v", err)
 			}
-			if stored.AvatarFormat != tc.format {
-				t.Errorf("esperava avatar_format %q, obtive %q", tc.format, stored.AvatarFormat)
+			// o banco guarda apenas a referência content-addressable
+			if stored.AvatarMedia == nil {
+				t.Fatal("esperava avatar_media definido no banco")
 			}
-			if !bytes.Equal(stored.AvatarBlob, tc.avatar) {
-				t.Errorf("avatar_blob não confere:\n got  %x\n want %x", stored.AvatarBlob, tc.avatar)
+			if _, err := os.Stat(mediaBlobPath(*stored.AvatarMedia)); err != nil {
+				t.Errorf("blob do avatar não encontrado no storage: %v", err)
+			}
+
+			// o service resolve blob e formato a partir da referência
+			profile, err := Profile(testCtx(), user.ID)
+			if err != nil {
+				t.Fatalf("Profile retornou erro: %v", err)
+			}
+			if profile.AvatarFormat != tc.format {
+				t.Errorf("esperava avatar_format %q, obtive %q", tc.format, profile.AvatarFormat)
+			}
+			if !bytes.Equal(profile.AvatarBlob, tc.avatar) {
+				t.Errorf("avatar_blob não confere:\n got  %x\n want %x", profile.AvatarBlob, tc.avatar)
 			}
 		})
 	}
@@ -930,11 +955,19 @@ func TestUpdateAvatarRemovesWhenEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUserByID retornou erro: %v", err)
 	}
-	if len(stored.AvatarBlob) != 0 {
-		t.Errorf("esperava avatar_blob vazio, obtive %x", stored.AvatarBlob)
+	if stored.AvatarMedia != nil {
+		t.Errorf("esperava avatar_media nulo, obtive %q", *stored.AvatarMedia)
 	}
-	if stored.AvatarFormat != "" {
-		t.Errorf("esperava avatar_format vazio, obtive %q", stored.AvatarFormat)
+
+	profile, err := Profile(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("Profile retornou erro: %v", err)
+	}
+	if len(profile.AvatarBlob) != 0 {
+		t.Errorf("esperava avatar_blob vazio, obtive %x", profile.AvatarBlob)
+	}
+	if profile.AvatarFormat != "" {
+		t.Errorf("esperava avatar_format vazio, obtive %q", profile.AvatarFormat)
 	}
 }
 
@@ -996,6 +1029,170 @@ func TestUpdateAvatarNonexistentUser(t *testing.T) {
 	err := UpdateAvatar(testCtx(), randUUID(), avatar, "PNG")
 	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+func TestProfileResolvesAvatar(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	// sem avatar: Profile não resolve blob
+	profile, err := Profile(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("Profile retornou erro: %v", err)
+	}
+	if profile.AvatarBlob != nil || profile.AvatarFormat != "" {
+		t.Errorf("esperava avatar vazio, obtive format=%q blob=%x", profile.AvatarFormat, profile.AvatarBlob)
+	}
+
+	// com avatar: Profile resolve blob e formato a partir do storage
+	avatar := base64.StdEncoding.EncodeToString(pngAvatarBytes(64, 64))
+	if err := UpdateAvatar(testCtx(), user.ID, avatar, "PNG"); err != nil {
+		t.Fatalf("UpdateAvatar retornou erro: %v", err)
+	}
+	profile, err = Profile(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("Profile retornou erro: %v", err)
+	}
+	if !bytes.Equal(profile.AvatarBlob, pngAvatarBytes(64, 64)) {
+		t.Error("avatar_blob não confere")
+	}
+	if profile.AvatarFormat != "PNG" {
+		t.Errorf("esperava avatar_format PNG, obtive %q", profile.AvatarFormat)
+	}
+}
+
+// --- UpdateStatus ---
+
+func TestUpdateStatus(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	t.Run("persiste away", func(t *testing.T) {
+		status := "away"
+		if err := UpdateStatus(testCtx(), user.ID, &status); err != nil {
+			t.Fatalf("UpdateStatus retornou erro: %v", err)
+		}
+		stored, err := storage.GetUserByID(testCtx(), user.ID)
+		if err != nil {
+			t.Fatalf("GetUserByID retornou erro: %v", err)
+		}
+		if stored.Status == nil || *stored.Status != "away" {
+			t.Errorf("esperava status away, obtive %v", stored.Status)
+		}
+	})
+
+	t.Run("persiste busy", func(t *testing.T) {
+		status := "busy"
+		if err := UpdateStatus(testCtx(), user.ID, &status); err != nil {
+			t.Fatalf("UpdateStatus retornou erro: %v", err)
+		}
+		stored, err := storage.GetUserByID(testCtx(), user.ID)
+		if err != nil {
+			t.Fatalf("GetUserByID retornou erro: %v", err)
+		}
+		if stored.Status == nil || *stored.Status != "busy" {
+			t.Errorf("esperava status busy, obtive %v", stored.Status)
+		}
+	})
+
+	t.Run("nil limpa o status", func(t *testing.T) {
+		if err := UpdateStatus(testCtx(), user.ID, nil); err != nil {
+			t.Fatalf("UpdateStatus retornou erro: %v", err)
+		}
+		stored, err := storage.GetUserByID(testCtx(), user.ID)
+		if err != nil {
+			t.Fatalf("GetUserByID retornou erro: %v", err)
+		}
+		if stored.Status != nil {
+			t.Errorf("esperava status nulo, obtive %q", *stored.Status)
+		}
+	})
+
+	t.Run("valor inválido é rejeitado", func(t *testing.T) {
+		for _, invalid := range []string{"online", "idle", "AWAY", ""} {
+			status := invalid
+			if err := UpdateStatus(testCtx(), user.ID, &status); !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput para %q, obtive %v", invalid, err)
+			}
+		}
+	})
+
+	t.Run("userID vazio vira ErrUserNotFound", func(t *testing.T) {
+		if err := UpdateStatus(testCtx(), "", nil); !errors.Is(err, ErrUserNotFound) {
+			t.Errorf("esperava ErrUserNotFound, obtive %v", err)
+		}
+	})
+
+	t.Run("usuário inexistente vira ErrUserNotFound", func(t *testing.T) {
+		status := "away"
+		if err := UpdateStatus(testCtx(), randUUID(), &status); !errors.Is(err, ErrUserNotFound) {
+			t.Errorf("esperava ErrUserNotFound, obtive %v", err)
+		}
+	})
+}
+
+// --- Mídia (content-addressable) ---
+
+func TestStoreMediaFromBytes(t *testing.T) {
+	content := []byte("conteúdo de teste da mídia")
+	sum := sha256.Sum256(content)
+	expectedHash := hex.EncodeToString(sum[:])
+
+	hash, media, err := StoreMediaFromBytes(testCtx(), content, "text/plain")
+	if err != nil {
+		t.Fatalf("StoreMediaFromBytes retornou erro: %v", err)
+	}
+	if hash != expectedHash {
+		t.Errorf("esperava hash %s, obtive %s", expectedHash, hash)
+	}
+	if media.ShaHash != expectedHash || media.MimeType != "text/plain" || media.SizeBytes != int64(len(content)) {
+		t.Errorf("media não confere: %+v", media)
+	}
+	if _, err := os.Stat(mediaBlobPath(hash)); err != nil {
+		t.Errorf("arquivo da mídia não encontrado em disco: %v", err)
+	}
+
+	// deduplicação: mesmo conteúdo não gera nova linha
+	_, media2, err := StoreMediaFromBytes(testCtx(), content, "text/plain")
+	if err != nil {
+		t.Fatalf("StoreMediaFromBytes (dedup) retornou erro: %v", err)
+	}
+	if media2.ShaHash != expectedHash {
+		t.Errorf("esperava o mesmo hash na dedup, obtive %s", media2.ShaHash)
+	}
+
+	// conteúdo diferente gera hash diferente
+	other, _, err := StoreMediaFromBytes(testCtx(), []byte("outro conteúdo"), "text/plain")
+	if err != nil {
+		t.Fatalf("StoreMediaFromBytes (outro) retornou erro: %v", err)
+	}
+	if other == expectedHash {
+		t.Error("conteúdos diferentes deveriam gerar hashes diferentes")
+	}
+}
+
+func TestMediaContent(t *testing.T) {
+	content := []byte("conteúdo lido de volta")
+	hash, _, err := StoreMediaFromBytes(testCtx(), content, "text/plain")
+	if err != nil {
+		t.Fatalf("StoreMediaFromBytes retornou erro: %v", err)
+	}
+
+	got, err := MediaContent(hash)
+	if err != nil {
+		t.Fatalf("MediaContent retornou erro: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("conteúdo não confere:\n got  %q\n want %q", got, content)
+	}
+
+	if _, err := MediaContent(strings.Repeat("0", 64)); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para hash inexistente, obtive %v", err)
 	}
 }
 
@@ -1505,18 +1702,26 @@ func TestCreateServerWithIcon(t *testing.T) {
 	if server.OwnerID == nil || *server.OwnerID != owner.ID {
 		t.Errorf("esperava owner_id %s, obtive %v", owner.ID, server.OwnerID)
 	}
-	// o formato deve ser normalizado para maiúsculas
-	if server.IconFormat != "PNG" {
-		t.Errorf("esperava icon_format %q, obtive %q", "PNG", server.IconFormat)
+	// o ícone é resolvido (blob + formato) a partir da referência media
+	if server.IconMedia == nil {
+		t.Fatal("esperava icon_media definida no servidor retornado")
 	}
-	if !bytes.Equal(server.IconBlob, pngAvatarBytes(100, 100)) {
-		t.Errorf("icon_blob não confere:\n got  %x\n want %x", server.IconBlob, pngAvatarBytes(100, 100))
+	summary, err := GetServer(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServer retornou erro: %v", err)
+	}
+	// o formato deve ser normalizado para maiúsculas
+	if summary.IconFormat != "PNG" {
+		t.Errorf("esperava icon_format %q, obtive %q", "PNG", summary.IconFormat)
+	}
+	if !bytes.Equal(summary.IconBlob, pngAvatarBytes(100, 100)) {
+		t.Errorf("icon_blob não confere:\n got  %x\n want %x", summary.IconBlob, pngAvatarBytes(100, 100))
 	}
 	if server.CreatedAt.IsZero() {
 		t.Error("esperava created_at preenchido")
 	}
 
-	// o servidor deve ter sido persistido
+	// o servidor deve ter sido persistido (referência content-addressable)
 	stored, err := storage.GetServerByID(testCtx(), server.ID)
 	if err != nil {
 		t.Fatalf("GetServerByID retornou erro: %v", err)
@@ -1524,11 +1729,15 @@ func TestCreateServerWithIcon(t *testing.T) {
 	if stored.Name != name {
 		t.Errorf("esperava name %q, obtive %q", name, stored.Name)
 	}
-	if stored.IconFormat != "PNG" {
-		t.Errorf("esperava icon_format %q, obtive %q", "PNG", stored.IconFormat)
+	if stored.IconMedia == nil || *stored.IconMedia != *server.IconMedia {
+		t.Errorf("esperava icon_media %v no banco, obtive %v", *server.IconMedia, stored.IconMedia)
 	}
-	if !bytes.Equal(stored.IconBlob, pngAvatarBytes(100, 100)) {
-		t.Errorf("icon_blob persistido não confere: %x", stored.IconBlob)
+	blob, err := os.ReadFile(mediaBlobPath(*stored.IconMedia))
+	if err != nil {
+		t.Fatalf("blob do ícone não encontrado no storage: %v", err)
+	}
+	if !bytes.Equal(blob, pngAvatarBytes(100, 100)) {
+		t.Errorf("icon_blob persistido não confere: %x", blob)
 	}
 }
 
@@ -1556,11 +1765,18 @@ func TestCreateServerWithIconAllFormats(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetServerByID retornou erro: %v", err)
 			}
-			if stored.IconFormat != tc.format {
-				t.Errorf("esperava icon_format %q, obtive %q", tc.format, stored.IconFormat)
+			if stored.IconMedia == nil {
+				t.Fatal("esperava icon_media definida no banco")
 			}
-			if !bytes.Equal(stored.IconBlob, tc.icon) {
-				t.Errorf("icon_blob não confere:\n got  %x\n want %x", stored.IconBlob, tc.icon)
+			summary, err := GetServer(testCtx(), server.ID)
+			if err != nil {
+				t.Fatalf("GetServer retornou erro: %v", err)
+			}
+			if summary.IconFormat != tc.format {
+				t.Errorf("esperava icon_format %q, obtive %q", tc.format, summary.IconFormat)
+			}
+			if !bytes.Equal(summary.IconBlob, tc.icon) {
+				t.Errorf("icon_blob não confere:\n got  %x\n want %x", summary.IconBlob, tc.icon)
 			}
 		})
 	}
@@ -1641,8 +1857,15 @@ func TestCreateServerWithIconBoundarySize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetServerByID retornou erro: %v", err)
 	}
-	if len(stored.IconBlob) != 2<<20 {
-		t.Errorf("esperava icon_blob com %d bytes, obtive %d", 2<<20, len(stored.IconBlob))
+	if stored.IconMedia == nil {
+		t.Fatal("esperava icon_media definida no banco")
+	}
+	blob, err := os.ReadFile(mediaBlobPath(*stored.IconMedia))
+	if err != nil {
+		t.Fatalf("blob do ícone não encontrado no storage: %v", err)
+	}
+	if len(blob) != 2<<20 {
+		t.Errorf("esperava icon_blob com %d bytes, obtive %d", 2<<20, len(blob))
 	}
 }
 
@@ -1785,12 +2008,20 @@ func TestUpdateServer(t *testing.T) {
 	if stored.Name != newName {
 		t.Errorf("esperava name %q, obtive %q", newName, stored.Name)
 	}
-	// o formato deve ser normalizado para maiúsculas
-	if stored.IconFormat != "PNG" {
-		t.Errorf("esperava icon_format %q, obtive %q", "PNG", stored.IconFormat)
+	if stored.IconMedia == nil {
+		t.Fatal("esperava icon_media definida no banco")
 	}
-	if !bytes.Equal(stored.IconBlob, pngAvatarBytes(100, 100)) {
-		t.Errorf("icon_blob não confere:\n got  %x\n want %x", stored.IconBlob, pngAvatarBytes(100, 100))
+	// o ícone é resolvido (blob + formato) a partir da referência media
+	summary, err := GetServer(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServer retornou erro: %v", err)
+	}
+	// o formato deve ser normalizado para maiúsculas
+	if summary.IconFormat != "PNG" {
+		t.Errorf("esperava icon_format %q, obtive %q", "PNG", summary.IconFormat)
+	}
+	if !bytes.Equal(summary.IconBlob, pngAvatarBytes(100, 100)) {
+		t.Errorf("icon_blob não confere:\n got  %x\n want %x", summary.IconBlob, pngAvatarBytes(100, 100))
 	}
 }
 
@@ -1822,11 +2053,18 @@ func TestUpdateServerAllFormats(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetServerByID retornou erro: %v", err)
 			}
-			if stored.IconFormat != tc.format {
-				t.Errorf("esperava icon_format %q, obtive %q", tc.format, stored.IconFormat)
+			if stored.IconMedia == nil {
+				t.Fatal("esperava icon_media definida no banco")
 			}
-			if !bytes.Equal(stored.IconBlob, tc.icon) {
-				t.Errorf("icon_blob não confere:\n got  %x\n want %x", stored.IconBlob, tc.icon)
+			summary, err := GetServer(testCtx(), server.ID)
+			if err != nil {
+				t.Fatalf("GetServer retornou erro: %v", err)
+			}
+			if summary.IconFormat != tc.format {
+				t.Errorf("esperava icon_format %q, obtive %q", tc.format, summary.IconFormat)
+			}
+			if !bytes.Equal(summary.IconBlob, tc.icon) {
+				t.Errorf("icon_blob não confere:\n got  %x\n want %x", summary.IconBlob, tc.icon)
 			}
 		})
 	}
@@ -1854,11 +2092,18 @@ func TestUpdateServerRemovesIconWhenEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetServerByID retornou erro: %v", err)
 	}
-	if len(stored.IconBlob) != 0 {
-		t.Errorf("esperava icon_blob vazio, obtive %x", stored.IconBlob)
+	if stored.IconMedia != nil {
+		t.Errorf("esperava icon_media nula, obtive %q", *stored.IconMedia)
 	}
-	if stored.IconFormat != "" {
-		t.Errorf("esperava icon_format vazio, obtive %q", stored.IconFormat)
+	summary, err := GetServer(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServer retornou erro: %v", err)
+	}
+	if len(summary.IconBlob) != 0 {
+		t.Errorf("esperava icon_blob vazio, obtive %x", summary.IconBlob)
+	}
+	if summary.IconFormat != "" {
+		t.Errorf("esperava icon_format vazio, obtive %q", summary.IconFormat)
 	}
 }
 
@@ -1971,8 +2216,15 @@ func TestUpdateServerBoundarySize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetServerByID retornou erro: %v", err)
 	}
-	if len(stored.IconBlob) != 2<<20 {
-		t.Errorf("esperava icon_blob com %d bytes, obtive %d", 2<<20, len(stored.IconBlob))
+	if stored.IconMedia == nil {
+		t.Fatal("esperava icon_media definida no banco")
+	}
+	blob, err := os.ReadFile(mediaBlobPath(*stored.IconMedia))
+	if err != nil {
+		t.Fatalf("blob do ícone não encontrado no storage: %v", err)
+	}
+	if len(blob) != 2<<20 {
+		t.Errorf("esperava icon_blob com %d bytes, obtive %d", 2<<20, len(blob))
 	}
 }
 
@@ -3850,7 +4102,7 @@ func createNonPublicServerTest(t *testing.T, password string) {
 	if err != nil {
 		t.Fatalf("falha ao gerar hash da senha do servidor: %v", err)
 	}
-	if _, err := storage.CreateServerWithIcon(testCtx(), "server_"+randHex(8), nil, "", false, nil, &hash); err != nil {
+	if _, err := storage.CreateServerWithIcon(testCtx(), "server_"+randHex(8), nil, false, nil, &hash); err != nil {
 		t.Fatalf("falha ao criar servidor não público: %v", err)
 	}
 }
@@ -3858,7 +4110,7 @@ func createNonPublicServerTest(t *testing.T, password string) {
 // createPublicServerTest cria o servidor do backend como público.
 func createPublicServerTest(t *testing.T) {
 	t.Helper()
-	if _, err := storage.CreateServerWithIcon(testCtx(), "server_"+randHex(8), nil, "", true, nil, nil); err != nil {
+	if _, err := storage.CreateServerWithIcon(testCtx(), "server_"+randHex(8), nil, true, nil, nil); err != nil {
 		t.Fatalf("falha ao criar servidor público: %v", err)
 	}
 }
@@ -4319,8 +4571,9 @@ func TestCreateMessageWithAttachments(t *testing.T) {
 		t.Errorf("esperava messages_id %s, obtive %v", message.ID, stored[0].MessagesID)
 	}
 
-	// o blob foi gravado no content-addressable storage
-	if _, err := os.Stat(stored[0].FilePath); err != nil {
+	// o blob foi gravado no content-addressable storage (caminho derivado do hash)
+	hash := stored[0].MediaShaHash
+	if _, err := os.Stat(filepath.Join("media", hash[:2], hash[2:4], hash)); err != nil {
 		t.Errorf("blob do attachment não encontrado em disco: %v", err)
 	}
 
@@ -4393,15 +4646,14 @@ func TestCreateMessageAttachmentDeduplication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAttachmentByID da segunda retornou erro: %v", err)
 	}
-	if firstStored.ShaHash != secondStored.ShaHash {
-		t.Errorf("esperava o mesmo sha_hash para o mesmo conteúdo")
+	if firstStored.MediaShaHash != secondStored.MediaShaHash {
+		t.Errorf("esperava o mesmo media_sha_hash para o mesmo conteúdo")
 	}
-	if firstStored.FilePath != secondStored.FilePath {
-		t.Errorf("esperava o mesmo file_path para o mesmo conteúdo")
-	}
-	// o blob é único em disco
-	if _, err := os.Stat(firstStored.FilePath); err != nil {
-		t.Errorf("blob do attachment não encontrado em disco: %v", err)
+	// o blob é único em disco (caminho derivado do hash)
+	hash := firstStored.MediaShaHash
+	wantPath := filepath.Join("media", hash[:2], hash[2:4], hash)
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Errorf("blob do attachment não encontrado em disco (%s): %v", wantPath, err)
 	}
 }
 
@@ -4590,10 +4842,10 @@ func TestUploadAttachment(t *testing.T) {
 	if attachment.MessagesID != nil {
 		t.Errorf("esperava messages_id nil para upload avulso, obtive %v", attachment.MessagesID)
 	}
-	// o sha_hash é o sha256 do conteúdo
+	// o media_sha_hash é o sha256 do conteúdo
 	expectedHash := sha256.Sum256([]byte("conteúdo do documento"))
-	if attachment.ShaHash != hex.EncodeToString(expectedHash[:]) {
-		t.Errorf("esperava sha_hash %q, obtive %q", hex.EncodeToString(expectedHash[:]), attachment.ShaHash)
+	if attachment.MediaShaHash != hex.EncodeToString(expectedHash[:]) {
+		t.Errorf("esperava media_sha_hash %q, obtive %q", hex.EncodeToString(expectedHash[:]), attachment.MediaShaHash)
 	}
 	// o blob foi gravado no content-addressable storage
 	if _, err := os.Stat(attachment.FilePath); err != nil {
@@ -4794,7 +5046,7 @@ func TestListEmojisPagination(t *testing.T) {
 
 	const total = 26
 	for i := 0; i < total; i++ {
-		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID); err != nil {
+		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID); err != nil {
 			t.Fatalf("falha ao criar emoji %d: %v", i, err)
 		}
 	}
@@ -4840,10 +5092,10 @@ func TestListEmojisPagination(t *testing.T) {
 		server, _ := newTestMessageChannel(t, &owner.ID)
 		otherServer, _ := newTestMessageChannel(t, &owner.ID)
 
-		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID); err != nil {
+		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID); err != nil {
 			t.Fatalf("falha ao criar emoji: %v", err)
 		}
-		if _, err := storage.CreateEmoji(testCtx(), otherServer.ID, "emoji_"+randHex(8), "PNG", []byte{2}, &owner.ID); err != nil {
+		if _, err := storage.CreateEmoji(testCtx(), otherServer.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{2}), &owner.ID); err != nil {
 			t.Fatalf("falha ao criar emoji: %v", err)
 		}
 
@@ -4951,7 +5203,7 @@ func TestCreateEmojiLimitReached(t *testing.T) {
 
 	// preenche o servidor até o limite (500)
 	for i := 0; i < 500; i++ {
-		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID); err != nil {
+		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID); err != nil {
 			t.Fatalf("falha ao criar emoji %d: %v", i, err)
 		}
 	}
@@ -4969,7 +5221,7 @@ func TestDeleteEmoji(t *testing.T) {
 	stranger := newTestMessageUser(t)
 	server, _ := newTestMessageChannel(t, &owner.ID)
 
-	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &author.ID)
+	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &author.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -4994,7 +5246,7 @@ func TestDeleteEmojiByServerOwner(t *testing.T) {
 	author := newTestMessageUser(t)
 	server, _ := newTestMessageChannel(t, &owner.ID)
 
-	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &author.ID)
+	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &author.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -5022,7 +5274,7 @@ func TestDeleteEmojiByManageServerRole(t *testing.T) {
 		t.Fatalf("falha ao atribuir role ao usuário: %v", err)
 	}
 
-	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &author.ID)
+	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &author.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -5744,39 +5996,30 @@ func TestEnsureAttachmentThumbnailEnabledFlag(t *testing.T) {
 		return buf.Bytes()
 	}
 
-	runCase := func(t *testing.T, enabled string) (attachmentID, blobFile string) {
+	runCase := func(t *testing.T, enabled string) string {
 		content := makePNG(t)
+		hash := newTestMediaHash(t, content)
 		attachment, err := storage.CreateAttachment(ctx, models.Attachments{
 			OriginalFileName: "teste.png",
-			MimeType:         "image/png",
-			FilePath:         "teste/blob.png",
-			SizeBytes:        int64(len(content)),
-			ShaHash:          randHex(32),
+			MediaShaHash:     hash,
 		})
 		if err != nil {
 			t.Fatalf("CreateAttachment: %v", err)
 		}
-		blobFile = filepath.Join(t.TempDir(), "blob.png")
-		if err := os.WriteFile(blobFile, content, 0o644); err != nil {
-			t.Fatalf("WriteFile: %v", err)
-		}
 		t.Setenv("THUMBNAIL_ENABLED", enabled)
-		ensureAttachmentThumbnail(ctx, attachment.ID, blobFile, "image/png")
-		return attachment.ID, blobFile
+		ensureAttachmentThumbnail(ctx, attachment.ID, mediaBlobPath(hash), "image/png")
+		return attachment.ID
 	}
 
 	t.Run("desabilitado nao gera thumbnail", func(t *testing.T) {
-		attachmentID, blobFile := runCase(t, "false")
+		attachmentID := runCase(t, "false")
 		if _, err := storage.GetThumbnailByAttachmentID(ctx, attachmentID, thumbnailKind); !errors.Is(err, storage.ErrNotFound) {
 			t.Errorf("thumbnail nao deveria existir, err = %v", err)
-		}
-		if _, err := os.Stat(blobFile + ".preview.webp"); !os.IsNotExist(err) {
-			t.Error("arquivo .preview.webp nao deveria existir")
 		}
 	})
 
 	t.Run("habilitado gera thumbnail webp", func(t *testing.T) {
-		attachmentID, blobFile := runCase(t, "true")
+		attachmentID := runCase(t, "true")
 		thumb, err := storage.GetThumbnailByAttachmentID(ctx, attachmentID, thumbnailKind)
 		if err != nil {
 			t.Fatalf("GetThumbnailByAttachmentID: %v", err)
@@ -5784,8 +6027,9 @@ func TestEnsureAttachmentThumbnailEnabledFlag(t *testing.T) {
 		if thumb.MimeType != "image/webp" {
 			t.Errorf("mime esperado image/webp, obtido %s", thumb.MimeType)
 		}
-		if _, err := os.Stat(blobFile + ".preview.webp"); err != nil {
-			t.Errorf("arquivo .preview.webp deveria existir: %v", err)
+		// o blob da thumbnail vai para o content-addressable storage
+		if _, err := os.Stat(mediaBlobPath(thumb.MediaShaHash)); err != nil {
+			t.Errorf("blob da thumbnail deveria existir no storage: %v", err)
 		}
 	})
 }
@@ -5793,8 +6037,8 @@ func TestEnsureAttachmentThumbnailEnabledFlag(t *testing.T) {
 func TestDownloadPreviewImageDisabled(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.ThumbnailEnabled = false
-	if _, _, _, err := downloadPreviewImage(testCtx(), cfg, "https://exemplo.com/imagem.png"); err == nil {
-		t.Error("THUMBNAIL_ENABLED=false deveria retornar erro (sem fetch)")
+	if sha, err := downloadPreviewImage(testCtx(), cfg, "https://exemplo.com/imagem.png"); err == nil || sha != "" {
+		t.Error("THUMBNAIL_ENABLED=false deveria retornar erro com hash vazio (sem fetch)")
 	}
 }
 
@@ -6054,20 +6298,13 @@ func TestGetLinkPreview(t *testing.T) {
 	outsider := newTestMessageUser(t)
 	server, channel := newTestMessageChannel(t, &owner.ID)
 
-	imgPath := filepath.Join(t.TempDir(), "preview.png")
 	imgBytes := pngAvatarBytes(16, 16)
-	if err := os.WriteFile(imgPath, imgBytes, 0o644); err != nil {
-		t.Fatalf("falha ao gravar imagem de apoio: %v", err)
-	}
-	mime := "image/png"
-	size := int64(len(imgBytes))
+	imgHash := newTestMediaHash(t, imgBytes)
 
 	preview, err := storage.UpsertPreview(ctx, models.LinkPreview{
-		URL:            "https://preview-image.example.com/pagina",
-		Kind:           "og",
-		ImageFilePath:  &imgPath,
-		ImageMimeType:  &mime,
-		ImageSizeBytes: &size,
+		URL:        "https://preview-image.example.com/pagina",
+		Kind:       "og",
+		ImageMedia: &imgHash,
 	})
 	if err != nil {
 		t.Fatalf("UpsertPreview retornou erro: %v", err)
@@ -6113,9 +6350,9 @@ func TestGetLinkPreview(t *testing.T) {
 
 	t.Run("preview sem vinculo vira 404", func(t *testing.T) {
 		unlinked, err := storage.UpsertPreview(ctx, models.LinkPreview{
-			URL:           "https://preview-image.example.com/sem-vinculo",
-			Kind:          "og",
-			ImageFilePath: &imgPath,
+			URL:        "https://preview-image.example.com/sem-vinculo",
+			Kind:       "og",
+			ImageMedia: &imgHash,
 		})
 		if err != nil {
 			t.Fatalf("UpsertPreview retornou erro: %v", err)
@@ -6289,22 +6526,16 @@ func TestDownloadAttachmentThumbnail(t *testing.T) {
 	server, channel := newTestMessageChannel(t, &author.ID)
 
 	pngBytes := pngAvatarBytes(64, 32)
+	pngHash := newTestMediaHash(t, pngBytes)
 	attachment, err := storage.CreateAttachment(ctx, models.Attachments{
 		OriginalFileName: "foto.png",
-		MimeType:         "image/png",
-		FilePath:         "teste/blob.png",
-		SizeBytes:        int64(len(pngBytes)),
-		ShaHash:          randHex(32),
+		MediaShaHash:     pngHash,
 		CreatedBy:        &author.ID,
 	})
 	if err != nil {
 		t.Fatalf("CreateAttachment retornou erro: %v", err)
 	}
-	blobFile := filepath.Join(t.TempDir(), "blob.png")
-	if err := os.WriteFile(blobFile, pngBytes, 0o644); err != nil {
-		t.Fatalf("falha ao gravar blob de apoio: %v", err)
-	}
-	ensureAttachmentThumbnail(ctx, attachment.ID, blobFile, "image/png")
+	ensureAttachmentThumbnail(ctx, attachment.ID, mediaBlobPath(pngHash), "image/png")
 
 	message, err := storage.CreateMessage(ctx, channel.ID, author.ID, "com imagem", []string{attachment.ID})
 	if err != nil {
@@ -6346,10 +6577,7 @@ func TestDownloadAttachmentThumbnail(t *testing.T) {
 	t.Run("sem thumbnail vira 404", func(t *testing.T) {
 		plain, err := storage.CreateAttachment(ctx, models.Attachments{
 			OriginalFileName: "texto.txt",
-			MimeType:         "text/plain",
-			FilePath:         "teste/blob.txt",
-			SizeBytes:        10,
-			ShaHash:          randHex(32),
+			MediaShaHash:     newTestMediaHash(t, []byte("texto de apoio")),
 		})
 		if err != nil {
 			t.Fatalf("CreateAttachment retornou erro: %v", err)
@@ -6385,22 +6613,16 @@ func TestListMessagesWithThumbnailsAndPreviews(t *testing.T) {
 	_, channel := newTestMessageChannel(t, &author.ID)
 
 	pngBytes := pngAvatarBytes(64, 32)
+	pngHash := newTestMediaHash(t, pngBytes)
 	attachment, err := storage.CreateAttachment(ctx, models.Attachments{
 		OriginalFileName: "foto.png",
-		MimeType:         "image/png",
-		FilePath:         "teste/blob.png",
-		SizeBytes:        int64(len(pngBytes)),
-		ShaHash:          randHex(32),
+		MediaShaHash:     pngHash,
 		CreatedBy:        &author.ID,
 	})
 	if err != nil {
 		t.Fatalf("CreateAttachment retornou erro: %v", err)
 	}
-	blobFile := filepath.Join(t.TempDir(), "blob.png")
-	if err := os.WriteFile(blobFile, pngBytes, 0o644); err != nil {
-		t.Fatalf("falha ao gravar blob de apoio: %v", err)
-	}
-	ensureAttachmentThumbnail(ctx, attachment.ID, blobFile, "image/png")
+	ensureAttachmentThumbnail(ctx, attachment.ID, mediaBlobPath(pngHash), "image/png")
 
 	title := "Preview da listagem"
 	seed, err := storage.UpsertPreview(ctx, models.LinkPreview{

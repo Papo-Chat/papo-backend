@@ -339,6 +339,44 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /users/{user_id}/status:
+    put:
+      tags: [Users]
+      summary: Atualiza o status persistido (away/busy; null remove)
+      description: >
+        O status vale enquanto o usuário estiver online (disponibilizado via
+        presence_update/presence_sync); offline, o status persistido vale na
+        próxima conexão.
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStatusRequest'
+      responses:
+        '200':
+          description: Status atualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericResponse'
+        '400':
+          description: Status inválido (deve ser away, busy ou null)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /users/{user_id}/password:
     put:
       tags: [Users]
@@ -1284,8 +1322,9 @@ paths:
         | `typing`         | inbound   | `{ type: "typing", channel_id }`                                                        |
         | `typing`         | outbound  | `{ type: "typing", channel_id, user_id, is_typing }`                                    |
         | `avatar_update`  | outbound  | `{ type: "avatar_update", user_id }`                                                    |
-        | `presence_update`| outbound  | `{ type: "presence_update", user_id, status, status_message, nickname }`                |  
-        | `presence_sync  `| unicast   | `{ type: "presence_sync", members: (user_id, status, status_message, nickname)[] }`     |  
+        | `user_join`      | outbound  | `{ type: "user_join", user_id }`                                                        |
+        | `presence_update`| outbound  | `{ type: "presence_update", user_id, status, status_message, nickname }` (status: online/offline/away/busy) |
+        | `presence_sync  `| unicast   | `{ type: "presence_sync", members: (user_id, status, status_message, nickname)[] }` (status: online/offline/away/busy) |
         | `heartbeat`      | inbound   | `{ type: "heartbeat" }`                                                                 |
         | `heartbeat_ack`  | outbound  | `{ type: "heartbeat_ack" }`                                                             |
         | `error`          | outbound  | `{ type: "error", message, code? }`                                                     |
@@ -1478,6 +1517,11 @@ components:
         nickname:
           type: string
           nullable: true
+        status:
+          type: string
+          nullable: true
+          enum: [away, busy]
+          description: Status persistido do usuário (vale enquanto online)
         status_message:
           type: string
           nullable: true
@@ -1507,6 +1551,11 @@ components:
         avatar_format:
           type: string
           example: PNG
+        status:
+          type: string
+          nullable: true
+          enum: [away, busy]
+          description: Status persistido do usuário (vale enquanto online)
         status_message:
           type: string
           nullable: true
@@ -1603,6 +1652,15 @@ components:
         avatar_format:
           type: string
           enum: [GIF, JPEG, PNG]
+
+    UpdateStatusRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          nullable: true
+          enum: [away, busy]
+          description: Status persistido (away/busy); null remove o status
 
     ChangePasswordRequest:
       type: object

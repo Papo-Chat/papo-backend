@@ -12,14 +12,14 @@ import (
 
 // userColumns inclui password_hash e é usado somente por GetUserByUsername,
 // que é a única função autorizada a retornar o hash do banco.
-const userColumns = "id, username, nickname, password_hash, avatar_blob, avatar_format, banned, reset_password, last_ip, status_message, status_updated_at, created_at"
+const userColumns = "id, username, nickname, password_hash, avatar_media, banned, reset_password, last_ip, status, status_message, status_updated_at, created_at"
 
 // userPublicColumns é a visão de usuário sem password_hash, usada por todas
 // as demais funções.
-const userPublicColumns = "id, username, nickname, avatar_blob, avatar_format, banned, reset_password, last_ip, status_message, status_updated_at, created_at"
+const userPublicColumns = "id, username, nickname, avatar_media, banned, reset_password, last_ip, status, status_message, status_updated_at, created_at"
 
 // userSummaryColumns é a visão reduzida para listagens (GET /users).
-const userSummaryColumns = "id, username, nickname, status_message, status_updated_at, created_at"
+const userSummaryColumns = "id, username, nickname, status, status_message, status_updated_at, created_at"
 
 func scanUser(row rowScanner) (models.User, error) {
 	var user models.User
@@ -28,11 +28,11 @@ func scanUser(row rowScanner) (models.User, error) {
 		&user.Username,
 		&user.Nickname,
 		&user.PasswordHash,
-		&user.AvatarBlob,
-		&user.AvatarFormat,
+		&user.AvatarMedia,
 		&user.Banned,
 		&user.ResetPassword,
 		&user.LastIP,
+		&user.Status,
 		&user.StatusMessage,
 		&user.StatusUpdatedAt,
 		&user.CreatedAt,
@@ -50,11 +50,11 @@ func scanUserPublic(row rowScanner) (models.User, error) {
 		&user.ID,
 		&user.Username,
 		&user.Nickname,
-		&user.AvatarBlob,
-		&user.AvatarFormat,
+		&user.AvatarMedia,
 		&user.Banned,
 		&user.ResetPassword,
 		&user.LastIP,
+		&user.Status,
 		&user.StatusMessage,
 		&user.StatusUpdatedAt,
 		&user.CreatedAt,
@@ -72,6 +72,7 @@ func scanUserSummary(row rowScanner) (models.UserSummary, error) {
 		&user.ID,
 		&user.Username,
 		&user.Nickname,
+		&user.Status,
 		&user.StatusMessage,
 		&user.StatusUpdatedAt,
 		&user.CreatedAt,
@@ -217,14 +218,33 @@ func UpdateUser(ctx context.Context, id string, user models.User) (models.User, 
 	return updated, nil
 }
 
-// UpdateUserAvatar atualiza SOMENTE o avatar do usuário
-func UpdateUserAvatar(ctx context.Context, avatarBlob []byte, avatarFormat, id string) error {
+// UpdateUserAvatar atualiza SOMENTE a referência do avatar do usuário
+// (media_sha_hash do blob; nil remove o avatar).
+func UpdateUserAvatar(ctx context.Context, avatarMedia *string, id string) error {
 	result, err := GetDB().ExecContext(ctx,
-		"UPDATE users SET avatar_blob = $2, avatar_format = $3 WHERE id = $1",
-		id, avatarBlob, avatarFormat,
+		"UPDATE users SET avatar_media = $2 WHERE id = $1",
+		id, avatarMedia,
 	)
 	if err != nil {
 		return fmt.Errorf("falha ao atualizar avatar do usuário: %w", err)
+	}
+
+	if n, _ := result.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
+// UpdateUserStatus atualiza SOMENTE o status persistido do usuário
+// (away/busy; nil remove o status).
+func UpdateUserStatus(ctx context.Context, id string, status *string) error {
+	result, err := GetDB().ExecContext(ctx,
+		"UPDATE users SET status = $2 WHERE id = $1",
+		id, status,
+	)
+	if err != nil {
+		return fmt.Errorf("falha ao atualizar status do usuário: %w", err)
 	}
 
 	if n, _ := result.RowsAffected(); n == 0 {

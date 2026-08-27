@@ -39,6 +39,7 @@ logs/
 
 # Attachments (arquivos uploadados pelos usuários)
 attachments/
+media/
 !attachments/.gitkeep
 
 # Database

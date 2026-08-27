@@ -32,16 +32,18 @@ func WebSocketHandler(baseURL string, c echo.Context) error {
 			"token de autenticação ausente, inválido ou expirado")
 	}
 
-	// A mensagem de status (users.status_message) e o nickname
-	// (users.nickname) são carregados na conexão e mantidos no estado efêmero
-	// de presença; em falha, a conexão segue sem esses dados.
-	var statusMessage, nickname *string
+	// A mensagem de status (users.status_message), o nickname (users.nickname)
+	// e o status persistido (users.status: away/busy) são carregados na
+	// conexão e mantidos no estado efêmero de presença; em falha, a conexão
+	// segue sem esses dados.
+	var statusMessage, nickname, persistedStatus *string
 	if user, err := services.Profile(c.Request().Context(), userID); err != nil {
 		utils.Errorf("request_id=%s websocket: falha ao carregar o status do usuário: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 	} else {
 		statusMessage = user.StatusMessage
 		nickname = user.Nickname
+		persistedStatus = user.Status
 	}
 
 	conn, err := wsUpgrader.Upgrade(c.Response(), c.Request(), nil)
@@ -52,6 +54,6 @@ func WebSocketHandler(baseURL string, c echo.Context) error {
 			"falha ao fazer o upgrade da conexão para WebSocket")
 	}
 
-	websocket.Connect(websocket.GetHub(), conn, userID, statusMessage, nickname)
+	websocket.Connect(websocket.GetHub(), conn, userID, statusMessage, nickname, persistedStatus)
 	return nil
 }

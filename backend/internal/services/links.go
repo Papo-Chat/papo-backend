@@ -3,15 +3,11 @@ package services
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -256,12 +252,10 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 		Description: nullableText(truncateRune(description, cfg.PreviewDescriptionMax)),
 	}
 
-	// 8. Imagem (og:image): robots na origem da imagem + thumbnail em CAS.
+	// 8. Imagem (og:image): robots na origem da imagem + thumbnail na media.
 	if imageURL != "" {
-		if imgPath, imgMime, imgSize, err := downloadPreviewImage(ctx, cfg, imageURL); err == nil {
-			preview.ImageFilePath = &imgPath
-			preview.ImageMimeType = &imgMime
-			preview.ImageSizeBytes = &imgSize
+		if imgMedia, err := downloadPreviewImage(ctx, cfg, imageURL); err == nil {
+			preview.ImageMedia = &imgMedia
 		}
 		// sem imagem → preview só com title/description (aceitável, §6.2 passo 9)
 	}
@@ -296,10 +290,8 @@ func fetchOEmbedPreview(ctx context.Context, cfg *config.Config, target *url.URL
 	}
 
 	if result.ThumbnailURL != "" {
-		if imgPath, imgMime, imgSize, err := downloadPreviewImage(ctx, cfg, result.ThumbnailURL); err == nil {
-			preview.ImageFilePath = &imgPath
-			preview.ImageMimeType = &imgMime
-			preview.ImageSizeBytes = &imgSize
+		if imgMedia, err := downloadPreviewImage(ctx, cfg, result.ThumbnailURL); err == nil {
+			preview.ImageMedia = &imgMedia
 		}
 	}
 
@@ -308,35 +300,35 @@ func fetchOEmbedPreview(ctx context.Context, cfg *config.Config, target *url.URL
 
 // downloadPreviewImage baixa a imagem do preview (og:image / thumbnail_url)
 // com o client SSRF-safe (robots check na origem da imagem, §6.4), valida o
-// MIME por magic bytes, gera a thumbnail e salva em CAS
-// (attachments/<ab>/<cd>/<sha256 da imagem>.preview.<ext>) — o thumbnail é o
-// único artefato persistido (§6.2 passo 8).
-func downloadPreviewImage(ctx context.Context, cfg *config.Config, rawImageURL string) (filePath, mime string, size int64, err error) {
+// MIME por magic bytes, gera a thumbnail e a grava na tabela media
+// (content-addressable) — a thumbnail é o único artefato persistido
+// (§6.2 passo 8). Retorna o sha256 (hex) do blob gravado.
+func downloadPreviewImage(ctx context.Context, cfg *config.Config, rawImageURL string) (mediaSha string, err error) {
 	// THUMBNAIL_ENABLED=false: nenhuma imagem de preview (o preview segue
 	// apenas com title/description — best-effort).
 	if !cfg.ThumbnailEnabled {
-		return "", "", 0, errors.New("processamento de thumbnail desabilitado")
+		return "", errors.New("processamento de thumbnail desabilitado")
 	}
 	u, err := utils.NormalizeURL(rawImageURL)
 	if err != nil {
-		return "", "", 0, err
+		return "", err
 	}
 	if !RobotsAllowed(ctx, u) {
-		return "", "", 0, errors.New("origem da imagem não permitida pelo robots.txt")
+		return "", errors.New("origem da imagem não permitida pelo robots.txt")
 	}
 	if !acquireOutboundSlot() {
-		return "", "", 0, errors.New("semáforo outbound cheio")
+		return "", errors.New("semáforo outbound cheio")
 	}
 	defer releaseOutboundSlot()
 
 	body, _, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxPreviewImageBytes, u.String())
 	if err != nil {
-		return "", "", 0, err
+		return "", err
 	}
 
-	mime = utils.DetectMimeType(body)
+	mime := utils.DetectMimeType(body)
 	if !isProcessableImage(mime) {
-		return "", "", 0, errors.New("conteúdo não é uma imagem processável")
+		return "", errors.New("conteúdo não é uma imagem processável")
 	}
 
 	maxDim := cfg.ThumbnailMaxDim
@@ -345,25 +337,15 @@ func downloadPreviewImage(ctx context.Context, cfg *config.Config, rawImageURL s
 	}
 	thumb, thumbMime, _, _, err := utils.GenerateThumbnail(body, maxDim, cfg.ThumbnailTimeout)
 	if err != nil {
-		return "", "", 0, err
+		return "", err
 	}
 
-	// CAS: hash da imagem original (thumbnail derivada deterministicamente).
-	sum := sha256.Sum256(body)
-	hash := hex.EncodeToString(sum[:])
-	ext := "webp"
-	if thumbMime == "image/gif" {
-		ext = "gif"
-	}
-	filePath = filepath.Join(attachmentsBaseDir, hash[:2], hash[2:4], hash+".preview."+ext)
-	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
-		return "", "", 0, fmt.Errorf("falha ao criar pasta da thumbnail: %w", err)
-	}
-	if err := os.WriteFile(filePath, thumb, 0o644); err != nil {
-		return "", "", 0, fmt.Errorf("falha ao gravar a thumbnail: %w", err)
+	mediaSha, _, err = StoreMediaFromBytes(ctx, thumb, thumbMime)
+	if err != nil {
+		return "", fmt.Errorf("falha ao gravar a thumbnail: %w", err)
 	}
 
-	return filePath, thumbMime, int64(len(thumb)), nil
+	return mediaSha, nil
 }
 
 var whitespaceRe = regexp.MustCompile(`\s+`)
@@ -548,6 +530,12 @@ func GetLinkPreview(ctx context.Context, previewID, userID string) (models.LinkP
 		// canal não acessível → 404 (mesma regra do spec: não vinculado a
 		// mensagem acessível)
 		return models.LinkPreview{}, ErrPreviewNotFound
+	}
+
+	// O caminho do blob em disco é derivado do sha_hash (content-addressable).
+	if preview.ImageMedia != nil {
+		path := mediaBlobPath(*preview.ImageMedia)
+		preview.ImageFilePath = &path
 	}
 
 	return preview, nil

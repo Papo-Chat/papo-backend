@@ -199,6 +199,10 @@ func Whoami(ctx context.Context, userID string) (models.User, models.UserSetting
 		return models.User{}, models.UserSettings{}, err
 	}
 
+	if err := resolveAvatar(ctx, &user); err != nil {
+		return models.User{}, models.UserSettings{}, err
+	}
+
 	settings, err := storage.GetUserSettings(ctx, userID)
 	if err != nil {
 		return models.User{}, models.UserSettings{}, err

@@ -118,8 +118,9 @@ func newWSHub(t *testing.T) *Hub {
 // wsTestUser é o perfil persistido de um usuário de teste, carregado na
 // conexão (mesmo fluxo do handler GET /ws).
 type wsTestUser struct {
-	statusMessage *string
-	nickname      *string
+	statusMessage   *string
+	nickname        *string
+	persistedStatus *string
 }
 
 // wsTestServer é um servidor HTTP de teste que faz o upgrade para WebSocket e
@@ -141,14 +142,15 @@ func newWSTestServer(t *testing.T, hub *Hub, users map[string]*wsTestUser) *wsTe
 		if err != nil {
 			return
 		}
-		var statusMessage, nickname *string
+		var statusMessage, nickname, persistedStatus *string
 		if users != nil {
 			if u := users[userID]; u != nil {
 				statusMessage = u.statusMessage
 				nickname = u.nickname
+				persistedStatus = u.persistedStatus
 			}
 		}
-		client := Connect(hub, conn, userID, statusMessage, nickname)
+		client := Connect(hub, conn, userID, statusMessage, nickname, persistedStatus)
 		environment.mu.Lock()
 		environment.clients = append(environment.clients, client)
 		environment.mu.Unlock()
@@ -491,6 +493,7 @@ func TestEventTypeIsInbound(t *testing.T) {
 		{"channel_delete", EventTypeChannelDelete, false},
 		{"presence_update", EventTypePresenceUpdate, false},
 		{"presence_sync", EventTypePresenceSync, false},
+		{"user_join", EventTypeUserJoin, false},
 		{"heartbeat_ack", EventTypeHeartbeatAck, false},
 		{"error", EventTypeError, false},
 		{"vazio", EventType(""), false},
@@ -509,10 +512,10 @@ func TestPresenceStore(t *testing.T) {
 	t.Run("transições online/offline", func(t *testing.T) {
 		p := NewPresenceStore()
 
-		if !p.AddConnection("user_a", nil, nil) {
+		if !p.AddConnection("user_a", nil, nil, nil) {
 			t.Error("a primeira conexão deveria transicionar para online")
 		}
-		if p.AddConnection("user_a", nil, nil) {
+		if p.AddConnection("user_a", nil, nil, nil) {
 			t.Error("a segunda conexão do mesmo usuário não deveria transicionar")
 		}
 		if p.RemoveConnection("user_a") {
@@ -537,7 +540,7 @@ func TestPresenceStore(t *testing.T) {
 			t.Errorf("StatusMessage de usuário offline deveria ser nil, obtive %v", got)
 		}
 
-		p.AddConnection("user_a", &oi, nil)
+		p.AddConnection("user_a", &oi, nil, nil)
 		if got := p.StatusMessage("user_a"); got == nil || *got != "oi" {
 			t.Errorf("StatusMessage deveria ser a mensagem da primeira conexão, obtive %v", got)
 		}
@@ -561,14 +564,14 @@ func TestPresenceStore(t *testing.T) {
 			t.Errorf("Nickname de usuário offline deveria ser nil, obtive %v", got)
 		}
 
-		p.AddConnection("user_a", nil, &nick)
+		p.AddConnection("user_a", nil, &nick, nil)
 		if got := p.Nickname("user_a"); got == nil || *got != "nick" {
 			t.Errorf("Nickname deveria ser o nickname da primeira conexão, obtive %v", got)
 		}
 
 		// A segunda conexão não sobrescreve o nickname da entrada.
 		outro := "outro"
-		if p.AddConnection("user_a", nil, &outro) {
+		if p.AddConnection("user_a", nil, &outro, nil) {
 			t.Error("a segunda conexão do mesmo usuário não deveria transicionar")
 		}
 		if got := p.Nickname("user_a"); got == nil || *got != "nick" {
@@ -586,8 +589,8 @@ func TestPresenceStore(t *testing.T) {
 	t.Run("OnlineMembers ordenado por user_id", func(t *testing.T) {
 		p := NewPresenceStore()
 		z := "status zeta"
-		p.AddConnection("zeta", &z, nil)
-		p.AddConnection("alpha", nil, nil)
+		p.AddConnection("zeta", &z, nil, nil)
+		p.AddConnection("alpha", nil, nil, nil)
 
 		members := p.OnlineMembers()
 		if len(members) != 2 {
@@ -611,6 +614,164 @@ func TestPresenceStore(t *testing.T) {
 			t.Errorf("esperava lista vazia após todos saírem, obtive %d membros", len(got))
 		}
 	})
+}
+
+func TestPresenceStorePersistedStatus(t *testing.T) {
+	t.Run("status efetivo", func(t *testing.T) {
+		p := NewPresenceStore()
+
+		if got := p.EffectiveStatus("user_a"); got != StatusOffline {
+			t.Errorf("usuário desconhecido deveria estar offline, obtive %q", got)
+		}
+
+		p.AddConnection("user_a", nil, nil, nil)
+		if got := p.EffectiveStatus("user_a"); got != StatusOnline {
+			t.Errorf("usuário online sem status persistido deveria ser online, obtive %q", got)
+		}
+
+		away := StatusAway
+		if !p.SetPersistedStatus("user_a", &away) {
+			t.Error("SetPersistedStatus em usuário online deveria retornar true")
+		}
+		if got := p.EffectiveStatus("user_a"); got != StatusAway {
+			t.Errorf("usuário com status persistido away deveria ser away, obtive %q", got)
+		}
+
+		busy := StatusBusy
+		p.SetPersistedStatus("user_a", &busy)
+		if got := p.EffectiveStatus("user_a"); got != StatusBusy {
+			t.Errorf("usuário com status persistido busy deveria ser busy, obtive %q", got)
+		}
+
+		if !p.SetPersistedStatus("user_a", nil) {
+			t.Error("SetPersistedStatus nil em usuário online deveria retornar true")
+		}
+		if got := p.EffectiveStatus("user_a"); got != StatusOnline {
+			t.Errorf("removido o status persistido, o usuário deveria voltar a online, obtive %q", got)
+		}
+
+		p.RemoveConnection("user_a")
+		if got := p.EffectiveStatus("user_a"); got != StatusOffline {
+			t.Errorf("sem conexões o usuário deveria estar offline (status persistido não vale offline), obtive %q", got)
+		}
+	})
+
+	t.Run("SetPersistedStatus offline retorna false", func(t *testing.T) {
+		p := NewPresenceStore()
+		away := StatusAway
+		if p.SetPersistedStatus("user_a", &away) {
+			t.Error("SetPersistedStatus em usuário offline deveria retornar false")
+		}
+	})
+
+	t.Run("persistido na primeira conexão", func(t *testing.T) {
+		p := NewPresenceStore()
+		away := StatusAway
+		p.AddConnection("user_a", nil, nil, &away)
+		if got := p.EffectiveStatus("user_a"); got != StatusAway {
+			t.Errorf("a primeira conexão deveria carregar o status persistido, obtive %q", got)
+		}
+
+		// a segunda conexão não sobrescreve o status persistido da entrada
+		busy := StatusBusy
+		p.AddConnection("user_a", nil, nil, &busy)
+		if got := p.EffectiveStatus("user_a"); got != StatusAway {
+			t.Errorf("a segunda conexão não deveria alterar o status persistido, obtive %q", got)
+		}
+	})
+
+	t.Run("OnlineMembers expõe o status persistido", func(t *testing.T) {
+		p := NewPresenceStore()
+		away := StatusAway
+		p.AddConnection("away_user", nil, nil, &away)
+		p.AddConnection("online_user", nil, nil, nil)
+
+		members := p.OnlineMembers()
+		if len(members) != 2 {
+			t.Fatalf("esperava 2 membros online, obtive %d", len(members))
+		}
+		byID := make(map[string]PresenceMember, len(members))
+		for _, m := range members {
+			byID[m.UserID] = m
+		}
+		if byID["away_user"].Status != StatusAway {
+			t.Errorf("membro com status persistido deveria aparecer como away: %+v", byID["away_user"])
+		}
+		if byID["online_user"].Status != StatusOnline {
+			t.Errorf("membro sem status persistido deveria aparecer como online: %+v", byID["online_user"])
+		}
+	})
+}
+
+func TestHubPresenceSyncPersistedStatus(t *testing.T) {
+	away := StatusAway
+	hub := newWSHub(t)
+	env := newWSTestServer(t, hub, map[string]*wsTestUser{
+		"user_a": {persistedStatus: &away},
+	})
+
+	connA := env.dial(t, "user_a")
+	event := readEvent(t, connA)
+	if event.Type != string(EventTypePresenceSync) {
+		t.Fatalf("esperava presence_sync ao conectar, obtive %q", event.Type)
+	}
+	if len(event.Members) != 1 || event.Members[0].UserID != "user_a" {
+		t.Fatalf("presence_sync inesperado: %+v", event.Members)
+	}
+	if event.Members[0].Status != StatusAway {
+		t.Errorf("membro com status persistido deveria aparecer como away, obtive %q", event.Members[0].Status)
+	}
+
+	// outro usuário vê o user_a como away
+	connB := env.dial(t, "user_b")
+	event = readEvent(t, connB)
+	if len(event.Members) != 2 {
+		t.Fatalf("presence_sync do user_b deveria conter 2 membros, obtive %d", len(event.Members))
+	}
+	for _, member := range event.Members {
+		if member.UserID == "user_a" && member.Status != StatusAway {
+			t.Errorf("user_a deveria aparecer como away para os demais, obtive %q", member.Status)
+		}
+		if member.UserID == "user_b" && member.Status != StatusOnline {
+			t.Errorf("user_b deveria aparecer como online, obtive %q", member.Status)
+		}
+	}
+}
+
+func TestHubUpdatePersistedStatus(t *testing.T) {
+	hub := newWSHub(t)
+	env := newWSTestServer(t, hub, nil)
+
+	connA := env.dial(t, "user_a")
+	readEvent(t, connA) // presence_sync
+
+	connB := env.dial(t, "user_b")
+	readEvent(t, connB) // presence_sync
+	readEvent(t, connA) // presence_update user_b online
+
+	away := StatusAway
+	if !hub.UpdatePersistedStatus("user_a", &away) {
+		t.Fatal("UpdatePersistedStatus em usuário online deveria retornar true")
+	}
+	event := readEvent(t, connB)
+	if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_a" || event.Status != StatusAway {
+		t.Errorf("esperava presence_update away do user_a, obtive %+v", event)
+	}
+
+	// nil remove o status persistido: volta a online
+	if !hub.UpdatePersistedStatus("user_a", nil) {
+		t.Fatal("UpdatePersistedStatus nil em usuário online deveria retornar true")
+	}
+	event = readEvent(t, connB)
+	if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_a" || event.Status != StatusOnline {
+		t.Errorf("esperava presence_update online do user_a, obtive %+v", event)
+	}
+
+	// usuário offline: nada a atualizar (o valor persistido vale na próxima conexão)
+	busy := StatusBusy
+	if hub.UpdatePersistedStatus("user_c", &busy) {
+		t.Error("UpdatePersistedStatus em usuário offline deveria retornar false")
+	}
 }
 
 func TestHubPresenceSyncOnConnect(t *testing.T) {

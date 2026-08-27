@@ -7,7 +7,10 @@ import (
 	"papo/internal/models"
 )
 
-const attachmentColumns = "id, original_file_name, mime_type, file_path, sha_hash, messages_id, size_bytes, created_by, created_at"
+// attachmentColumns inclui mime_type e size_bytes da tabela media (join):
+// o attachment só guarda a referência content-addressable do blob.
+const attachmentColumns = "a.id, a.original_file_name, m.mime_type, a.media_sha_hash, a.messages_id, m.size_bytes, a.created_by, a.created_at"
+const attachmentFrom = "FROM attachments a JOIN media m ON m.sha_hash = a.media_sha_hash"
 
 func scanAttachment(row rowScanner) (models.Attachments, error) {
 	var attachment models.Attachments
@@ -15,8 +18,7 @@ func scanAttachment(row rowScanner) (models.Attachments, error) {
 		&attachment.ID,
 		&attachment.OriginalFileName,
 		&attachment.MimeType,
-		&attachment.FilePath,
-		&attachment.ShaHash,
+		&attachment.MediaShaHash,
 		&attachment.MessagesID,
 		&attachment.SizeBytes,
 		&attachment.CreatedBy,
@@ -30,11 +32,20 @@ func scanAttachment(row rowScanner) (models.Attachments, error) {
 }
 
 // CreateAttachment insere um novo attachment (upload ainda não vinculado a
-// uma mensagem) e retorna o registro criado.
+// uma mensagem) e retorna o registro criado. MediaShaHash referencia o blob
+// já gravado na tabela media.
 func CreateAttachment(ctx context.Context, a models.Attachments) (models.Attachments, error) {
+	// O SELECT lê o resultado do RETURNING (não a tabela attachments): a
+	// query principal e o CTE de dados compartilham o mesmo snapshot, então
+	// a linha inserida ainda não seria visível na tabela.
 	row := GetDB().QueryRowContext(ctx,
-		"INSERT INTO attachments (original_file_name, mime_type, file_path, sha_hash, size_bytes, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING "+attachmentColumns,
-		a.OriginalFileName, a.MimeType, a.FilePath, a.ShaHash, a.SizeBytes, a.CreatedBy,
+		`WITH inserted AS (
+			INSERT INTO attachments (original_file_name, media_sha_hash, created_by) VALUES ($1, $2, $3)
+			RETURNING id, original_file_name, media_sha_hash, messages_id, created_by, created_at
+		 )
+		 SELECT i.id, i.original_file_name, m.mime_type, i.media_sha_hash, i.messages_id, m.size_bytes, i.created_by, i.created_at
+		 FROM inserted i JOIN media m ON m.sha_hash = i.media_sha_hash`,
+		a.OriginalFileName, a.MediaShaHash, a.CreatedBy,
 	)
 
 	attachment, err := scanAttachment(row)
@@ -45,27 +56,10 @@ func CreateAttachment(ctx context.Context, a models.Attachments) (models.Attachm
 	return attachment, nil
 }
 
-// ExistsAttachmentByHash indica se já existe um attachment com o sha_hash
-// informado. É o sinal de deduplicação do content-addressable storage: se
-// existir, o blob do conteúdo já foi gravado em disco e não precisa ser
-// reescrito.
-func ExistsAttachmentByHash(ctx context.Context, shaHash string) (bool, error) {
-	var exists bool
-	err := GetDB().QueryRowContext(ctx,
-		"SELECT EXISTS(SELECT 1 FROM attachments WHERE sha_hash = $1)",
-		shaHash,
-	).Scan(&exists)
-	if err != nil {
-		return false, mapStorageError(err)
-	}
-
-	return exists, nil
-}
-
 // GetAttachmentByID busca um attachment pelo id.
 func GetAttachmentByID(ctx context.Context, id string) (models.Attachments, error) {
 	row := GetDB().QueryRowContext(ctx,
-		"SELECT "+attachmentColumns+" FROM attachments WHERE id = $1",
+		"SELECT "+attachmentColumns+" "+attachmentFrom+" WHERE a.id = $1",
 		id,
 	)
 
@@ -77,7 +71,8 @@ func GetAttachmentByID(ctx context.Context, id string) (models.Attachments, erro
 	return attachment, nil
 }
 
-const thumbnailColumns = "id, attachment_id, kind, mime_type, file_path, size_bytes, width, height, created_at"
+const thumbnailColumns = "t.id, t.attachment_id, t.kind, m.mime_type, t.media_sha_hash, t.width, t.height, t.created_at"
+const thumbnailFrom = "FROM attachment_thumbnails t JOIN media m ON m.sha_hash = t.media_sha_hash"
 
 func scanAttachmentThumbnail(row rowScanner) (models.AttachmentThumbnail, error) {
 	var thumbnail models.AttachmentThumbnail
@@ -86,8 +81,7 @@ func scanAttachmentThumbnail(row rowScanner) (models.AttachmentThumbnail, error)
 		&thumbnail.AttachmentID,
 		&thumbnail.Kind,
 		&thumbnail.MimeType,
-		&thumbnail.FilePath,
-		&thumbnail.SizeBytes,
+		&thumbnail.MediaShaHash,
 		&thumbnail.Width,
 		&thumbnail.Height,
 		&thumbnail.CreatedAt,
@@ -104,8 +98,8 @@ func scanAttachmentThumbnail(row rowScanner) (models.AttachmentThumbnail, error)
 // duplicado do mesmo conteúdo), mantém a primeira.
 func CreateAttachmentThumbnail(ctx context.Context, t models.AttachmentThumbnail) error {
 	_, err := GetDB().ExecContext(ctx,
-		"INSERT INTO attachment_thumbnails (attachment_id, kind, mime_type, file_path, size_bytes, width, height) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (attachment_id, kind) DO NOTHING",
-		t.AttachmentID, t.Kind, t.MimeType, t.FilePath, t.SizeBytes, t.Width, t.Height,
+		"INSERT INTO attachment_thumbnails (attachment_id, kind, media_sha_hash, width, height) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (attachment_id, kind) DO NOTHING",
+		t.AttachmentID, t.Kind, t.MediaShaHash, t.Width, t.Height,
 	)
 	if err != nil {
 		return mapStorageError(err)
@@ -118,7 +112,7 @@ func CreateAttachmentThumbnail(ctx context.Context, t models.AttachmentThumbnail
 // Retorna ErrNotFound quando não existe.
 func GetThumbnailByAttachmentID(ctx context.Context, attachmentID, kind string) (models.AttachmentThumbnail, error) {
 	row := GetDB().QueryRowContext(ctx,
-		"SELECT "+thumbnailColumns+" FROM attachment_thumbnails WHERE attachment_id = $1 AND kind = $2",
+		"SELECT "+thumbnailColumns+" "+thumbnailFrom+" WHERE t.attachment_id = $1 AND t.kind = $2",
 		attachmentID, kind,
 	)
 
@@ -140,7 +134,7 @@ func ListThumbnailsByAttachmentIDs(ctx context.Context, attachmentIDs []string) 
 	}
 
 	rows, err := GetDB().QueryContext(ctx,
-		"SELECT "+thumbnailColumns+" FROM attachment_thumbnails WHERE attachment_id = ANY($1)",
+		"SELECT "+thumbnailColumns+" "+thumbnailFrom+" WHERE t.attachment_id = ANY($1)",
 		attachmentIDs,
 	)
 	if err != nil {
@@ -166,7 +160,7 @@ func ListThumbnailsByAttachmentIDs(ctx context.Context, attachmentIDs []string) 
 // data de criação.
 func ListAttachmentsByMessage(ctx context.Context, messageID string) ([]models.Attachments, error) {
 	rows, err := GetDB().QueryContext(ctx,
-		"SELECT "+attachmentColumns+" FROM attachments WHERE messages_id = $1 ORDER BY created_at, id",
+		"SELECT "+attachmentColumns+" "+attachmentFrom+" WHERE a.messages_id = $1 ORDER BY a.created_at, a.id",
 		messageID,
 	)
 	if err != nil {

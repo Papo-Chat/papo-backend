@@ -9,7 +9,10 @@ import (
 	"papo/internal/models"
 )
 
-const emojiColumns = "id, server_id, name, format, image_blob, created_by, created_at"
+// emojiColumns inclui o mime_type da tabela media (join) para o service
+// resolver o formato da imagem.
+const emojiColumns = "e.id, e.server_id, e.name, e.image_media, m.mime_type, e.created_by, e.created_at"
+const emojiFrom = "FROM emojis e JOIN media m ON m.sha_hash = e.image_media"
 
 func scanEmoji(row rowScanner) (models.Emoji, error) {
 	var emoji models.Emoji
@@ -17,8 +20,8 @@ func scanEmoji(row rowScanner) (models.Emoji, error) {
 		&emoji.ID,
 		&emoji.ServerID,
 		&emoji.Name,
-		&emoji.Format,
-		&emoji.ImageBlob,
+		&emoji.ImageMedia,
+		&emoji.MimeType,
 		&emoji.CreatedBy,
 		&emoji.CreatedAt,
 	)
@@ -30,11 +33,20 @@ func scanEmoji(row rowScanner) (models.Emoji, error) {
 }
 
 // CreateEmoji cria um novo emoji e retorna o registro criado.
+// imageMedia é a referência do blob da imagem na tabela media.
 // Nomes duplicados retornam ErrUniqueViolation.
-func CreateEmoji(ctx context.Context, serverID, name, format string, imageBlob []byte, createdBy *string) (models.Emoji, error) {
+func CreateEmoji(ctx context.Context, serverID, name, imageMedia string, createdBy *string) (models.Emoji, error) {
+	// O SELECT lê o resultado do RETURNING (não a tabela emojis): a query
+	// principal e o CTE de dados compartilham o mesmo snapshot, então a
+	// linha inserida ainda não seria visível na tabela.
 	row := GetDB().QueryRowContext(ctx,
-		"INSERT INTO emojis (server_id, name, format, image_blob, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING "+emojiColumns,
-		serverID, name, format, imageBlob, createdBy,
+		`WITH inserted AS (
+			INSERT INTO emojis (server_id, name, image_media, created_by) VALUES ($1, $2, $3, $4)
+			RETURNING id, server_id, name, image_media, created_by, created_at
+		 )
+		 SELECT i.id, i.server_id, i.name, i.image_media, m.mime_type, i.created_by, i.created_at
+		 FROM inserted i JOIN media m ON m.sha_hash = i.image_media`,
+		serverID, name, imageMedia, createdBy,
 	)
 
 	emoji, err := scanEmoji(row)
@@ -48,7 +60,7 @@ func CreateEmoji(ctx context.Context, serverID, name, format string, imageBlob [
 // GetEmojiByID busca um emoji pelo id.
 func GetEmojiByID(ctx context.Context, id string) (models.Emoji, error) {
 	row := GetDB().QueryRowContext(ctx,
-		"SELECT "+emojiColumns+" FROM emojis WHERE id = $1",
+		"SELECT "+emojiColumns+" "+emojiFrom+" WHERE e.id = $1",
 		id,
 	)
 
@@ -68,22 +80,22 @@ func GetEmojiByID(ctx context.Context, id string) (models.Emoji, error) {
 // pular emojis com timestamp igual).
 // Se limit for > 0, retorna no máximo limit emojis.
 func ListEmojis(ctx context.Context, serverID *string, since *time.Time, lastID string, limit int) ([]models.Emoji, error) {
-	query := "SELECT " + emojiColumns + " FROM emojis"
+	query := "SELECT " + emojiColumns + " " + emojiFrom
 	args := []any{}
 	where := ""
 	if serverID != nil && *serverID != "" {
-		where = "server_id = $" + strconv.Itoa(len(args)+1)
+		where = "e.server_id = $" + strconv.Itoa(len(args)+1)
 		args = append(args, *serverID)
 	}
 	if since != nil {
 		var cond string
 		if lastID != "" {
-			cond = "(created_at > $" + strconv.Itoa(len(args)+1) +
-				" OR (created_at = $" + strconv.Itoa(len(args)+1) +
-				" AND id > $" + strconv.Itoa(len(args)+2) + "))"
+			cond = "(e.created_at > $" + strconv.Itoa(len(args)+1) +
+				" OR (e.created_at = $" + strconv.Itoa(len(args)+1) +
+				" AND e.id > $" + strconv.Itoa(len(args)+2) + "))"
 			args = append(args, *since, lastID)
 		} else {
-			cond = "created_at > $" + strconv.Itoa(len(args)+1)
+			cond = "e.created_at > $" + strconv.Itoa(len(args)+1)
 			args = append(args, *since)
 		}
 		if where != "" {
@@ -94,7 +106,7 @@ func ListEmojis(ctx context.Context, serverID *string, since *time.Time, lastID 
 	if where != "" {
 		query += " WHERE " + where
 	}
-	query += " ORDER BY created_at, id"
+	query += " ORDER BY e.created_at, e.id"
 	if limit > 0 {
 		query += " LIMIT $" + strconv.Itoa(len(args)+1)
 		args = append(args, limit)

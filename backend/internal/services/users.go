@@ -80,7 +80,8 @@ func validateUserConfig(config models.UserConfig) error {
 }
 
 // Profile retorna o perfil do usuário, sem campos sensíveis
-// (password_hash, last_ip, banned) e sem as configurações.
+// (password_hash, last_ip, banned) e sem as configurações. O blob do avatar
+// e o formato são resolvidos da tabela media e do disco.
 func Profile(ctx context.Context, userID string) (models.User, error) {
 	if userID == "" {
 		return models.User{}, ErrUserNotFound
@@ -94,7 +95,32 @@ func Profile(ctx context.Context, userID string) (models.User, error) {
 		return models.User{}, err
 	}
 
+	if err := resolveAvatar(ctx, &user); err != nil {
+		return models.User{}, err
+	}
+
 	return user, nil
+}
+
+// resolveAvatar preenche AvatarBlob e AvatarFormat a partir da referência
+// media do usuário (sem efeito quando o usuário não tem avatar).
+func resolveAvatar(ctx context.Context, user *models.User) error {
+	if user.AvatarMedia == nil {
+		return nil
+	}
+
+	media, err := storage.GetMediaByHash(ctx, *user.AvatarMedia)
+	if err != nil {
+		return err
+	}
+	blob, err := MediaContent(*user.AvatarMedia)
+	if err != nil {
+		return err
+	}
+
+	user.AvatarBlob = blob
+	user.AvatarFormat = mimeToFormat(media.MimeType)
+	return nil
 }
 
 // ListUsers lista os usuários cadastrados com keyset pagination, sem campos
@@ -150,7 +176,7 @@ func UpdateUser(ctx context.Context, userID, nickname, status string) error {
 }
 
 // UpdateAvatar valida e salva o avatar do usuário. Quando avatar e
-// avatar_format são vazios, o avatar é removido (blob NULL e formato ”).
+// avatar_format são vazios, o avatar é removido (referência media NULL).
 // Retorna ErrInvalidInput quando o avatar não é um GIF, JPEG ou PNG válido
 // de até 2MB com dimensões de até 512px e ErrUserNotFound quando o usuário
 // não existe.
@@ -167,7 +193,7 @@ func UpdateAvatar(ctx context.Context, userID, avatar, avatarFormat string) erro
 	}
 
 	if avatar == "" && avatarFormat == "" {
-		return storage.UpdateUserAvatar(ctx, nil, "", userID)
+		return storage.UpdateUserAvatar(ctx, nil, userID)
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(avatar)
@@ -188,8 +214,42 @@ func UpdateAvatar(ctx context.Context, userID, avatar, avatarFormat string) erro
 		return ErrInvalidInput
 	}
 
-	if err := storage.UpdateUserAvatar(ctx, decoded, upperFormat, userID); err != nil {
+	sha, _, err := StoreMediaFromBytes(ctx, decoded, formatToMime(upperFormat))
+	if err != nil {
+		return fmt.Errorf("falha ao gravar o avatar do usuário: %w", err)
+	}
+
+	if err := storage.UpdateUserAvatar(ctx, &sha, userID); err != nil {
 		return fmt.Errorf("falha ao atualizar o avatar do usuário: %w", err)
+	}
+
+	return nil
+}
+
+// statusAway e statusBusy são os valores persistidos de status do usuário
+// (users.status); o status efetivo na presença é online/offline quando não
+// há status persistido.
+const (
+	statusAway = "away"
+	statusBusy = "busy"
+)
+
+// UpdateStatus valida e persiste o status do usuário (away/busy; nil remove
+// o status). Retorna ErrInvalidInput quando o status não é away/busy e
+// ErrUserNotFound quando o usuário não existe.
+func UpdateStatus(ctx context.Context, userID string, status *string) error {
+	if userID == "" {
+		return ErrUserNotFound
+	}
+	if status != nil && *status != statusAway && *status != statusBusy {
+		return ErrInvalidInput
+	}
+
+	if err := storage.UpdateUserStatus(ctx, userID, status); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("falha ao atualizar o status do usuário: %w", err)
 	}
 
 	return nil

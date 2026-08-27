@@ -20,6 +20,7 @@ type profileResponse struct {
 	Nickname        *string    `json:"nickname"`
 	AvatarBlob      []byte     `json:"avatar_blob"`
 	AvatarFormat    string     `json:"avatar_format"`
+	Status          *string    `json:"status"`
 	StatusMessage   *string    `json:"status_message"`
 	StatusUpdatedAt *time.Time `json:"status_updated_at"`
 	CreatedAt       time.Time  `json:"created_at"`
@@ -58,6 +59,7 @@ func ProfileHandler(baseURL string, c echo.Context) error {
 		Nickname:        user.Nickname,
 		AvatarBlob:      user.AvatarBlob,
 		AvatarFormat:    user.AvatarFormat,
+		Status:          user.Status,
 		StatusMessage:   user.StatusMessage,
 		StatusUpdatedAt: user.StatusUpdatedAt,
 		CreatedAt:       user.CreatedAt,
@@ -193,6 +195,62 @@ func UpdateUserHandler(baseURL string, c echo.Context) error {
 	// (presence_update); se o usuário estiver offline, o estado efêmero é
 	// atualizado apenas na próxima conexão.
 	websocket.GetHub().UpdateStatusMessage(userID, req.Status, req.Nickname)
+
+	return c.JSON(http.StatusOK, map[string]string{
+		"response": "User status updated successfully",
+	})
+}
+
+type updateStatusRequest struct {
+	Status *string `json:"status"`
+}
+
+// UpdateStatusHandler implementa PUT /users/:user_id/status.
+// Persiste o status do usuário (away/busy; null remove). O status vale
+// enquanto o usuário estiver online (presence_update com o status efetivo);
+// offline, o status persistido vale na próxima conexão.
+func UpdateStatusHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	targetID := c.Param("user_id")
+	if targetID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "user_id ausente")
+	}
+	if targetID != userID {
+		return utils.SendProblem(c, baseURL, http.StatusForbidden,
+			"forbidden", "Acesso negado", "não é possível atualizar o status de outro usuário")
+	}
+
+	var req updateStatusRequest
+	if err := c.Bind(&req); err != nil {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
+	}
+
+	switch err := services.UpdateStatus(c.Request().Context(), userID, req.Status); {
+	case errors.Is(err, services.ErrInvalidInput):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido",
+			"status deve ser away, busy ou null")
+	case errors.Is(err, services.ErrUserNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "usuário não encontrado")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao atualizar o status do usuário: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao atualizar o status do usuário")
+	}
+
+	// Notifica os clientes conectados do novo status (presence_update); se o
+	// usuário estiver offline, o valor persistido vale na próxima conexão.
+	websocket.GetHub().UpdatePersistedStatus(userID, req.Status)
 
 	return c.JSON(http.StatusOK, map[string]string{
 		"response": "User status updated successfully",

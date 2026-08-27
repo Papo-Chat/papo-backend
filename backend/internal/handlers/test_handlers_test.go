@@ -30,9 +30,12 @@ import (
 	"papo/internal/config"
 	"papo/internal/middleware"
 	"papo/internal/models"
+	"papo/internal/services"
 	"papo/internal/storage"
 	"papo/internal/utils"
+	"papo/internal/websocket"
 
+	ws "github.com/gorilla/websocket"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/labstack/echo/v4"
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
@@ -407,6 +410,150 @@ func TestWhoamiRouteWithAuth(t *testing.T) {
 	if resp.ID != userID {
 		t.Errorf("esperava id %q, obtive %q", userID, resp.ID)
 	}
+}
+
+// assertWhoamiStatus afirma o status persistido retornado por GET /auth/whoami
+// (wantStatus vazio significa status nil).
+func assertWhoamiStatus(t *testing.T, e *echo.Echo, token, wantStatus string) {
+	t.Helper()
+	rec := do(t, e, http.MethodGet, "/auth/whoami", nil, authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200 no whoami, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Status *string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if wantStatus == "" {
+		if resp.Status != nil {
+			t.Errorf("esperava status nil, obtive %q", *resp.Status)
+		}
+		return
+	}
+	if resp.Status == nil || *resp.Status != wantStatus {
+		t.Errorf("esperava status %q, obtive %v", wantStatus, resp.Status)
+	}
+}
+
+// TestUpdateStatusRoute garante que PUT /users/:id/status persiste o status
+// (away/busy; null remove) e que o status persistido é exposto no whoami.
+func TestUpdateStatusRoute(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+
+	body, _ := json.Marshal(map[string]string{"status": "away"})
+	rec := do(t, e, http.MethodPut, "/users/"+userID+"/status", body, authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	assertWhoamiStatus(t, e, token, "away")
+
+	body, _ = json.Marshal(map[string]string{"status": "busy"})
+	rec = do(t, e, http.MethodPut, "/users/"+userID+"/status", body, authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	assertWhoamiStatus(t, e, token, "busy")
+
+	// null remove o status persistido
+	rec = do(t, e, http.MethodPut, "/users/"+userID+"/status", []byte(`{"status":null}`), authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	assertWhoamiStatus(t, e, token, "")
+}
+
+// TestUpdateStatusRouteInvalidStatus garante que status fora de {away, busy,
+// null} responde 400.
+func TestUpdateStatusRouteInvalidStatus(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+
+	body, _ := json.Marshal(map[string]string{"status": "online"})
+	rec := do(t, e, http.MethodPut, "/users/"+userID+"/status", body, authCookie(token))
+
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"status deve ser away, busy ou null")
+}
+
+// TestUpdateStatusRouteForbidden garante que um usuário não atualiza o status
+// de outro usuário.
+func TestUpdateStatusRouteForbidden(t *testing.T) {
+	e := newApp()
+	_, tokenA := registerAndLogin(t, e)
+	userB, _ := registerAndLogin(t, e)
+
+	body, _ := json.Marshal(map[string]string{"status": "away"})
+	rec := do(t, e, http.MethodPut, "/users/"+userB+"/status", body, authCookie(tokenA))
+
+	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
+		"não é possível atualizar o status de outro usuário")
+}
+
+// TestUpdateStatusRouteUnauthorized garante que a rota sem autenticação
+// responde 401.
+func TestUpdateStatusRouteUnauthorized(t *testing.T) {
+	e := newApp()
+
+	body, _ := json.Marshal(map[string]string{"status": "away"})
+	rec := do(t, e, http.MethodPut, "/users/00000000-0000-4000-8000-000000000000/status", body, nil)
+
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+// TestRegisterBroadcastsUserJoin garante que o registro de um novo usuário
+// distribui o evento user_join aos clientes websocket conectados.
+func TestRegisterBroadcastsUserJoin(t *testing.T) {
+	e := newApp()
+	cfg := config.LoadConfig()
+	RegisterWebSocketRoutes(e, cfg)
+	go websocket.GetHub().Run()
+
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	_, tokenA := registerAndLogin(t, e)
+
+	header := http.Header{}
+	header.Set(echo.HeaderCookie, "Auth="+tokenA)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+	conn, _, err := ws.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("falha ao abrir conexão websocket: %v", err)
+	}
+	defer conn.Close()
+
+	// primeiro evento: presence_sync da própria conexão
+	readWSMessage(t, conn)
+
+	userB, _ := registerAndLogin(t, e)
+
+	data := readWSMessage(t, conn)
+	var event struct {
+		Type   string `json:"type"`
+		UserID string `json:"user_id"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		t.Fatalf("falha ao decodificar evento: %v", err)
+	}
+	if event.Type != "user_join" || event.UserID != userB {
+		t.Errorf("esperava user_join do %s, obtive %+v", userB, event)
+	}
+}
+
+// readWSMessage lê a próxima mensagem de texto da conexão websocket com
+// deadline, falhando o teste se ela não chegar a tempo.
+func readWSMessage(t *testing.T, conn *ws.Conn) []byte {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("falha ao ler mensagem websocket: %v", err)
+	}
+	return data
 }
 
 // TestProfileRouteWithAuth garante que GET /users/:id/profile responde o perfil
@@ -2758,7 +2905,7 @@ func TestDownloadAttachmentRouteOwner(t *testing.T) {
 	if cl := rec.Header().Get(echo.HeaderContentLength); cl != fmt.Sprint(attachment.SizeBytes) {
 		t.Errorf("esperava content-length %d, obtive %q", attachment.SizeBytes, cl)
 	}
-	blob, err := os.ReadFile(attachment.FilePath)
+	blob, err := os.ReadFile(mediaPathFor(attachment.MediaShaHash))
 	if err != nil {
 		t.Fatalf("falha ao ler o blob de apoio: %v", err)
 	}
@@ -2784,7 +2931,7 @@ func TestDownloadAttachmentRouteReaderRole(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
-	blob, err := os.ReadFile(attachment.FilePath)
+	blob, err := os.ReadFile(mediaPathFor(attachment.MediaShaHash))
 	if err != nil {
 		t.Fatalf("falha ao ler o blob de apoio: %v", err)
 	}
@@ -2835,7 +2982,7 @@ func TestDownloadAttachmentRouteMissingBlob(t *testing.T) {
 	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
 	attachment := newMessageWithAttachmentRoute(t, e, channel.ID, token)
 
-	if err := os.Remove(attachment.FilePath); err != nil {
+	if err := os.Remove(mediaPathFor(attachment.MediaShaHash)); err != nil {
 		t.Fatalf("falha ao remover o blob de apoio: %v", err)
 	}
 
@@ -2883,6 +3030,13 @@ func TestDownloadAttachmentThumbnailRouteOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thumbnail nao deveria ter falhado na geracao: %v", err)
 	}
+	// size_bytes vem da tabela media (join); o caminho do blob é derivado do hash
+	media, err := storage.GetMediaByHash(context.Background(), thumb.MediaShaHash)
+	if err != nil {
+		t.Fatalf("GetMediaByHash retornou erro: %v", err)
+	}
+	h := thumb.MediaShaHash
+	blobPath := filepath.Join("media", h[:2], h[2:4], h)
 
 	rec := do(t, e, http.MethodGet, "/attachments/"+attachment.ID+"/thumbnail", nil, authCookie(token))
 
@@ -2895,10 +3049,10 @@ func TestDownloadAttachmentThumbnailRouteOwner(t *testing.T) {
 	if cd := rec.Header().Get(echo.HeaderContentDisposition); cd != "inline" {
 		t.Errorf("esperava content-disposition inline, obtive %q", cd)
 	}
-	if cl := rec.Header().Get(echo.HeaderContentLength); cl != fmt.Sprint(thumb.SizeBytes) {
-		t.Errorf("esperava content-length %d, obtive %q", thumb.SizeBytes, cl)
+	if cl := rec.Header().Get(echo.HeaderContentLength); cl != fmt.Sprint(media.SizeBytes) {
+		t.Errorf("esperava content-length %d, obtive %q", media.SizeBytes, cl)
 	}
-	blob, err := os.ReadFile(thumb.FilePath)
+	blob, err := os.ReadFile(blobPath)
 	if err != nil {
 		t.Fatalf("falha ao ler a thumbnail em disco: %v", err)
 	}
@@ -2959,21 +3113,14 @@ func newPreviewWithImageRoute(t *testing.T, e *echo.Echo, channelID, token strin
 	ctx := context.Background()
 
 	img := pngAvatarBytes(16, 16)
-	imgPath := filepath.Join(t.TempDir(), "preview.png")
-	if err := os.WriteFile(imgPath, img, 0o644); err != nil {
-		t.Fatalf("falha ao gravar imagem de apoio: %v", err)
-	}
-	mime := "image/png"
-	size := int64(len(img))
+	imgHash := newTestMediaHash(t, img)
 	// URL unica por chamada: UpsertPreview faz ON CONFLICT (url) DO UPDATE,
 	// entao uma URL fixa seria compartilhada entre testes e o preview ficaria
 	// vinculado a mensagens de canais diferentes.
 	preview, err := storage.UpsertPreview(ctx, models.LinkPreview{
-		URL:            "https://preview-route.example.com/pagina-" + randHex(8),
-		Kind:           "og",
-		ImageFilePath:  &imgPath,
-		ImageMimeType:  &mime,
-		ImageSizeBytes: &size,
+		URL:        "https://preview-route.example.com/pagina-" + randHex(8),
+		Kind:       "og",
+		ImageMedia: &imgHash,
 	})
 	if err != nil {
 		t.Fatalf("UpsertPreview retornou erro: %v", err)
@@ -3035,7 +3182,7 @@ func TestGetLinkPreviewRouteOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao decodificar image_data: %v", err)
 	}
-	blob, err := os.ReadFile(*preview.ImageFilePath)
+	blob, err := os.ReadFile(mediaPathFor(*preview.ImageMedia))
 	if err != nil {
 		t.Fatalf("falha ao ler a imagem em disco: %v", err)
 	}
@@ -3214,7 +3361,7 @@ func TestDeleteEmojiRouteAuthor(t *testing.T) {
 	authorID, authorToken := registerAndLogin(t, e)
 
 	// emoji criado pelo autor (não dono do servidor)
-	emoji, err := storage.CreateEmoji(context.Background(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &authorID)
+	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &authorID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -3377,6 +3524,9 @@ func cleanServers(ctx context.Context) error {
 // runHandlersTests prepara um banco temporário com as migrations do projeto,
 // inicializa o storage contra ele, executa os testes e remove o banco ao final.
 func runHandlersTests(m *testing.M) int {
+	// blobs gravados pelos testes no content-addressable storage
+	_ = os.RemoveAll("media")
+
 	baseURL := testDatabaseURL()
 
 	baseDB, err := sql.Open("pgx", baseURL)
@@ -3630,6 +3780,25 @@ func recorder(c echo.Context) *httptest.ResponseRecorder {
 
 func testCtx() context.Context {
 	return context.Background()
+}
+
+// newTestMediaHash grava o conteúdo no content-addressable storage (tabela
+// media + arquivo em disco) e retorna o sha256 em hex. Os services resolvem
+// blobs a partir do disco, então emojis/ícones criados via storage precisam
+// do arquivo gravado.
+func newTestMediaHash(t *testing.T, content []byte) string {
+	t.Helper()
+	hash, _, err := services.StoreMediaFromBytes(testCtx(), content, "image/png")
+	if err != nil {
+		t.Fatalf("falha ao gravar mídia de apoio: %v", err)
+	}
+	return hash
+}
+
+// mediaPathFor deriva o caminho do blob no content-addressable storage a
+// partir do sha256 em hex (media/<2>/<2>/<sha>).
+func mediaPathFor(sha string) string {
+	return filepath.Join("media", sha[:2], sha[2:4], sha)
 }
 
 // problem é o corpo de erro RFC 7807 retornado pelos
@@ -4602,16 +4771,23 @@ func TestUpdateAvatarHandlerSuccess(t *testing.T) {
 		t.Errorf("esperava response %q, obtive %q", "User avatar updated successfully", resp.Response)
 	}
 
-	// o avatar deve ter sido persistido
+	// o avatar deve ter sido persistido (media) e resolvido pelo service
 	stored, err := storage.GetUserByID(testCtx(), user.ID)
 	if err != nil {
 		t.Fatalf("GetUserByID retornou erro: %v", err)
 	}
-	if stored.AvatarFormat != "PNG" {
-		t.Errorf("esperava avatar_format %q, obtive %q", "PNG", stored.AvatarFormat)
+	if stored.AvatarMedia == nil {
+		t.Fatal("esperava avatar_media persistida")
 	}
-	if !bytes.Equal(stored.AvatarBlob, pngAvatarBytes(100, 100)) {
-		t.Errorf("avatar_blob não confere:\n got  %x\n want %x", stored.AvatarBlob, pngAvatarBytes(100, 100))
+	profile, err := services.Profile(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("Profile retornou erro: %v", err)
+	}
+	if profile.AvatarFormat != "PNG" {
+		t.Errorf("esperava avatar_format %q, obtive %q", "PNG", profile.AvatarFormat)
+	}
+	if !bytes.Equal(profile.AvatarBlob, pngAvatarBytes(100, 100)) {
+		t.Errorf("avatar_blob não confere:\n got  %x\n want %x", profile.AvatarBlob, pngAvatarBytes(100, 100))
 	}
 }
 
@@ -5542,11 +5718,18 @@ func TestUpdateServerHandlerSuccess(t *testing.T) {
 	if stored.Name != newName {
 		t.Errorf("esperava name %q persistido, obtive %q", newName, stored.Name)
 	}
-	if !bytes.Equal(stored.IconBlob, pngAvatarBytes(100, 100)) {
-		t.Errorf("icon_blob persistido não confere: %x", stored.IconBlob)
+	if stored.IconMedia == nil {
+		t.Fatal("esperava icon_media persistida")
 	}
-	if stored.IconFormat != "PNG" {
-		t.Errorf("esperava icon_format %q persistido, obtive %q", "PNG", stored.IconFormat)
+	summary, err := services.GetServer(testCtx(), server.ID)
+	if err != nil {
+		t.Fatalf("GetServer retornou erro: %v", err)
+	}
+	if !bytes.Equal(summary.IconBlob, pngAvatarBytes(100, 100)) {
+		t.Errorf("icon_blob persistido não confere: %x", summary.IconBlob)
+	}
+	if summary.IconFormat != "PNG" {
+		t.Errorf("esperava icon_format %q persistido, obtive %q", "PNG", summary.IconFormat)
 	}
 
 	// o "id" do corpo é ignorado: o outro servidor não deve ter mudado
@@ -5557,8 +5740,8 @@ func TestUpdateServerHandlerSuccess(t *testing.T) {
 	if storedOther.Name != other.Name {
 		t.Errorf("o servidor do id do corpo não deveria ter mudado: esperado %q, obtive %q", other.Name, storedOther.Name)
 	}
-	if len(storedOther.IconBlob) != 0 {
-		t.Errorf("o servidor do id do corpo não deveria ter ícone, obtive %x", storedOther.IconBlob)
+	if storedOther.IconMedia != nil {
+		t.Error("o servidor do id do corpo não deveria ter ícone")
 	}
 }
 
@@ -5766,8 +5949,15 @@ func TestCreateServerHandlerSuccess(t *testing.T) {
 	if stored.OwnerID == nil || *stored.OwnerID != owner.ID {
 		t.Errorf("esperava owner_id %s persistido, obtive %v", owner.ID, stored.OwnerID)
 	}
-	if !bytes.Equal(stored.IconBlob, pngAvatarBytes(100, 100)) {
-		t.Errorf("icon_blob persistido não confere: %x", stored.IconBlob)
+	if stored.IconMedia == nil {
+		t.Fatal("esperava icon_media persistida")
+	}
+	summary, err := services.GetServer(testCtx(), resp.ID)
+	if err != nil {
+		t.Fatalf("GetServer retornou erro: %v", err)
+	}
+	if !bytes.Equal(summary.IconBlob, pngAvatarBytes(100, 100)) {
+		t.Errorf("icon_blob persistido não confere: %x", summary.IconBlob)
 	}
 }
 
@@ -7999,7 +8189,7 @@ func createNonPublicServerTest(t *testing.T, password string) {
 	if err != nil {
 		t.Fatalf("falha ao gerar hash da senha do servidor: %v", err)
 	}
-	if _, err := storage.CreateServerWithIcon(testCtx(), "srv_"+randHex(4), nil, "", false, nil, &hash); err != nil {
+	if _, err := storage.CreateServerWithIcon(testCtx(), "srv_"+randHex(4), nil, false, nil, &hash); err != nil {
 		t.Fatalf("falha ao criar servidor não público: %v", err)
 	}
 }
@@ -8007,7 +8197,7 @@ func createNonPublicServerTest(t *testing.T, password string) {
 // createPublicServerTest cria o servidor do backend como público.
 func createPublicServerTest(t *testing.T) {
 	t.Helper()
-	if _, err := storage.CreateServerWithIcon(testCtx(), "srv_"+randHex(4), nil, "", true, nil, nil); err != nil {
+	if _, err := storage.CreateServerWithIcon(testCtx(), "srv_"+randHex(4), nil, true, nil, nil); err != nil {
 		t.Fatalf("falha ao criar servidor público: %v", err)
 	}
 }
@@ -9070,12 +9260,12 @@ func TestListEmojisHandlerEmpty(t *testing.T) {
 func TestListEmojisHandlerSuccess(t *testing.T) {
 	owner := newTestMessageUser(t)
 	server, _ := createServerAndChannelTest(t, owner.ID)
-	e1, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID)
+	e1, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	e2, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{2}, &owner.ID)
+	e2, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{2}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -9116,7 +9306,7 @@ func TestListEmojisHandlerPagination(t *testing.T) {
 	owner := newTestMessageUser(t)
 	server, _ := createServerAndChannelTest(t, owner.ID)
 	for i := 0; i < 26; i++ {
-		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID); err != nil {
+		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID); err != nil {
 			t.Fatalf("falha ao criar emoji %d: %v", i, err)
 		}
 	}
@@ -9145,12 +9335,12 @@ func TestListEmojisHandlerPagination(t *testing.T) {
 func TestListEmojisHandlerSince(t *testing.T) {
 	owner := newTestMessageUser(t)
 	server, _ := createServerAndChannelTest(t, owner.ID)
-	first, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID)
+	first, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	second, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{2}, &owner.ID)
+	second, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{2}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -9315,7 +9505,7 @@ func TestCreateEmojiHandlerLimitReached(t *testing.T) {
 	owner := newTestMessageUser(t)
 	server, _ := createServerAndChannelTest(t, owner.ID)
 	for i := 0; i < 500; i++ {
-		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID); err != nil {
+		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID); err != nil {
 			t.Fatalf("falha ao criar emoji %d: %v", i, err)
 		}
 	}
@@ -9358,7 +9548,7 @@ func TestCreateEmojiHandlerMissingUserID(t *testing.T) {
 func TestDeleteEmojiHandlerSuccess(t *testing.T) {
 	owner := newTestMessageUser(t)
 	server, _ := createServerAndChannelTest(t, owner.ID)
-	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID)
+	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -9399,7 +9589,7 @@ func TestDeleteEmojiHandlerForbidden(t *testing.T) {
 	owner := newTestMessageUser(t)
 	stranger := newTestMessageUser(t)
 	server, _ := createServerAndChannelTest(t, owner.ID)
-	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &owner.ID)
+	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}

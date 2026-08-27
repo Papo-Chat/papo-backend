@@ -42,6 +42,9 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	e.PUT("/users/:user_id", func(c echo.Context) error {
 		return UpdateUserHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
+	e.PUT("/users/:user_id/status", func(c echo.Context) error {
+		return UpdateStatusHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
 	e.PUT("/users/:user_id/avatar", func(c echo.Context) error {
 		return UpdateAvatarHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)

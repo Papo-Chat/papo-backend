@@ -25,6 +25,7 @@ const (
 	EventTypeError          EventType = "error"
 	EventTypeNewPreview     EventType = "new_preview"
 	EventTypeRemovePreview  EventType = "remove_preview"
+	EventTypeUserJoin       EventType = "user_join"
 )
 
 // IsInbound indica se o tipo de evento é aceito no sentido cliente ->
@@ -141,12 +142,20 @@ type AvatarUpdateOutbound struct {
 }
 
 // PresenceUpdateOutbound é o evento de presença/status distribuído aos clientes.
+// Status: online/offline (efêmero) ou away/busy (persistido pelo usuário).
 type PresenceUpdateOutbound struct {
 	Type          EventType `json:"type"`
 	UserID        string    `json:"user_id"`
-	Status        string    `json:"status"`                   //online/offline
+	Status        string    `json:"status"`                   //online/offline/away/busy
 	StatusMessage *string   `json:"status_message,omitempty"` //mensagem pessoal
 	Nickname      *string   `json:"nickname,omitempty"`       //apelido do usuário
+}
+
+// UserJoinOutbound é o evento de novo usuário distribuído aos clientes
+// conectados após o registro (POST /auth/register).
+type UserJoinOutbound struct {
+	Type   EventType `json:"type"`
+	UserID string    `json:"user_id"`
 }
 
 // PresenceSyncOutbound é a lista de membros online enviada ao cliente no

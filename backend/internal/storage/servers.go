@@ -10,11 +10,11 @@ import (
 // serverColumns inclui password_hash e é usado somente por
 // GetServerWithPasswordHash, que é a única função autorizada a retornar o
 // hash do banco.
-const serverColumns = "id, owner_id, name, icon_blob, public_server, password_hash, icon_format, created_at"
+const serverColumns = "id, owner_id, name, icon_media, public_server, password_hash, created_at"
 
 // serverPublicColumns é a visão de servidor sem password_hash, usada por
 // todas as demais funções.
-const serverPublicColumns = "id, owner_id, name, icon_blob, public_server, icon_format, created_at"
+const serverPublicColumns = "id, owner_id, name, icon_media, public_server, created_at"
 
 func scanServer(row rowScanner) (models.Server, error) {
 	var server models.Server
@@ -22,10 +22,9 @@ func scanServer(row rowScanner) (models.Server, error) {
 		&server.ID,
 		&server.OwnerID,
 		&server.Name,
-		&server.IconBlob,
+		&server.IconMedia,
 		&server.PublicServer,
 		&server.PasswordHash,
-		&server.IconFormat,
 		&server.CreatedAt,
 	)
 	if err != nil {
@@ -41,9 +40,8 @@ func scanServerPublic(row rowScanner) (models.Server, error) {
 		&server.ID,
 		&server.OwnerID,
 		&server.Name,
-		&server.IconBlob,
+		&server.IconMedia,
 		&server.PublicServer,
-		&server.IconFormat,
 		&server.CreatedAt,
 	)
 	if err != nil {
@@ -56,17 +54,18 @@ func scanServerPublic(row rowScanner) (models.Server, error) {
 // CreateServer cria um novo servidor público sem ícone e retorna o registro
 // criado.
 func CreateServer(ctx context.Context, name string, ownerID *string) (models.Server, error) {
-	return CreateServerWithIcon(ctx, name, nil, "", true, ownerID, nil)
+	return CreateServerWithIcon(ctx, name, nil, true, ownerID, nil)
 }
 
 // CreateServerWithIcon cria um novo servidor com ícone opcional e retorna o
-// registro criado, sem o password_hash. passwordHash é o hash bcrypt da
+// registro criado, sem o password_hash. iconMedia é a referência do blob do
+// ícone na tabela media (nil sem ícone); passwordHash é o hash bcrypt da
 // senha (nil para servidor público).
-func CreateServerWithIcon(ctx context.Context, name string, iconBlob []byte, iconFormat string, public bool, ownerID *string, passwordHash *string) (models.Server, error) {
+func CreateServerWithIcon(ctx context.Context, name string, iconMedia *string, public bool, ownerID *string, passwordHash *string) (models.Server, error) {
 
 	row := GetDB().QueryRowContext(ctx,
-		"INSERT INTO servers (name, owner_id, icon_blob, public_server, password_hash, icon_format) VALUES ($1, $2, $3, $4, $5, $6) RETURNING "+serverPublicColumns,
-		name, ownerID, iconBlob, public, passwordHash, iconFormat,
+		"INSERT INTO servers (name, owner_id, icon_media, public_server, password_hash) VALUES ($1, $2, $3, $4, $5) RETURNING "+serverPublicColumns,
+		name, ownerID, iconMedia, public, passwordHash,
 	)
 
 	server, err := scanServerPublic(row)
@@ -154,8 +153,8 @@ func ListServers(ctx context.Context) ([]models.Server, error) {
 // servidor, username do dono (LEFT JOIN, pode ser NULL) e contagens de
 // canais, membros (por enquanto todos os usuários pertencem ao mesmo
 // servidor, então é o total da tabela users) e roles.
-const serverSummaryColumns = `s.id, s.owner_id, u.username AS owner_username, s.name, s.icon_blob,
-	s.public_server, s.icon_format, s.created_at,
+const serverSummaryColumns = `s.id, s.owner_id, u.username AS owner_username, s.name, s.icon_media,
+	s.public_server, s.created_at,
 	(SELECT COUNT(*) FROM channels ch WHERE ch.server_id = s.id) AS channel_count,
 	(SELECT COUNT(*) FROM users) AS member_count,
 	(SELECT COUNT(*) FROM roles r WHERE r.server_id = s.id) AS role_count`
@@ -167,9 +166,8 @@ func scanServerSummary(row rowScanner) (models.ServerSummary, error) {
 		&summary.OwnerID,
 		&summary.OwnerUsername,
 		&summary.Name,
-		&summary.IconBlob,
+		&summary.IconMedia,
 		&summary.Public,
-		&summary.IconFormat,
 		&summary.CreatedAt,
 		&summary.ChannelCount,
 		&summary.MemberCount,
@@ -240,15 +238,16 @@ func CountServers(ctx context.Context) (int, error) {
 }
 
 // UpdateServer atualiza o nome, o ícone, a visibilidade e a senha do servidor
-// e retorna o registro atualizado, sem o password_hash. passwordHash é o hash
-// bcrypt da nova senha (nil para servidor público).
+// e retorna o registro atualizado, sem o password_hash. server.IconMedia é a
+// referência do blob do ícone na tabela media (nil remove o ícone);
+// passwordHash é o hash bcrypt da nova senha (nil para servidor público).
 func UpdateServer(ctx context.Context, id string, server models.Server, passwordHash *string) (models.Server, error) {
 	row := GetDB().QueryRowContext(ctx,
 		`UPDATE servers
-		 SET name = $2, icon_blob = $3, public_server = $4, password_hash = $5, icon_format = $6
+		 SET name = $2, icon_media = $3, public_server = $4, password_hash = $5
 		 WHERE id = $1
 		 RETURNING `+serverPublicColumns,
-		id, server.Name, server.IconBlob, server.PublicServer, passwordHash, server.IconFormat,
+		id, server.Name, server.IconMedia, server.PublicServer, passwordHash,
 	)
 
 	updated, err := scanServerPublic(row)

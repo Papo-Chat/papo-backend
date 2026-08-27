@@ -24,12 +24,25 @@ const maxIconBytes = 2 << 20
 const maxServerNameLength = 32
 
 // ListServers lista todos os servidores com o username do dono e as
-// contagens de canais, membros e roles.
+// contagens de canais, membros e roles. O blob do ícone e o formato são
+// resolvidos da tabela media e do disco.
 func ListServers(ctx context.Context) ([]models.ServerSummary, error) {
-	return storage.ListServerSummaries(ctx)
+	summaries, err := storage.ListServerSummaries(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range summaries {
+		if err := resolveServerSummaryIcon(ctx, &summaries[i]); err != nil {
+			return nil, err
+		}
+	}
+
+	return summaries, nil
 }
 
-// GetServer retorna o detalhe do servidor pelo id.
+// GetServer retorna o detalhe do servidor pelo id, com o blob do ícone e o
+// formato resolvidos da tabela media e do disco.
 // Retorna ErrServerNotFound quando o servidor não existe.
 func GetServer(ctx context.Context, id string) (models.ServerSummary, error) {
 	if id == "" {
@@ -44,7 +57,32 @@ func GetServer(ctx context.Context, id string) (models.ServerSummary, error) {
 		return models.ServerSummary{}, err
 	}
 
+	if err := resolveServerSummaryIcon(ctx, &summary); err != nil {
+		return models.ServerSummary{}, err
+	}
+
 	return summary, nil
+}
+
+// resolveServerSummaryIcon preenche IconBlob e IconFormat a partir da
+// referência media do servidor (sem efeito quando não há ícone).
+func resolveServerSummaryIcon(ctx context.Context, summary *models.ServerSummary) error {
+	if summary.IconMedia == nil {
+		return nil
+	}
+
+	media, err := storage.GetMediaByHash(ctx, *summary.IconMedia)
+	if err != nil {
+		return err
+	}
+	blob, err := MediaContent(*summary.IconMedia)
+	if err != nil {
+		return err
+	}
+
+	summary.IconBlob = blob
+	summary.IconFormat = mimeToFormat(media.MimeType)
+	return nil
 }
 
 // CreateServer cria um novo servidor público sem ícone. O usuário que cria o
@@ -77,15 +115,14 @@ func CreateServerWithIcon(ctx context.Context, name, icon, iconFormat string, pu
 		return models.Server{}, ErrServerAlreadyCreated
 	}
 
-	var iconBlob []byte
-	format := ""
+	var iconMedia *string
 	if icon != "" || iconFormat != "" {
 		decoded, err := base64.StdEncoding.DecodeString(icon)
 		if err != nil {
 			return models.Server{}, ErrInvalidInput
 		}
 
-		format = strings.ToUpper(iconFormat)
+		format := strings.ToUpper(iconFormat)
 		if !avatarContentMatchesFormat(decoded, format) {
 			return models.Server{}, ErrInvalidInput
 		}
@@ -98,7 +135,11 @@ func CreateServerWithIcon(ctx context.Context, name, icon, iconFormat string, pu
 			return models.Server{}, ErrInvalidInput
 		}
 
-		iconBlob = decoded
+		sha, _, err := StoreMediaFromBytes(ctx, decoded, formatToMime(format))
+		if err != nil {
+			return models.Server{}, fmt.Errorf("falha ao gravar o ícone do servidor: %w", err)
+		}
+		iconMedia = &sha
 	}
 
 	if password != nil {
@@ -106,10 +147,10 @@ func CreateServerWithIcon(ctx context.Context, name, icon, iconFormat string, pu
 		if err != nil {
 			return models.Server{}, err
 		}
-		return storage.CreateServerWithIcon(ctx, name, iconBlob, format, public, ownerID, passwordHash)
+		return storage.CreateServerWithIcon(ctx, name, iconMedia, public, ownerID, passwordHash)
 	}
 
-	return storage.CreateServerWithIcon(ctx, name, iconBlob, format, public, ownerID, nil)
+	return storage.CreateServerWithIcon(ctx, name, iconMedia, public, ownerID, nil)
 
 }
 
@@ -156,15 +197,14 @@ func UpdateServer(ctx context.Context, id, name, icon, iconFormat string, public
 		return err
 	}
 
-	var iconBlob []byte
-	format := ""
+	var iconMedia *string
 	if icon != "" || iconFormat != "" {
 		decoded, err := base64.StdEncoding.DecodeString(icon)
 		if err != nil {
 			return ErrInvalidInput
 		}
 
-		format = strings.ToUpper(iconFormat)
+		format := strings.ToUpper(iconFormat)
 		if !avatarContentMatchesFormat(decoded, format) {
 			return ErrInvalidInput
 		}
@@ -177,7 +217,11 @@ func UpdateServer(ctx context.Context, id, name, icon, iconFormat string, public
 			return ErrInvalidInput
 		}
 
-		iconBlob = decoded
+		sha, _, err := StoreMediaFromBytes(ctx, decoded, formatToMime(format))
+		if err != nil {
+			return fmt.Errorf("falha ao gravar o ícone do servidor: %w", err)
+		}
+		iconMedia = &sha
 	}
 
 	isPublic := current.PublicServer
@@ -194,9 +238,8 @@ func UpdateServer(ctx context.Context, id, name, icon, iconFormat string, public
 		}
 		if _, err := storage.UpdateServer(ctx, id, models.Server{
 			Name:         name,
-			IconBlob:     iconBlob,
+			IconMedia:    iconMedia,
 			PublicServer: isPublic,
-			IconFormat:   format,
 		}, passwordHash); err != nil {
 			return fmt.Errorf("falha ao atualizar o servidor: %w", err)
 		}
@@ -204,9 +247,8 @@ func UpdateServer(ctx context.Context, id, name, icon, iconFormat string, public
 	} else {
 		if _, err := storage.UpdateServer(ctx, id, models.Server{
 			Name:         name,
-			IconBlob:     iconBlob,
+			IconMedia:    iconMedia,
 			PublicServer: true,
-			IconFormat:   format,
 		}, nil); err != nil {
 			return fmt.Errorf("falha ao atualizar o servidor: %w", err)
 		}

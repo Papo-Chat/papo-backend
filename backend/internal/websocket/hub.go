@@ -218,12 +218,12 @@ func (h *Hub) broadcastExcept(event any, exclude *Client) {
 // online), exceto o próprio cliente em conexão, que já recebe o estado
 // completo no presence_sync.
 func (h *Hub) presenceOnline(c *Client) {
-	becameOnline := h.presence.AddConnection(c.userID, c.statusMessage, c.nickname)
+	becameOnline := h.presence.AddConnection(c.userID, c.statusMessage, c.nickname, c.persistedStatus)
 	if becameOnline {
 		h.broadcastExcept(PresenceUpdateOutbound{
 			Type:          EventTypePresenceUpdate,
 			UserID:        c.userID,
-			Status:        StatusOnline,
+			Status:        h.presence.EffectiveStatus(c.userID),
 			StatusMessage: h.presence.StatusMessage(c.userID),
 			Nickname:      h.presence.Nickname(c.userID),
 		}, c)
@@ -263,7 +263,26 @@ func (h *Hub) UpdateStatusMessage(userID string, statusMessage, nickname *string
 	h.Broadcast(PresenceUpdateOutbound{
 		Type:          EventTypePresenceUpdate,
 		UserID:        userID,
-		Status:        StatusOnline,
+		Status:        h.presence.EffectiveStatus(userID),
+		StatusMessage: h.presence.StatusMessage(userID),
+		Nickname:      h.presence.Nickname(userID),
+	})
+	return true
+}
+
+// UpdatePersistedStatus atualiza o status persistido (away/busy; nil remove)
+// de um usuário online e notifica os clientes (presence_update com o status
+// efetivo). Retorna false quando o usuário está offline (o valor persistido
+// já foi gravado no banco e vale na próxima conexão).
+func (h *Hub) UpdatePersistedStatus(userID string, status *string) bool {
+	if !h.presence.SetPersistedStatus(userID, status) {
+		return false
+	}
+
+	h.Broadcast(PresenceUpdateOutbound{
+		Type:          EventTypePresenceUpdate,
+		UserID:        userID,
+		Status:        h.presence.EffectiveStatus(userID),
 		StatusMessage: h.presence.StatusMessage(userID),
 		Nickname:      h.presence.Nickname(userID),
 	})

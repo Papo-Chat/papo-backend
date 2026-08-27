@@ -12,6 +12,7 @@ import (
 	"papo/internal/models"
 	"papo/internal/services"
 	"papo/internal/utils"
+	"papo/internal/websocket"
 
 	"github.com/labstack/echo/v4"
 )
@@ -83,6 +84,12 @@ func RegisterHandler(baseURL string, c echo.Context) error {
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
 			"internal", "Erro interno", "falha ao registrar usuário")
 	}
+
+	// Notifica os clientes conectados do novo usuário (user_join).
+	websocket.GetHub().Broadcast(websocket.UserJoinOutbound{
+		Type:   websocket.EventTypeUserJoin,
+		UserID: user.ID,
+	})
 
 	return c.JSON(http.StatusCreated, registerResponse{
 		ID:        user.ID,
@@ -308,6 +315,7 @@ type whoamiResponse struct {
 	Nickname        *string        `json:"nickname"`
 	AvatarBlob      []byte         `json:"avatar_blob"`
 	AvatarFormat    string         `json:"avatar_format"`
+	Status          *string        `json:"status"`
 	StatusMessage   *string        `json:"status_message"`
 	StatusUpdatedAt *time.Time     `json:"status_updated_at"`
 	CreatedAt       time.Time      `json:"created_at"`
@@ -342,6 +350,7 @@ func WhoamiHandler(baseURL string, c echo.Context) error {
 		Nickname:        user.Nickname,
 		AvatarBlob:      user.AvatarBlob,
 		AvatarFormat:    user.AvatarFormat,
+		Status:          user.Status,
 		StatusMessage:   user.StatusMessage,
 		StatusUpdatedAt: user.StatusUpdatedAt,
 		CreatedAt:       user.CreatedAt,

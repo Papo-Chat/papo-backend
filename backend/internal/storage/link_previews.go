@@ -7,7 +7,14 @@ import (
 	"papo/internal/models"
 )
 
-const linkPreviewColumns = "id, url, kind, title, description, provider_name, embed_url, image_file_path, image_mime_type, image_size_bytes, fetched_at"
+// linkPreviewColumns inclui image_mime_type e image_size_bytes da tabela
+// media (join): o preview só guarda a referência content-addressable da
+// thumbnail.
+const linkPreviewColumns = "lp.id, lp.url, lp.kind, lp.title, lp.description, lp.provider_name, lp.embed_url, lp.image_media, m.mime_type AS image_mime_type, m.size_bytes AS image_size_bytes, lp.fetched_at"
+
+// linkPreviewMediaJoin faz o join com a tabela media (LEFT: preview sem
+// imagem é válido).
+const linkPreviewMediaJoin = "LEFT JOIN media m ON m.sha_hash = lp.image_media"
 
 func scanLinkPreview(row rowScanner) (models.LinkPreview, error) {
 	var preview models.LinkPreview
@@ -19,7 +26,7 @@ func scanLinkPreview(row rowScanner) (models.LinkPreview, error) {
 		&preview.Description,
 		&preview.ProviderName,
 		&preview.EmbedURL,
-		&preview.ImageFilePath,
+		&preview.ImageMedia,
 		&preview.ImageMimeType,
 		&preview.ImageSizeBytes,
 		&preview.FetchedAt,
@@ -35,7 +42,7 @@ func scanLinkPreview(row rowScanner) (models.LinkPreview, error) {
 // ErrNotFound quando não existe.
 func GetPreviewByURL(ctx context.Context, url string) (models.LinkPreview, error) {
 	row := GetDB().QueryRowContext(ctx,
-		"SELECT "+linkPreviewColumns+" FROM link_previews WHERE url = $1",
+		"SELECT "+linkPreviewColumns+" FROM link_previews lp "+linkPreviewMediaJoin+" WHERE lp.url = $1",
 		url,
 	)
 
@@ -51,22 +58,28 @@ func GetPreviewByURL(ctx context.Context, url string) (models.LinkPreview, error
 // mesma URL normalizada (cache expirado → refetch). O fetched_at é
 // atualizado para NOW(). Retorna o registro gravado.
 func UpsertPreview(ctx context.Context, p models.LinkPreview) (models.LinkPreview, error) {
+	// O SELECT lê o resultado do RETURNING (não a tabela link_previews): a
+	// query principal e o CTE de dados compartilham o mesmo snapshot, então
+	// a linha inserida/atualizada ainda não seria visível na tabela.
 	row := GetDB().QueryRowContext(ctx,
-		`INSERT INTO link_previews (url, kind, title, description, provider_name, embed_url, image_file_path, image_mime_type, image_size_bytes)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`WITH upserted AS (
+		 INSERT INTO link_previews (url, kind, title, description, provider_name, embed_url, image_media)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (url) DO UPDATE SET
 		    kind = EXCLUDED.kind,
 		    title = EXCLUDED.title,
 		    description = EXCLUDED.description,
 		    provider_name = EXCLUDED.provider_name,
 		    embed_url = EXCLUDED.embed_url,
-		    image_file_path = EXCLUDED.image_file_path,
-		    image_mime_type = EXCLUDED.image_mime_type,
-		    image_size_bytes = EXCLUDED.image_size_bytes,
+		    image_media = EXCLUDED.image_media,
 		    fetched_at = NOW()
-		 RETURNING `+linkPreviewColumns,
+		 RETURNING id, url, kind, title, description, provider_name, embed_url, image_media, fetched_at
+		 )
+		 SELECT u.id, u.url, u.kind, u.title, u.description, u.provider_name, u.embed_url, u.image_media,
+		        m.mime_type AS image_mime_type, m.size_bytes AS image_size_bytes, u.fetched_at
+		 FROM upserted u LEFT JOIN media m ON m.sha_hash = u.image_media`,
 		p.URL, p.Kind, p.Title, p.Description, p.ProviderName, p.EmbedURL,
-		p.ImageFilePath, p.ImageMimeType, p.ImageSizeBytes,
+		p.ImageMedia,
 	)
 
 	preview, err := scanLinkPreview(row)
@@ -81,7 +94,7 @@ func UpsertPreview(ctx context.Context, p models.LinkPreview) (models.LinkPrevie
 // existe.
 func GetPreviewByID(ctx context.Context, id string) (models.LinkPreview, error) {
 	row := GetDB().QueryRowContext(ctx,
-		"SELECT "+linkPreviewColumns+" FROM link_previews WHERE id = $1",
+		"SELECT "+linkPreviewColumns+" FROM link_previews lp "+linkPreviewMediaJoin+" WHERE lp.id = $1",
 		id,
 	)
 
@@ -179,6 +192,7 @@ func ListPreviewsByMessageIDs(ctx context.Context, messageIDs []string) (map[str
 		`SELECT mp.message_id, `+linkPreviewColumns+`
 		 FROM message_previews mp
 		 JOIN link_previews lp ON lp.id = mp.preview_id
+		 `+linkPreviewMediaJoin+`
 		 WHERE mp.message_id = ANY($1)
 		 ORDER BY mp.message_id, lp.fetched_at, lp.id`,
 		messageIDs,
@@ -202,7 +216,7 @@ func ListPreviewsByMessageIDs(ctx context.Context, messageIDs []string) (map[str
 			&preview.Description,
 			&preview.ProviderName,
 			&preview.EmbedURL,
-			&preview.ImageFilePath,
+			&preview.ImageMedia,
 			&preview.ImageMimeType,
 			&preview.ImageSizeBytes,
 			&preview.FetchedAt,

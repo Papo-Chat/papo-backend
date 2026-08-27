@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -239,6 +240,27 @@ func newTestUser(t *testing.T) models.User {
 	return user
 }
 
+// newTestMedia insere um registro de mídia (tabela media) com o conteúdo
+// informado e retorna o sha256 (hex) — referência usada por avatar, ícone,
+// emoji, attachment, thumbnail e link preview.
+func newTestMedia(t *testing.T, content []byte) string {
+	t.Helper()
+	return newTestMediaWithMime(t, content, "image/png")
+}
+
+// newTestMediaWithMime é o mesmo de newTestMedia, com o MIME type informado
+// (o mime_type da tabela media é o que os joins de attachment/thumbnail
+// expõem como mime_type).
+func newTestMediaWithMime(t *testing.T, content []byte, mimeType string) string {
+	t.Helper()
+	sum := sha256.Sum256(content)
+	hash := hex.EncodeToString(sum[:])
+	if _, _, err := InsertMediaIfAbsent(testCtx(), hash, mimeType, int64(len(content))); err != nil {
+		t.Fatalf("falha ao inserir mídia de apoio: %v", err)
+	}
+	return hash
+}
+
 func newTestServer(t *testing.T, ownerID *string) models.Server {
 	t.Helper()
 	server, err := CreateServer(testCtx(), "server_"+randHex(8), ownerID)
@@ -442,9 +464,9 @@ func TestUpdateUser(t *testing.T) {
 
 func TestUpdateUserAvatar(t *testing.T) {
 	user := newTestUser(t)
-	avatar := []byte{0x89, 0x50, 0x4e, 0x47}
+	hash := newTestMedia(t, []byte{0x89, 0x50, 0x4e, 0x47})
 
-	if err := UpdateUserAvatar(testCtx(), avatar, "PNG", user.ID); err != nil {
+	if err := UpdateUserAvatar(testCtx(), &hash, user.ID); err != nil {
 		t.Fatalf("UpdateUserAvatar retornou erro: %v", err)
 	}
 
@@ -452,32 +474,144 @@ func TestUpdateUserAvatar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUserByID retornou erro: %v", err)
 	}
-	if string(got.AvatarBlob) != string(avatar) {
-		t.Errorf("esperava avatar_blob %v, obtive %v", avatar, got.AvatarBlob)
-	}
-	if got.AvatarFormat != "PNG" {
-		t.Errorf("esperava avatar_format %q, obtive %q", "PNG", got.AvatarFormat)
+	if got.AvatarMedia == nil || *got.AvatarMedia != hash {
+		t.Errorf("esperava avatar_media %s, obtive %v", hash, got.AvatarMedia)
 	}
 	if got.Username != user.Username {
 		t.Errorf("username deveria permanecer %q, obtive %q", user.Username, got.Username)
 	}
 
-	if err := UpdateUserAvatar(testCtx(), nil, "", user.ID); err != nil {
+	if err := UpdateUserAvatar(testCtx(), nil, user.ID); err != nil {
 		t.Fatalf("UpdateUserAvatar(remove) retornou erro: %v", err)
 	}
 	got, err = GetUserByID(testCtx(), user.ID)
 	if err != nil {
 		t.Fatalf("GetUserByID retornou erro: %v", err)
 	}
-	if len(got.AvatarBlob) != 0 {
-		t.Errorf("esperava avatar_blob vazio, obtive %v", got.AvatarBlob)
-	}
-	if got.AvatarFormat != "" {
-		t.Errorf("esperava avatar_format vazio, obtive %q", got.AvatarFormat)
+	if got.AvatarMedia != nil {
+		t.Errorf("esperava avatar_media nil, obtive %v", got.AvatarMedia)
 	}
 
-	if err := UpdateUserAvatar(testCtx(), avatar, "PNG", randUUID()); !errors.Is(err, ErrNotFound) {
+	if err := UpdateUserAvatar(testCtx(), &hash, randUUID()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("esperava ErrNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+func TestUpdateUserStatus(t *testing.T) {
+	user := newTestUser(t)
+
+	if user.Status != nil {
+		t.Fatalf("usuário novo deveria nascer sem status persistido, obtive %v", user.Status)
+	}
+
+	away := "away"
+	if err := UpdateUserStatus(testCtx(), user.ID, &away); err != nil {
+		t.Fatalf("UpdateUserStatus(away) retornou erro: %v", err)
+	}
+	got, err := GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if got.Status == nil || *got.Status != "away" {
+		t.Errorf("esperava status %q, obtive %v", "away", got.Status)
+	}
+	// status_message não é alterada por UpdateUserStatus
+	if got.StatusMessage != nil {
+		t.Errorf("status_message deveria permanecer nil, obtive %v", got.StatusMessage)
+	}
+
+	busy := "busy"
+	if err := UpdateUserStatus(testCtx(), user.ID, &busy); err != nil {
+		t.Fatalf("UpdateUserStatus(busy) retornou erro: %v", err)
+	}
+	got, err = GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if got.Status == nil || *got.Status != "busy" {
+		t.Errorf("esperava status %q, obtive %v", "busy", got.Status)
+	}
+
+	if err := UpdateUserStatus(testCtx(), user.ID, nil); err != nil {
+		t.Fatalf("UpdateUserStatus(nil) retornou erro: %v", err)
+	}
+	got, err = GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if got.Status != nil {
+		t.Errorf("esperava status nil após remoção, obtive %v", got.Status)
+	}
+
+	if err := UpdateUserStatus(testCtx(), randUUID(), &away); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- media ---
+
+func TestInsertMediaIfAbsent(t *testing.T) {
+	content := []byte("conteúdo de mídia de teste")
+	sum := sha256.Sum256(content)
+	hash := hex.EncodeToString(sum[:])
+
+	media, created, err := InsertMediaIfAbsent(testCtx(), hash, "image/png", int64(len(content)))
+	if err != nil {
+		t.Fatalf("InsertMediaIfAbsent retornou erro: %v", err)
+	}
+	if !created {
+		t.Error("a primeira inserção deveria retornar created=true")
+	}
+	if media.ShaHash != hash {
+		t.Errorf("esperava sha_hash %s, obtive %s", hash, media.ShaHash)
+	}
+	if media.MimeType != "image/png" {
+		t.Errorf("esperava mime_type %q, obtive %q", "image/png", media.MimeType)
+	}
+	if media.SizeBytes != int64(len(content)) {
+		t.Errorf("esperava size_bytes %d, obtive %d", len(content), media.SizeBytes)
+	}
+	if media.CreatedAt.IsZero() {
+		t.Error("esperava created_at preenchido")
+	}
+
+	// mesmo hash: deduplicação, sem nova linha
+	again, created, err := InsertMediaIfAbsent(testCtx(), hash, "image/png", int64(len(content)))
+	if err != nil {
+		t.Fatalf("InsertMediaIfAbsent (repetida) retornou erro: %v", err)
+	}
+	if created {
+		t.Error("a inserção repetida deveria retornar created=false")
+	}
+	if again.CreatedAt != media.CreatedAt {
+		t.Errorf("a inserção repetida deveria retornar o registro original: got %v, want %v", again.CreatedAt, media.CreatedAt)
+	}
+
+	// conteúdo diferente: hash diferente, linha nova
+	other := []byte("outro conteúdo")
+	otherSum := sha256.Sum256(other)
+	otherHash := hex.EncodeToString(otherSum[:])
+	if otherHash == hash {
+		t.Fatal("hashes de conteúdos diferentes deveriam diferir")
+	}
+	if _, created, err := InsertMediaIfAbsent(testCtx(), otherHash, "image/gif", int64(len(other))); err != nil || !created {
+		t.Errorf("conteúdo diferente deveria criar nova linha (created=%v, err=%v)", created, err)
+	}
+}
+
+func TestGetMediaByHash(t *testing.T) {
+	hash := newTestMedia(t, []byte("mídia de busca"))
+
+	media, err := GetMediaByHash(testCtx(), hash)
+	if err != nil {
+		t.Fatalf("GetMediaByHash retornou erro: %v", err)
+	}
+	if media.ShaHash != hash || media.MimeType != "image/png" || media.SizeBytes != int64(len("mídia de busca")) {
+		t.Errorf("registro inesperado: %+v", media)
+	}
+
+	if _, err := GetMediaByHash(testCtx(), strings.Repeat("0", 64)); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para hash inexistente, obtive %v", err)
 	}
 }
 
@@ -618,9 +752,9 @@ func TestCreateServer(t *testing.T) {
 func TestCreateServerWithIcon(t *testing.T) {
 	owner := newTestUser(t)
 	name := "server_" + randHex(8)
-	icon := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	iconHash := newTestMedia(t, []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a})
 
-	server, err := CreateServerWithIcon(testCtx(), name, icon, "PNG", true, &owner.ID, nil)
+	server, err := CreateServerWithIcon(testCtx(), name, &iconHash, true, &owner.ID, nil)
 	if err != nil {
 		t.Fatalf("CreateServerWithIcon retornou erro: %v", err)
 	}
@@ -633,14 +767,20 @@ func TestCreateServerWithIcon(t *testing.T) {
 	if server.OwnerID == nil || *server.OwnerID != owner.ID {
 		t.Errorf("esperava owner_id %s, obtive %v", owner.ID, server.OwnerID)
 	}
-	if string(server.IconBlob) != string(icon) {
-		t.Errorf("esperava icon_blob %x, obtive %x", icon, server.IconBlob)
-	}
-	if server.IconFormat != "PNG" {
-		t.Errorf("esperava icon_format %q, obtive %q", "PNG", server.IconFormat)
+	if server.IconMedia == nil || *server.IconMedia != iconHash {
+		t.Errorf("esperava icon_media %s, obtive %v", iconHash, server.IconMedia)
 	}
 	if server.CreatedAt.IsZero() {
 		t.Error("esperava created_at preenchido")
+	}
+
+	// sem ícone: icon_media nil
+	noIcon, err := CreateServerWithIcon(testCtx(), "server_"+randHex(8), nil, true, &owner.ID, nil)
+	if err != nil {
+		t.Fatalf("CreateServerWithIcon sem ícone retornou erro: %v", err)
+	}
+	if noIcon.IconMedia != nil {
+		t.Errorf("esperava icon_media nil, obtive %v", noIcon.IconMedia)
 	}
 }
 
@@ -714,12 +854,11 @@ func TestUpdateServer(t *testing.T) {
 	owner := newTestUser(t)
 	server := newTestServer(t, &owner.ID)
 	newName := "server_" + randHex(8)
-	icon := []byte{0xff, 0xd8, 0xff}
+	iconHash := newTestMedia(t, []byte{0xff, 0xd8, 0xff})
 
 	updated, err := UpdateServer(testCtx(), server.ID, models.Server{
 		Name:         newName,
-		IconBlob:     icon,
-		IconFormat:   "JPEG",
+		IconMedia:    &iconHash,
 		PublicServer: true,
 	}, nil)
 	if err != nil {
@@ -731,11 +870,8 @@ func TestUpdateServer(t *testing.T) {
 	if updated.Name != newName {
 		t.Errorf("esperava name %q, obtive %q", newName, updated.Name)
 	}
-	if string(updated.IconBlob) != string(icon) {
-		t.Errorf("esperava icon_blob %v, obtive %v", icon, updated.IconBlob)
-	}
-	if updated.IconFormat != "JPEG" {
-		t.Errorf("esperava icon_format %q, obtive %q", "JPEG", updated.IconFormat)
+	if updated.IconMedia == nil || *updated.IconMedia != iconHash {
+		t.Errorf("esperava icon_media %s, obtive %v", iconHash, updated.IconMedia)
 	}
 	if updated.OwnerID == nil || *updated.OwnerID != owner.ID {
 		t.Errorf("owner_id deveria permanecer %s, obtive %v", owner.ID, updated.OwnerID)
@@ -1831,9 +1967,9 @@ func TestCreateEmoji(t *testing.T) {
 	creator := newTestUser(t)
 	server := newTestServer(t, nil)
 	name := "emoji_" + randHex(8)
-	blob := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a}
+	imageHash := newTestMedia(t, []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a})
 
-	emoji, err := CreateEmoji(testCtx(), server.ID, name, "PNG", blob, &creator.ID)
+	emoji, err := CreateEmoji(testCtx(), server.ID, name, imageHash, &creator.ID)
 	if err != nil {
 		t.Fatalf("CreateEmoji retornou erro: %v", err)
 	}
@@ -1846,11 +1982,11 @@ func TestCreateEmoji(t *testing.T) {
 	if emoji.Name != name {
 		t.Errorf("esperava name %q, obtive %q", name, emoji.Name)
 	}
-	if emoji.Format != "PNG" {
-		t.Errorf("esperava format %q, obtive %q", "PNG", emoji.Format)
+	if emoji.ImageMedia != imageHash {
+		t.Errorf("esperava image_media %s, obtive %s", imageHash, emoji.ImageMedia)
 	}
-	if string(emoji.ImageBlob) != string(blob) {
-		t.Errorf("esperava image_blob %v, obtive %v", blob, emoji.ImageBlob)
+	if emoji.MimeType != "image/png" {
+		t.Errorf("esperava mime_type %q (join media), obtive %q", "image/png", emoji.MimeType)
 	}
 	if emoji.CreatedBy == nil || *emoji.CreatedBy != creator.ID {
 		t.Errorf("esperava created_by %s, obtive %v", creator.ID, emoji.CreatedBy)
@@ -1865,10 +2001,15 @@ func TestCreateEmojiDuplicateName(t *testing.T) {
 	server := newTestServer(t, nil)
 	name := "emoji_" + randHex(8)
 
-	if _, err := CreateEmoji(testCtx(), server.ID, name, "PNG", []byte{1}, &creator.ID); err != nil {
+	firstHash := newTestMedia(t, []byte{1})
+	secondHash := newTestMedia(t, []byte{2})
+	if firstHash == secondHash {
+		t.Fatal("mídias de conteúdos diferentes deveriam ter hashes distintos")
+	}
+	if _, err := CreateEmoji(testCtx(), server.ID, name, firstHash, &creator.ID); err != nil {
 		t.Fatalf("falha ao criar primeiro emoji: %v", err)
 	}
-	if _, err := CreateEmoji(testCtx(), server.ID, name, "PNG", []byte{2}, &creator.ID); !errors.Is(err, ErrUniqueViolation) {
+	if _, err := CreateEmoji(testCtx(), server.ID, name, secondHash, &creator.ID); !errors.Is(err, ErrUniqueViolation) {
 		t.Errorf("esperava ErrUniqueViolation, obtive %v", err)
 	}
 }
@@ -1876,7 +2017,8 @@ func TestCreateEmojiDuplicateName(t *testing.T) {
 func TestGetEmojiByID(t *testing.T) {
 	creator := newTestUser(t)
 	server := newTestServer(t, nil)
-	created, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "GIF", []byte{0x47, 0x49, 0x46}, &creator.ID)
+	imageHash := newTestMedia(t, []byte{0x47, 0x49, 0x46})
+	created, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), imageHash, &creator.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji de apoio: %v", err)
 	}
@@ -1885,7 +2027,7 @@ func TestGetEmojiByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetEmojiByID retornou erro: %v", err)
 	}
-	if got.ID != created.ID || got.ServerID != created.ServerID || got.Name != created.Name || got.Format != created.Format {
+	if got.ID != created.ID || got.ServerID != created.ServerID || got.Name != created.Name || got.ImageMedia != created.ImageMedia {
 		t.Errorf("emoji retornado não confere: got %+v, want ID=%s name=%s", got, created.ID, created.Name)
 	}
 
@@ -1898,15 +2040,18 @@ func TestListEmojisByServer(t *testing.T) {
 	creator := newTestUser(t)
 	server := newTestServer(t, nil)
 	otherServer := newTestServer(t, nil)
-	e1, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &creator.ID)
+	h1 := newTestMedia(t, []byte{1})
+	h2 := newTestMedia(t, []byte{2})
+	h3 := newTestMedia(t, []byte{3})
+	e1, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), h1, &creator.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
-	e2, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{2}, &creator.ID)
+	e2, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), h2, &creator.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
-	if _, err := CreateEmoji(testCtx(), otherServer.ID, "emoji_"+randHex(8), "PNG", []byte{3}, &creator.ID); err != nil {
+	if _, err := CreateEmoji(testCtx(), otherServer.ID, "emoji_"+randHex(8), h3, &creator.ID); err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 
@@ -1932,21 +2077,25 @@ func TestListEmojis(t *testing.T) {
 	server := newTestServer(t, nil)
 	otherServer := newTestServer(t, nil)
 
-	e1, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &creator.ID)
+	h1 := newTestMedia(t, []byte{1})
+	h2 := newTestMedia(t, []byte{2})
+	h3 := newTestMedia(t, []byte{3})
+	h4 := newTestMedia(t, []byte{4})
+	e1, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), h1, &creator.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	e2, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{2}, &creator.ID)
+	e2, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), h2, &creator.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	e3, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{3}, &creator.ID)
+	e3, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), h3, &creator.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
-	other, err := CreateEmoji(testCtx(), otherServer.ID, "emoji_"+randHex(8), "PNG", []byte{4}, &creator.ID)
+	other, err := CreateEmoji(testCtx(), otherServer.ID, "emoji_"+randHex(8), h4, &creator.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -2064,12 +2213,14 @@ func TestCountEmojisByServer(t *testing.T) {
 	server := newTestServer(t, nil)
 	otherServer := newTestServer(t, nil)
 
+	h1 := newTestMedia(t, []byte{1})
+	h2 := newTestMedia(t, []byte{2})
 	for i := 0; i < 3; i++ {
-		if _, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &creator.ID); err != nil {
+		if _, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), h1, &creator.ID); err != nil {
 			t.Fatalf("falha ao criar emoji: %v", err)
 		}
 	}
-	if _, err := CreateEmoji(testCtx(), otherServer.ID, "emoji_"+randHex(8), "PNG", []byte{2}, &creator.ID); err != nil {
+	if _, err := CreateEmoji(testCtx(), otherServer.ID, "emoji_"+randHex(8), h2, &creator.ID); err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 
@@ -2101,7 +2252,8 @@ func TestCountEmojisByServer(t *testing.T) {
 func TestDeleteEmoji(t *testing.T) {
 	creator := newTestUser(t)
 	server := newTestServer(t, nil)
-	emoji, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), "PNG", []byte{1}, &creator.ID)
+	imageHash := newTestMedia(t, []byte{1})
+	emoji, err := CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), imageHash, &creator.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -2228,7 +2380,7 @@ func TestGetServerWithPasswordHashAny(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao gerar hash da senha do servidor: %v", err)
 	}
-	if _, err := CreateServerWithIcon(testCtx(), "server_"+randHex(8), nil, "", false, nil, &hash); err != nil {
+	if _, err := CreateServerWithIcon(testCtx(), "server_"+randHex(8), nil, false, nil, &hash); err != nil {
 		t.Fatalf("falha ao criar servidor não público: %v", err)
 	}
 
@@ -2245,7 +2397,7 @@ func TestGetServerWithPasswordHashAny(t *testing.T) {
 
 	// servidor público: password_hash é nil
 	removeAllServersTest(t)
-	if _, err := CreateServerWithIcon(testCtx(), "server_"+randHex(8), nil, "", true, nil, nil); err != nil {
+	if _, err := CreateServerWithIcon(testCtx(), "server_"+randHex(8), nil, true, nil, nil); err != nil {
 		t.Fatalf("falha ao criar servidor público: %v", err)
 	}
 
@@ -2320,10 +2472,7 @@ func TestCreateMessageWithAttachments(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		attachment, err := CreateAttachment(testCtx(), models.Attachments{
 			OriginalFileName: "arquivo_" + randHex(4) + ".txt",
-			MimeType:         "text/plain",
-			FilePath:         "attachments/" + randHex(8),
-			ShaHash:          randHex(32),
-			SizeBytes:        10,
+			MediaShaHash:     newTestMedia(t, []byte("1234567890")),
 			CreatedBy:        &author.ID,
 		})
 		if err != nil {
@@ -2440,10 +2589,7 @@ func TestListMessagesWithAttachmentsByChannel(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		attachment, err := CreateAttachment(testCtx(), models.Attachments{
 			OriginalFileName: "arquivo_" + randHex(4) + ".txt",
-			MimeType:         "text/plain",
-			FilePath:         "attachments/" + randHex(8),
-			ShaHash:          randHex(32),
-			SizeBytes:        10,
+			MediaShaHash:     newTestMedia(t, []byte("1234567890")),
 			CreatedBy:        &author.ID,
 		})
 		if err != nil {
@@ -2536,10 +2682,7 @@ func TestDeleteMessage(t *testing.T) {
 
 	attachment, err := CreateAttachment(testCtx(), models.Attachments{
 		OriginalFileName: "arquivo.txt",
-		MimeType:         "text/plain",
-		FilePath:         "attachments/" + randHex(8),
-		ShaHash:          randHex(32),
-		SizeBytes:        10,
+		MediaShaHash:     newTestMedia(t, []byte("1234567890")),
 		CreatedBy:        &author.ID,
 	})
 	if err != nil {
@@ -2570,13 +2713,14 @@ func TestDeleteMessage(t *testing.T) {
 
 func TestCreateAttachment(t *testing.T) {
 	author := newTestUser(t)
+	// conteúdo exclusivo: a tabela media é append-only e deduplica por hash,
+	// então reusar um conteúdo inserido por outro teste herdaria o mime dele
+	content := []byte("conteúdo exclusivo do TestCreateAttachment")
+	hash := newTestMediaWithMime(t, content, "text/plain")
 
 	attachment, err := CreateAttachment(testCtx(), models.Attachments{
 		OriginalFileName: "arquivo.txt",
-		MimeType:         "text/plain",
-		FilePath:         "attachments/" + randHex(8),
-		ShaHash:          randHex(32),
-		SizeBytes:        10,
+		MediaShaHash:     hash,
 		CreatedBy:        &author.ID,
 	})
 	if err != nil {
@@ -2588,14 +2732,15 @@ func TestCreateAttachment(t *testing.T) {
 	if attachment.OriginalFileName != "arquivo.txt" {
 		t.Errorf("esperava original_file_name %q, obtive %q", "arquivo.txt", attachment.OriginalFileName)
 	}
+	if attachment.MediaShaHash != hash {
+		t.Errorf("esperava media_sha_hash %s, obtive %s", hash, attachment.MediaShaHash)
+	}
+	// mime_type e size_bytes vêm do join com a tabela media
 	if attachment.MimeType != "text/plain" {
-		t.Errorf("esperava mime_type %q, obtive %q", "text/plain", attachment.MimeType)
+		t.Errorf("esperava mime_type %q (join media), obtive %q", "text/plain", attachment.MimeType)
 	}
-	if attachment.ShaHash == "" {
-		t.Error("esperava sha_hash preenchido")
-	}
-	if attachment.SizeBytes != 10 {
-		t.Errorf("esperava size_bytes 10, obtive %d", attachment.SizeBytes)
+	if attachment.SizeBytes != int64(len(content)) {
+		t.Errorf("esperava size_bytes %d (join media), obtive %d", len(content), attachment.SizeBytes)
 	}
 	if attachment.CreatedBy == nil || *attachment.CreatedBy != author.ID {
 		t.Errorf("esperava created_by %s, obtive %v", author.ID, attachment.CreatedBy)
@@ -2608,35 +2753,18 @@ func TestCreateAttachment(t *testing.T) {
 	}
 }
 
-func TestExistsAttachmentByHash(t *testing.T) {
+// TestCreateAttachmentForeignMedia garante que o media_sha_hash do
+// attachment referencia a tabela media (foreign key): hash inexistente é
+// rejeitado.
+func TestCreateAttachmentForeignMedia(t *testing.T) {
 	author := newTestUser(t)
-	hash := randHex(32)
-
-	exists, err := ExistsAttachmentByHash(testCtx(), hash)
-	if err != nil {
-		t.Fatalf("ExistsAttachmentByHash retornou erro: %v", err)
-	}
-	if exists {
-		t.Error("esperava false para hash inexistente")
-	}
 
 	if _, err := CreateAttachment(testCtx(), models.Attachments{
 		OriginalFileName: "arquivo.txt",
-		MimeType:         "text/plain",
-		FilePath:         "attachments/" + randHex(8),
-		ShaHash:          hash,
-		SizeBytes:        10,
+		MediaShaHash:     strings.Repeat("0", 64),
 		CreatedBy:        &author.ID,
-	}); err != nil {
-		t.Fatalf("falha ao criar attachment de apoio: %v", err)
-	}
-
-	exists, err = ExistsAttachmentByHash(testCtx(), hash)
-	if err != nil {
-		t.Fatalf("ExistsAttachmentByHash retornou erro: %v", err)
-	}
-	if !exists {
-		t.Error("esperava true para hash já existente")
+	}); err == nil {
+		t.Error("esperava violação de foreign key para media_sha_hash inexistente")
 	}
 }
 
@@ -2645,10 +2773,7 @@ func TestGetAttachmentByID(t *testing.T) {
 
 	attachment, err := CreateAttachment(testCtx(), models.Attachments{
 		OriginalFileName: "arquivo.txt",
-		MimeType:         "text/plain",
-		FilePath:         "attachments/" + randHex(8),
-		ShaHash:          randHex(32),
-		SizeBytes:        10,
+		MediaShaHash:     newTestMedia(t, []byte("1234567890")),
 		CreatedBy:        &author.ID,
 	})
 	if err != nil {
@@ -2677,10 +2802,7 @@ func TestListAttachmentsByMessage(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		attachment, err := CreateAttachment(testCtx(), models.Attachments{
 			OriginalFileName: "arquivo_" + randHex(4) + ".txt",
-			MimeType:         "text/plain",
-			FilePath:         "attachments/" + randHex(8),
-			ShaHash:          randHex(32),
-			SizeBytes:        10,
+			MediaShaHash:     newTestMedia(t, []byte("1234567890")),
 			CreatedBy:        &author.ID,
 		})
 		if err != nil {
@@ -2807,10 +2929,7 @@ func TestSearchMessages(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	attachment, err := CreateAttachment(testCtx(), models.Attachments{
 		OriginalFileName: "peixe.txt",
-		MimeType:         "text/plain",
-		FilePath:         "attachments/test/peixe.txt",
-		ShaHash:          randHex(32),
-		SizeBytes:        10,
+		MediaShaHash:     newTestMediaWithMime(t, []byte("1234567890"), "text/plain"),
 		CreatedBy:        &owner.ID,
 	})
 	if err != nil {
@@ -3190,10 +3309,7 @@ func newTestAttachment(t *testing.T) models.Attachments {
 	author := newTestUser(t)
 	attachment, err := CreateAttachment(testCtx(), models.Attachments{
 		OriginalFileName: "arquivo.txt",
-		MimeType:         "text/plain",
-		FilePath:         "attachments/" + randHex(8),
-		ShaHash:          randHex(32),
-		SizeBytes:        10,
+		MediaShaHash:     newTestMediaWithMime(t, []byte("1234567890"), "text/plain"),
 		CreatedBy:        &author.ID,
 	})
 	if err != nil {
@@ -3204,13 +3320,12 @@ func newTestAttachment(t *testing.T) models.Attachments {
 
 func TestCreateAttachmentThumbnail(t *testing.T) {
 	attachment := newTestAttachment(t)
+	thumbHash := newTestMediaWithMime(t, []byte("blob da thumbnail"), "image/webp")
 
 	err := CreateAttachmentThumbnail(testCtx(), models.AttachmentThumbnail{
 		AttachmentID: attachment.ID,
 		Kind:         "preview",
-		MimeType:     "image/webp",
-		FilePath:     "attachments/thumb.webp",
-		SizeBytes:    100,
+		MediaShaHash: thumbHash,
 		Width:        64,
 		Height:       32,
 	})
@@ -3225,23 +3340,25 @@ func TestCreateAttachmentThumbnail(t *testing.T) {
 	if thumb.AttachmentID != attachment.ID || thumb.Kind != "preview" {
 		t.Errorf("campos attachment_id/kind incorretos: %+v", thumb)
 	}
-	if thumb.MimeType != "image/webp" || thumb.FilePath != "attachments/thumb.webp" {
-		t.Errorf("campos mime/file_path incorretos: %+v", thumb)
+	if thumb.MediaShaHash != thumbHash {
+		t.Errorf("esperava media_sha_hash %s, obtive %s", thumbHash, thumb.MediaShaHash)
 	}
-	if thumb.SizeBytes != 100 || thumb.Width != 64 || thumb.Height != 32 {
-		t.Errorf("campos size/dimensao incorretos: %+v", thumb)
+	if thumb.MimeType != "image/webp" {
+		t.Errorf("esperava mime_type %q (join media), obtive %q", "image/webp", thumb.MimeType)
+	}
+	if thumb.Width != 64 || thumb.Height != 32 {
+		t.Errorf("campos dimensao incorretos: %+v", thumb)
 	}
 	if thumb.CreatedAt.IsZero() {
 		t.Error("esperava created_at preenchido")
 	}
 
 	// ON CONFLICT DO NOTHING: a primeira thumbnail permanece
+	otherHash := newTestMediaWithMime(t, []byte("outra thumbnail"), "image/png")
 	err = CreateAttachmentThumbnail(testCtx(), models.AttachmentThumbnail{
 		AttachmentID: attachment.ID,
 		Kind:         "preview",
-		MimeType:     "image/png",
-		FilePath:     "attachments/outra.png",
-		SizeBytes:    999,
+		MediaShaHash: otherHash,
 		Width:        1,
 		Height:       1,
 	})
@@ -3252,7 +3369,7 @@ func TestCreateAttachmentThumbnail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThumbnailByAttachmentID retornou erro: %v", err)
 	}
-	if thumb2.ID != thumb.ID || thumb2.FilePath != "attachments/thumb.webp" {
+	if thumb2.ID != thumb.ID || thumb2.MediaShaHash != thumbHash {
 		t.Errorf("ON CONFLICT DO NOTHING deveria manter a primeira, obtive %+v", thumb2)
 	}
 
@@ -3276,12 +3393,11 @@ func TestListThumbnailsByAttachmentIDs(t *testing.T) {
 	att3 := newTestAttachment(t) // sem thumbnail
 
 	for i, att := range []models.Attachments{att1, att2} {
+		thumbHash := newTestMediaWithMime(t, []byte("thumb"+string(rune('a'+i))), "image/webp")
 		if err := CreateAttachmentThumbnail(testCtx(), models.AttachmentThumbnail{
 			AttachmentID: att.ID,
 			Kind:         "preview",
-			MimeType:     "image/webp",
-			FilePath:     "attachments/thumb" + string(rune('a'+i)) + ".webp",
-			SizeBytes:    100,
+			MediaShaHash: thumbHash,
 			Width:        64,
 			Height:       32,
 		}); err != nil {
@@ -3318,12 +3434,11 @@ func TestAttachmentThumbnailCascadeOnMessageDelete(t *testing.T) {
 	channel := newTestChannel(t, server.ID)
 	attachment := newTestAttachment(t)
 
+	thumbHash := newTestMediaWithMime(t, []byte("blob da thumbnail"), "image/webp")
 	if err := CreateAttachmentThumbnail(testCtx(), models.AttachmentThumbnail{
 		AttachmentID: attachment.ID,
 		Kind:         "preview",
-		MimeType:     "image/webp",
-		FilePath:     "attachments/thumb.webp",
-		SizeBytes:    100,
+		MediaShaHash: thumbHash,
 		Width:        64,
 		Height:       32,
 	}); err != nil {
