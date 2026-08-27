@@ -169,13 +169,18 @@ func LoginHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao gerar token de autenticação")
 	}
 
+	sameSite := http.SameSiteStrictMode
+	if !cfg.SameSite {
+		sameSite = http.SameSiteNoneMode
+	}
+
 	c.SetCookie(&http.Cookie{
 		Name:     "Auth",
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: sameSite,
 		MaxAge:   int(utils.JWTExpiration.Seconds()),
 	})
 
@@ -245,13 +250,18 @@ func LoginServerHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao gerar a autorização temporária")
 	}
 
+	sameSite := http.SameSiteStrictMode
+	if !cfg.SameSite {
+		sameSite = http.SameSiteNoneMode
+	}
+
 	c.SetCookie(&http.Cookie{
 		Name:     "Auth",
 		Value:    tempToken,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: sameSite,
 		MaxAge:   int(utils.TempTokenExpiration.Seconds()),
 	})
 
@@ -346,13 +356,20 @@ func WhoamiHandler(baseURL string, c echo.Context) error {
 // A autenticação é stateless (JWT): o servidor não revoga o token, o logout
 // apenas remove o cookie Auth do cliente.
 func LogoutHandler(c echo.Context) error {
+	cfg := config.LoadConfig()
+
+	sameSite := http.SameSiteStrictMode
+	if !cfg.SameSite {
+		sameSite = http.SameSiteNoneMode
+	}
+
 	c.SetCookie(&http.Cookie{
 		Name:     "Auth",
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: sameSite,
 		Expires:  time.Unix(0, 0),
 	})
 

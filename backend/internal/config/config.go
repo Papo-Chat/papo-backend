@@ -22,6 +22,7 @@ type Config struct {
 	RateLimit         int
 	RateBurst         int
 	CORSOrigins       []string
+	SameSite          bool
 
 	// Thumbnails de imagens (attachment e preview)
 	ThumbnailEnabled   bool
@@ -60,10 +61,11 @@ func LoadConfig() *Config {
 	// Padrão permite o frontend local em HTTP e HTTPS (README: localhost:5173).
 	CORSOrigins := getEnvList("CORS_ORIGINS",
 		[]string{"http://localhost:5173", "https://localhost:5173"})
+	SameSite := getEnvBool("SAME_SITE", true)
 
 	ThumbnailEnabled := getEnvBool("THUMBNAIL_ENABLED", true)
-	ThumbnailMaxDim := getEnvInt("THUMBNAIL_MAX_DIM", 512)
-	GIFThumbnailMaxDim := getEnvInt("GIF_THUMBNAIL_MAX_DIM", 128)
+	ThumbnailMaxDim := getEnvInt("THUMBNAIL_MAX_DIM", 1024)
+	GIFThumbnailMaxDim := getEnvInt("GIF_THUMBNAIL_MAX_DIM", 512)
 	ThumbnailMaxPixels := getEnvInt("THUMBNAIL_MAX_PIXELS", 50000000)
 	ThumbnailTimeout := time.Duration(getEnvInt("THUMBNAIL_TIMEOUT", 5)) * time.Second
 	ThumbnailMaxConc := getEnvInt("THUMBNAIL_MAX_CONCURRENCY", 4)
@@ -92,6 +94,7 @@ func LoadConfig() *Config {
 		RateLimit:         RateLimit,
 		RateBurst:         RateBurst,
 		CORSOrigins:       CORSOrigins,
+		SameSite:          SameSite,
 
 		ThumbnailEnabled:   ThumbnailEnabled,
 		ThumbnailMaxDim:    ThumbnailMaxDim,

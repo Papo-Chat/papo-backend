@@ -16,6 +16,7 @@ import (
 // JWTMiddleware (cookie Auth) antes do handler; CheckOrigin libera qualquer
 // origem porque a autorização real é o JWT validado no handshake e o cookie
 // Auth é HttpOnly + SameSite=Strict (não é enviado em requisições cross-site).
+// Mas pode ser alterada via env.
 var wsUpgrader = ws.Upgrader{
 	CheckOrigin: func(*http.Request) bool { return true },
 }
