@@ -48,6 +48,9 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	e.PUT("/users/:user_id/avatar", func(c echo.Context) error {
 		return UpdateAvatarHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
+	e.PUT("/users/:user_id/banner", func(c echo.Context) error {
+		return UpdateBannerHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
 	e.PUT("/users/:user_id/password", func(c echo.Context) error {
 		return ChangePasswordHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
@@ -123,6 +126,13 @@ func RegisterAttachmentRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware)
 	e.GET("/attachments/:file_id/thumbnail", func(c echo.Context) error {
 		return DownloadAttachmentThumbnailHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+}
+
+// RegisterMediaRoutes registra as rotas de mídia content-addressable.
+func RegisterMediaRoutes(e *echo.Echo, cfg *config.Config) {
+	e.GET("/media/:sha_hash", func(c echo.Context) error {
+		return GetMediaHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 }
 

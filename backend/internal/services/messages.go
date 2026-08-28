@@ -102,6 +102,14 @@ func ListMessages(ctx context.Context, channelID, userID string, since *time.Tim
 		setAttachmentThumbnails(&messages[i].Attachments, thumbnails)
 	}
 
+	// Atualiza o último read do usuário no canal para a mensagem mais nova
+	// retornada (best-effort: uma falha não impede a listagem).
+	if len(messages) > 0 {
+		if err := storage.TouchLastReadMessage(ctx, userID, channelID, messages[0].Message); err != nil {
+			utils.Errorf("falha ao atualizar o último read do usuário %s no canal %s: %v", userID, channelID, err)
+		}
+	}
+
 	return models.MessageList{ChannelID: channelID, Messages: messages, HasMore: hasMore}, nil
 }
 

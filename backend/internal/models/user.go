@@ -5,7 +5,9 @@ import "time"
 // User representa a tabela users.
 // AvatarMedia referencia o blob do avatar na tabela media (nil quando não
 // há avatar); AvatarBlob e AvatarFormat são resolvidos do disco pelo service
-// para as respostas da API.
+// para as respostas da API. BannerMedia referencia o blob do banner na
+// tabela media (nil quando não há banner) e é exposto apenas como
+// referência (o arquivo é baixado via GET /media/:sha_hash).
 type User struct {
 	ID              string     `db:"id" json:"id"`
 	Username        string     `db:"username" json:"username"`
@@ -14,6 +16,8 @@ type User struct {
 	AvatarMedia     *string    `db:"avatar_media" json:"-"`
 	AvatarBlob      []byte     `json:"avatar_blob"`
 	AvatarFormat    string     `json:"avatar_format"`
+	BannerMedia     *string    `db:"banner_media" json:"-"`
+	Description     *string    `db:"description" json:"-"`
 	Banned          bool       `db:"banned" json:"banned"`
 	ResetPassword   bool       `db:"reset_password" json:"reset_password"`
 	LastIP          *string    `db:"last_ip" json:"-"`

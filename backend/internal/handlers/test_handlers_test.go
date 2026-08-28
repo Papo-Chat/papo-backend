@@ -122,6 +122,7 @@ func newApp() *echo.Echo {
 	RegisterChannelRoutes(e, cfg)
 	RegisterMessageRoutes(e, cfg)
 	RegisterAttachmentRoutes(e, cfg)
+	RegisterMediaRoutes(e, cfg)
 	RegisterLinkPreviewRoutes(e, cfg)
 	RegisterEmojiRoutes(e, cfg)
 	RegisterRoleRoutes(e, cfg)
@@ -616,7 +617,7 @@ func TestUpdateUserRouteOwn(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 
-	body, _ := json.Marshal(map[string]string{"nickname": "nick-teste", "status": "disponível"})
+	body, _ := json.Marshal(map[string]string{"nickname": "nick-teste", "status": "disponível", "description": "sobre mim"})
 	rec := do(t, e, http.MethodPut, "/users/"+userID, body, authCookie(token))
 
 	if rec.Code != http.StatusOK {
@@ -4501,16 +4502,26 @@ func TestProfileHandlerSuccessWithProfile(t *testing.T) {
 
 	nickname := "nick_" + randHex(4)
 	status := "disponível"
+	description := "sobre mim"
 	avatar := []byte{0x89, 0x50, 0x4e, 0x47}
 	updatedAt := time.Now().UTC().Truncate(time.Millisecond)
 	if _, err := storage.UpdateUser(testCtx(), user.ID, models.User{
 		Nickname:        &nickname,
 		AvatarBlob:      avatar,
 		AvatarFormat:    "PNG",
+		Description:     &description,
 		StatusMessage:   &status,
 		StatusUpdatedAt: &updatedAt,
 	}); err != nil {
 		t.Fatalf("falha ao atualizar perfil: %v", err)
+	}
+
+	bannerHash, _, err := services.StoreMediaFromBytes(testCtx(), pngAvatarBytes(1024, 256), "image/png")
+	if err != nil {
+		t.Fatalf("falha ao gravar media de apoio: %v", err)
+	}
+	if err := storage.UpdateUserBanner(testCtx(), &bannerHash, user.ID); err != nil {
+		t.Fatalf("falha ao atualizar banner: %v", err)
 	}
 
 	c := newContext(t, http.MethodGet, "/users/"+user.ID+"/profile", nil, "")
@@ -4530,6 +4541,8 @@ func TestProfileHandlerSuccessWithProfile(t *testing.T) {
 		ID              string     `json:"id"`
 		Username        string     `json:"username"`
 		Nickname        *string    `json:"nickname"`
+		BannerMedia     *string    `json:"banner_media"`
+		Description     *string    `json:"description"`
 		StatusMessage   *string    `json:"status_message"`
 		StatusUpdatedAt *time.Time `json:"status_updated_at"`
 		CreatedAt       time.Time  `json:"created_at"`
@@ -4539,6 +4552,12 @@ func TestProfileHandlerSuccessWithProfile(t *testing.T) {
 	}
 	if resp.Nickname == nil || *resp.Nickname != nickname {
 		t.Errorf("esperava nickname %q, obtive %v", nickname, resp.Nickname)
+	}
+	if resp.BannerMedia == nil || *resp.BannerMedia != bannerHash {
+		t.Errorf("esperava banner_media %q, obtive %v", bannerHash, resp.BannerMedia)
+	}
+	if resp.Description == nil || *resp.Description != description {
+		t.Errorf("esperava description %q, obtive %v", description, resp.Description)
 	}
 	if resp.StatusMessage == nil || *resp.StatusMessage != status {
 		t.Errorf("esperava status_message %q, obtive %v", status, resp.StatusMessage)
@@ -4592,7 +4611,8 @@ func TestUpdateUserHandlerSuccess(t *testing.T) {
 
 	nickname := "nick_" + randHex(4)
 	status := "disponível"
-	body, _ := json.Marshal(map[string]string{"nickname": nickname, "status": status})
+	description := "sobre mim"
+	body, _ := json.Marshal(map[string]string{"nickname": nickname, "status": status, "description": description})
 	c := newContext(t, http.MethodPut, "/users/"+user.ID, body, "")
 	c.Set(middleware.UserIDContextKey, user.ID)
 	c.SetParamNames("user_id")
@@ -4626,6 +4646,9 @@ func TestUpdateUserHandlerSuccess(t *testing.T) {
 	}
 	if stored.StatusMessage == nil || *stored.StatusMessage != status {
 		t.Errorf("esperava status_message %q, obtive %v", status, stored.StatusMessage)
+	}
+	if stored.Description == nil || *stored.Description != description {
+		t.Errorf("esperava description %q, obtive %v", description, stored.Description)
 	}
 	if stored.StatusUpdatedAt == nil {
 		t.Error("esperava status_updated_at preenchido")
@@ -4711,9 +4734,28 @@ func TestUpdateUserHandlerForbiddenOtherUser(t *testing.T) {
 	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado", "não é possível atualizar o perfil de outro usuário")
 }
 
+func TestUpdateUserHandlerMissingDescription(t *testing.T) {
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"nickname": "nick", "status": "disponível"})
+	c := newContext(t, http.MethodPut, "/users/"+user.ID, body, "")
+	c.Set(middleware.UserIDContextKey, user.ID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(user.ID)
+	rec := recorder(c)
+
+	if err := UpdateUserHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UpdateUserHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "campo 'description' é obrigatório")
+}
+
 func TestUpdateUserHandlerUserNotFound(t *testing.T) {
 	nonexistentID := randUUID()
-	body, _ := json.Marshal(map[string]string{"nickname": "nick", "status": "disponível"})
+	body, _ := json.Marshal(map[string]string{"nickname": "nick", "status": "disponível", "description": "sobre mim"})
 	c := newContext(t, http.MethodPut, "/users/"+nonexistentID, body, "")
 	c.Set(middleware.UserIDContextKey, nonexistentID)
 	c.SetParamNames("user_id")
@@ -4891,6 +4933,222 @@ func TestUpdateAvatarHandlerMissingUserID(t *testing.T) {
 
 	if err := UpdateAvatarHandler(testBaseURL, c); err != nil {
 		t.Fatalf("UpdateAvatarHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+// --- UpdateBannerHandler ---
+
+func TestUpdateBannerHandlerSuccess(t *testing.T) {
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	banner := base64.StdEncoding.EncodeToString(pngAvatarBytes(1024, 256))
+	body, _ := json.Marshal(map[string]string{"banner": banner, "banner_format": "PNG"})
+	c := newContext(t, http.MethodPut, "/users/"+user.ID+"/banner", body, "")
+	c.Set(middleware.UserIDContextKey, user.ID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(user.ID)
+	rec := recorder(c)
+
+	if err := UpdateBannerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UpdateBannerHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Response string `json:"response"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.Response != "User banner updated successfully" {
+		t.Errorf("esperava response %q, obtive %q", "User banner updated successfully", resp.Response)
+	}
+
+	// o banner deve ter sido persistido como referência de media
+	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if stored.BannerMedia == nil {
+		t.Fatal("esperava banner_media persistida")
+	}
+
+	media, err := storage.GetMediaByHash(testCtx(), *stored.BannerMedia)
+	if err != nil {
+		t.Fatalf("GetMediaByHash retornou erro: %v", err)
+	}
+	if media.MimeType != "image/png" {
+		t.Errorf("esperava mime %q, obtive %q", "image/png", media.MimeType)
+	}
+	blob, err := os.ReadFile(mediaPathFor(*stored.BannerMedia))
+	if err != nil {
+		t.Fatalf("falha ao ler o blob do banner: %v", err)
+	}
+	if !bytes.Equal(blob, pngAvatarBytes(1024, 256)) {
+		t.Errorf("blob do banner não confere:\n got  %x\n want %x", blob, pngAvatarBytes(1024, 256))
+	}
+}
+
+func TestUpdateBannerHandlerInvalidJSON(t *testing.T) {
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	c := newContext(t, http.MethodPut, "/users/"+user.ID+"/banner", []byte("{invalido"), "")
+	c.Set(middleware.UserIDContextKey, user.ID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(user.ID)
+	rec := recorder(c)
+
+	if err := UpdateBannerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UpdateBannerHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
+}
+
+func TestUpdateBannerHandlerInvalidBanner(t *testing.T) {
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	cases := []struct {
+		name         string
+		banner       string
+		bannerFormat string
+	}{
+		{"base64 inválido", "!!!nao-e-base64!!!", "PNG"},
+		{"formato não aceito", base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)), "BMP"},
+		{"conteúdo não corresponde ao formato", base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)), "GIF"},
+		{"dimensão acima de 1024px", base64.StdEncoding.EncodeToString(pngAvatarBytes(1025, 100)), "PNG"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]string{"banner": tc.banner, "banner_format": tc.bannerFormat})
+			c := newContext(t, http.MethodPut, "/users/"+user.ID+"/banner", body, "")
+			c.Set(middleware.UserIDContextKey, user.ID)
+			c.SetParamNames("user_id")
+			c.SetParamValues(user.ID)
+			rec := recorder(c)
+
+			if err := UpdateBannerHandler(testBaseURL, c); err != nil {
+				t.Fatalf("UpdateBannerHandler retornou erro: %v", err)
+			}
+			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+				"banner inválido: deve ser base64 de um GIF, JPEG ou PNG de até 2MB")
+		})
+	}
+}
+
+func TestUpdateBannerHandlerEmptyRemovesBanner(t *testing.T) {
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	banner := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	body, _ := json.Marshal(map[string]string{"banner": banner, "banner_format": "PNG"})
+	c := newContext(t, http.MethodPut, "/users/"+user.ID+"/banner", body, "")
+	c.Set(middleware.UserIDContextKey, user.ID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(user.ID)
+	rec := recorder(c)
+
+	if err := UpdateBannerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UpdateBannerHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if stored.BannerMedia == nil {
+		t.Fatal("esperava banner_media persistida")
+	}
+
+	body, _ = json.Marshal(map[string]string{"banner": "", "banner_format": ""})
+	c = newContext(t, http.MethodPut, "/users/"+user.ID+"/banner", body, "")
+	c.Set(middleware.UserIDContextKey, user.ID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(user.ID)
+	rec = recorder(c)
+
+	if err := UpdateBannerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UpdateBannerHandler(remove) retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	stored, err = storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if stored.BannerMedia != nil {
+		t.Errorf("esperava banner_media removida, obtive %v", stored.BannerMedia)
+	}
+}
+
+func TestUpdateBannerHandlerForbiddenOtherUser(t *testing.T) {
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	other, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar segundo usuário: %v", err)
+	}
+
+	banner := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	body, _ := json.Marshal(map[string]string{"banner": banner, "banner_format": "PNG"})
+	c := newContext(t, http.MethodPut, "/users/"+other.ID+"/banner", body, "")
+	c.Set(middleware.UserIDContextKey, user.ID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(other.ID)
+	rec := recorder(c)
+
+	if err := UpdateBannerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UpdateBannerHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado", "não é possível atualizar o banner de outro usuário")
+}
+
+func TestUpdateBannerHandlerUserNotFound(t *testing.T) {
+	nonexistentID := randUUID()
+	banner := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	body, _ := json.Marshal(map[string]string{"banner": banner, "banner_format": "PNG"})
+	c := newContext(t, http.MethodPut, "/users/"+nonexistentID+"/banner", body, "")
+	c.Set(middleware.UserIDContextKey, nonexistentID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(nonexistentID)
+	rec := recorder(c)
+
+	if err := UpdateBannerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UpdateBannerHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "usuário não encontrado")
+}
+
+func TestUpdateBannerHandlerMissingUserID(t *testing.T) {
+	banner := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	body, _ := json.Marshal(map[string]string{"banner": banner, "banner_format": "PNG"})
+	c := newContext(t, http.MethodPut, "/users/some-id/banner", body, "")
+	rec := recorder(c)
+
+	if err := UpdateBannerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UpdateBannerHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
 		"token de autenticação ausente, inválido ou expirado")
@@ -9837,10 +10095,11 @@ func TestUpdateUserHandlerBoundaryLengths(t *testing.T) {
 		t.Fatalf("failed to create user: %v", err)
 	}
 
-	// 32 runes for nickname and 64 runes for status (multibyte) is accepted
+	// 32 runes for nickname, 64 runes for status and 512 runes for description (multibyte) is accepted
 	nickname := "n" + strings.Repeat("ç", 31)
 	status := "s" + strings.Repeat("ç", 63)
-	body, _ := json.Marshal(map[string]string{"nickname": nickname, "status": status})
+	description := "d" + strings.Repeat("ç", 511)
+	body, _ := json.Marshal(map[string]string{"nickname": nickname, "status": status, "description": description})
 	c := newContext(t, http.MethodPut, "/users/"+user.ID, body, "")
 	c.Set(middleware.UserIDContextKey, user.ID)
 	c.SetParamNames("user_id")
@@ -9864,6 +10123,9 @@ func TestUpdateUserHandlerBoundaryLengths(t *testing.T) {
 	if stored.StatusMessage == nil || *stored.StatusMessage != status {
 		t.Errorf("expected status_message %q, got %v", status, stored.StatusMessage)
 	}
+	if stored.Description == nil || *stored.Description != description {
+		t.Errorf("expected description %q, got %v", description, stored.Description)
+	}
 }
 
 func TestUpdateUserHandlerNicknameTooLong(t *testing.T) {
@@ -9874,7 +10136,7 @@ func TestUpdateUserHandlerNicknameTooLong(t *testing.T) {
 
 	// 33 runes
 	nickname := "n" + strings.Repeat("ç", 32)
-	body, _ := json.Marshal(map[string]string{"nickname": nickname, "status": "ok"})
+	body, _ := json.Marshal(map[string]string{"nickname": nickname, "status": "ok", "description": "sobre mim"})
 	c := newContext(t, http.MethodPut, "/users/"+user.ID, body, "")
 	c.Set(middleware.UserIDContextKey, user.ID)
 	c.SetParamNames("user_id")
@@ -9886,7 +10148,30 @@ func TestUpdateUserHandlerNicknameTooLong(t *testing.T) {
 	}
 
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"nickname deve ter no máximo 32 caracteres e status no máximo 64 caracteres")
+		"nickname deve ter no máximo 32 caracteres, status no máximo 64 caracteres e description no máximo 512 caracteres")
+}
+
+func TestUpdateUserHandlerDescriptionTooLong(t *testing.T) {
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	// 513 runes
+	description := "d" + strings.Repeat("ç", 512)
+	body, _ := json.Marshal(map[string]string{"nickname": "nick", "status": "ok", "description": description})
+	c := newContext(t, http.MethodPut, "/users/"+user.ID, body, "")
+	c.Set(middleware.UserIDContextKey, user.ID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(user.ID)
+	rec := recorder(c)
+
+	if err := UpdateUserHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UpdateUserHandler retornou erro: %v", err)
+	}
+
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"nickname deve ter no máximo 32 caracteres, status no máximo 64 caracteres e description no máximo 512 caracteres")
 }
 
 // TestDownloadAttachmentRoutePartialContent garante que GET
@@ -9951,4 +10236,76 @@ func TestDownloadAttachmentRoutePartialContent(t *testing.T) {
 	if rec.Code != http.StatusRequestedRangeNotSatisfiable {
 		t.Fatalf("esperava status 416 para intervalo fora do alcance, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
+}
+
+// TestGetMediaRoute garante que GET /media/:sha_hash serve o blob
+// content-addressable com o MIME type da tabela media e Content-Disposition:
+// inline, atende Range requests (206), retorna 404 para hash desconhecido e
+// 401 sem autenticação.
+func TestGetMediaRoute(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+
+	banner := base64.StdEncoding.EncodeToString(pngAvatarBytes(1024, 256))
+	body, _ := json.Marshal(map[string]string{"banner": banner, "banner_format": "PNG"})
+	rec := do(t, e, http.MethodPut, "/users/"+userID+"/banner", body, authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200 ao atualizar o banner, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	user, err := storage.GetUserByID(testCtx(), userID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if user.BannerMedia == nil {
+		t.Fatal("esperava banner_media persistida")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/media/"+*user.BannerMedia, nil)
+	req.AddCookie(authCookie(token))
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Errorf("esperava content-type %q, obtive %q", "image/png", ct)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); cd != "inline" {
+		t.Errorf("esperava content-disposition %q, obtive %q", "inline", cd)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), pngAvatarBytes(1024, 256)) {
+		t.Errorf("corpo da resposta não corresponde ao blob do banner")
+	}
+
+	// Range: 206 Partial Content
+	req = httptest.NewRequest(http.MethodGet, "/media/"+*user.BannerMedia, nil)
+	req.Header.Set("Range", "bytes=0-4")
+	req.AddCookie(authCookie(token))
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("esperava status 206, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if cr := rec.Header().Get("Content-Range"); cr != fmt.Sprintf("bytes 0-4/%d", len(pngAvatarBytes(1024, 256))) {
+		t.Errorf("esperava content-range %q, obtive %q", fmt.Sprintf("bytes 0-4/%d", len(pngAvatarBytes(1024, 256))), cr)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), pngAvatarBytes(1024, 256)[:5]) {
+		t.Errorf("corpo do 206 não corresponde ao intervalo 0-4 do blob")
+	}
+
+	// hash desconhecido: 404
+	req = httptest.NewRequest(http.MethodGet, "/media/"+strings.Repeat("a", 64), nil)
+	req.AddCookie(authCookie(token))
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "mídia não encontrada")
+
+	// sem autenticação: 401
+	req = httptest.NewRequest(http.MethodGet, "/media/"+*user.BannerMedia, nil)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
 }

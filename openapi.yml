@@ -23,6 +23,7 @@ tags:
   - name: UserRoles
   - name: Emojis
   - name: Attachments
+  - name: Media
   - name: LinkPreviews
   - name: Search
   - name: WebSocket
@@ -274,7 +275,7 @@ paths:
   /users/{user_id}:
     put:
       tags: [Users]
-      summary: Atualiza nickname e status (somente o próprio usuário)
+      summary: Atualiza nickname, status e description (somente o próprio usuário)
       parameters:
         - $ref: '#/components/parameters/UserId'
       requestBody:
@@ -326,6 +327,40 @@ paths:
                 $ref: '#/components/schemas/GenericResponse'
         '400':
           description: Avatar inválido (base64 de GIF/JPEG/PNG até 2MB)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{user_id}/banner:
+    put:
+      tags: [Users]
+      summary: Atualiza o banner (base64, GIF/JPEG/PNG, máx. 2MB); corpo vazio remove o banner
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBannerRequest'
+      responses:
+        '200':
+          description: Banner atualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericResponse'
+        '400':
+          description: Banner inválido (base64 de GIF/JPEG/PNG até 2MB)
           content:
             application/problem+json:
               schema:
@@ -1229,6 +1264,42 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /media/{sha_hash}:
+    get:
+      tags: [Media]
+      summary: Download de mídia content-addressable (banner, avatar, ícone, ...)
+      description: "O sha_hash é unguessable (sha256 do conteúdo); autenticação suficiente, sem check de permissão"
+      parameters:
+        - name: sha_hash
+          in: path
+          required: true
+          schema:
+            type: string
+            description: sha256 (hex) da mídia
+      responses:
+        '200':
+          description: "Arquivo binário (Content-Type = mime type da mídia, Content-Disposition: inline)"
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: "Parte do arquivo (Range request; Content-Range indica o intervalo atendido)"
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '416':
+          description: Intervalo fora do alcance do arquivo (Range não satisfatível)
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /link-previews/{preview_id}:
     get:
       tags: [LinkPreviews]
@@ -1560,6 +1631,14 @@ components:
         avatar_format:
           type: string
           example: PNG
+        banner_media:
+          type: string
+          nullable: true
+          description: Referência (sha256) do banner na mídia content-addressable; o arquivo é baixado via GET /media/{sha_hash}
+        description:
+          type: string
+          nullable: true
+          maxLength: 512
         status:
           type: string
           nullable: true
@@ -1577,17 +1656,45 @@ components:
           format: date-time
 
     WhoamiResponse:
-      allOf:
-        - $ref: '#/components/schemas/UserProfile'
-        - type: object
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        nickname:
+          type: string
+          nullable: true
+        avatar_blob:
+          type: string
+          format: byte
+          description: Avatar em base64
+        avatar_format:
+          type: string
+          example: PNG
+        status:
+          type: string
+          nullable: true
+          enum: [away, busy]
+          description: Status persistido do usuário (vale enquanto online)
+        status_message:
+          type: string
+          nullable: true
+        status_updated_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        settings:
+          type: object
           properties:
-            settings:
-              type: object
-              properties:
-                version:
-                  type: integer
-                config:
-                  $ref: '#/components/schemas/UserConfig'
+            version:
+              type: integer
+            config:
+              $ref: '#/components/schemas/UserConfig'
 
     UserSettings:
       type: object
@@ -1642,7 +1749,7 @@ components:
 
     UpdateUserRequest:
       type: object
-      required: [nickname, status]
+      required: [nickname, status, description]
       properties:
         nickname:
           type: string
@@ -1650,6 +1757,9 @@ components:
         status:
           type: string
           maxLength: 64
+        description:
+          type: string
+          maxLength: 512
 
     UpdateAvatarRequest:
       type: object
@@ -1661,6 +1771,18 @@ components:
         avatar_format:
           type: string
           enum: [GIF, JPEG, PNG]
+
+    UpdateBannerRequest:
+      type: object
+      required: [banner, banner_format]
+      properties:
+        banner:
+          type: string
+          description: Base64 de GIF, JPEG ou PNG (máx. 2MB); vazio remove o banner
+        banner_format:
+          type: string
+          enum: [GIF, JPEG, PNG]
+          description: Vazio remove o banner
 
     UpdateStatusRequest:
       type: object

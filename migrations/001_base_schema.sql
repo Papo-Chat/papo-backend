@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS users (
     nickname TEXT,
     password_hash TEXT NOT NULL,
     avatar_media TEXT REFERENCES media(sha_hash),
+    banner_media TEXT REFERENCES media(sha_hash),
+    description TEXT,
     banned BOOLEAN NOT NULL DEFAULT FALSE,
     reset_password BOOLEAN NOT NULL DEFAULT FALSE,
     last_ip TEXT,

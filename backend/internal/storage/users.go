@@ -12,11 +12,11 @@ import (
 
 // userColumns inclui password_hash e é usado somente por GetUserByUsername,
 // que é a única função autorizada a retornar o hash do banco.
-const userColumns = "id, username, nickname, password_hash, avatar_media, banned, reset_password, last_ip, status, status_message, status_updated_at, created_at"
+const userColumns = "id, username, nickname, password_hash, avatar_media, banner_media, description, banned, reset_password, last_ip, status, status_message, status_updated_at, created_at"
 
 // userPublicColumns é a visão de usuário sem password_hash, usada por todas
 // as demais funções.
-const userPublicColumns = "id, username, nickname, avatar_media, banned, reset_password, last_ip, status, status_message, status_updated_at, created_at"
+const userPublicColumns = "id, username, nickname, avatar_media, banner_media, description, banned, reset_password, last_ip, status, status_message, status_updated_at, created_at"
 
 // userSummaryColumns é a visão reduzida para listagens (GET /users).
 const userSummaryColumns = "id, username, nickname, status, status_message, status_updated_at, created_at"
@@ -29,6 +29,8 @@ func scanUser(row rowScanner) (models.User, error) {
 		&user.Nickname,
 		&user.PasswordHash,
 		&user.AvatarMedia,
+		&user.BannerMedia,
+		&user.Description,
 		&user.Banned,
 		&user.ResetPassword,
 		&user.LastIP,
@@ -51,6 +53,8 @@ func scanUserPublic(row rowScanner) (models.User, error) {
 		&user.Username,
 		&user.Nickname,
 		&user.AvatarMedia,
+		&user.BannerMedia,
+		&user.Description,
 		&user.Banned,
 		&user.ResetPassword,
 		&user.LastIP,
@@ -199,15 +203,15 @@ func ListUsers(ctx context.Context, since *time.Time, lastID string, limit int) 
 	return users, nil
 }
 
-// UpdateUser atualiza os campos de perfil do usuário (nickname e status)
-// e retorna o registro atualizado, sem o password_hash.
+// UpdateUser atualiza os campos de perfil do usuário (nickname, status e
+// description) e retorna o registro atualizado, sem o password_hash.
 func UpdateUser(ctx context.Context, id string, user models.User) (models.User, error) {
 	row := GetDB().QueryRowContext(ctx,
 		`UPDATE users
-		 SET nickname = $2, status_message = $3, status_updated_at = $4
+		 SET nickname = $2, status_message = $3, status_updated_at = $4, description = $5
 		 WHERE id = $1
 		 RETURNING `+userPublicColumns,
-		id, user.Nickname, user.StatusMessage, user.StatusUpdatedAt,
+		id, user.Nickname, user.StatusMessage, user.StatusUpdatedAt, user.Description,
 	)
 
 	updated, err := scanUserPublic(row)
@@ -227,6 +231,24 @@ func UpdateUserAvatar(ctx context.Context, avatarMedia *string, id string) error
 	)
 	if err != nil {
 		return fmt.Errorf("falha ao atualizar avatar do usuário: %w", err)
+	}
+
+	if n, _ := result.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
+// UpdateUserBanner atualiza SOMENTE a referência do banner do usuário
+// (media_sha_hash do blob; nil remove o banner).
+func UpdateUserBanner(ctx context.Context, bannerMedia *string, id string) error {
+	result, err := GetDB().ExecContext(ctx,
+		"UPDATE users SET banner_media = $2 WHERE id = $1",
+		id, bannerMedia,
+	)
+	if err != nil {
+		return fmt.Errorf("falha ao atualizar banner do usuário: %w", err)
 	}
 
 	if n, _ := result.RowsAffected(); n == 0 {

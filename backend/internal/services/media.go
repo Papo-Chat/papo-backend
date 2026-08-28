@@ -58,6 +58,27 @@ func StoreMediaFromBytes(ctx context.Context, content []byte, mimeType string) (
 	return hash, media, nil
 }
 
+// ErrMediaNotFound indica que a mídia não existe.
+var ErrMediaNotFound = errors.New("mídia não encontrada")
+
+// GetMedia retorna o registro de mídia e o caminho do blob no disco pelo
+// sha256 (hex). Retorna ErrMediaNotFound quando a mídia não existe.
+func GetMedia(ctx context.Context, shaHash string) (models.Media, string, error) {
+	if shaHash == "" {
+		return models.Media{}, "", ErrMediaNotFound
+	}
+
+	media, err := storage.GetMediaByHash(ctx, shaHash)
+	if errors.Is(err, storage.ErrNotFound) {
+		return models.Media{}, "", ErrMediaNotFound
+	}
+	if err != nil {
+		return models.Media{}, "", err
+	}
+
+	return media, mediaBlobPath(shaHash), nil
+}
+
 // MediaContent lê o blob do disco pelo sha256 (hex).
 // Retorna ErrNotFound quando o arquivo não existe.
 func MediaContent(shaHash string) ([]byte, error) {

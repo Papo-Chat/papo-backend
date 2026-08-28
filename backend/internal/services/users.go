@@ -21,9 +21,20 @@ var ErrUserNotReset = errors.New("flag reset_password ausente")
 // maxAvatarBytes é o tamanho máximo de um avatar decodificado (2MB, README).
 const maxAvatarBytes = 2 << 20
 
+// maxBannerBytes é o tamanho máximo de um banner decodificado (2MB, README).
+const maxBannerBytes = 2 << 20
+
+// maxBannerDimension é a dimensão máxima (px) de largura ou altura de um
+// banner (1024px, README).
+const maxBannerDimension = 1024
+
 // maxNicknameLength é o tamanho máximo do nickname de um usuário
 // (32 caracteres, README).
 const maxNicknameLength = 32
+
+// maxDescriptionLength é o tamanho máximo da description de um usuário
+// (512 caracteres, README).
+const maxDescriptionLength = 512
 
 // maxStatusLength é o tamanho máximo do status de um usuário
 // (64 caracteres, README).
@@ -143,15 +154,18 @@ func ListUsers(ctx context.Context, since *time.Time, lastID string) (models.Use
 	return models.UserList{Users: users, HasMore: hasMore}, nil
 }
 
-// UpdateUser atualiza o nickname e o status do usuário e marca o horário da
-// atualização do status. Retorna ErrInvalidInput quando o nickname excede 32
-// caracteres ou o status excede 64 caracteres e ErrUserNotFound quando o
-// usuário não existe.
-func UpdateUser(ctx context.Context, userID, nickname, status string) error {
+// UpdateUser atualiza o nickname, o status e a description do usuário e marca
+// o horário da atualização do status. Retorna ErrInvalidInput quando o
+// nickname excede 32 caracteres, o status excede 64 caracteres ou a
+// description excede 512 caracteres e ErrUserNotFound quando o usuário não
+// existe.
+func UpdateUser(ctx context.Context, userID, nickname, status, description string) error {
 	if userID == "" {
 		return ErrUserNotFound
 	}
-	if utf8.RuneCountInString(nickname) > maxNicknameLength || utf8.RuneCountInString(status) > maxStatusLength {
+	if utf8.RuneCountInString(nickname) > maxNicknameLength ||
+		utf8.RuneCountInString(status) > maxStatusLength ||
+		utf8.RuneCountInString(description) > maxDescriptionLength {
 		return ErrInvalidInput
 	}
 
@@ -168,6 +182,7 @@ func UpdateUser(ctx context.Context, userID, nickname, status string) error {
 		Nickname:        &nickname,
 		StatusMessage:   &status,
 		StatusUpdatedAt: &now,
+		Description:     &description,
 	}); err != nil {
 		return fmt.Errorf("falha ao atualizar o perfil do usuário: %w", err)
 	}
@@ -221,6 +236,57 @@ func UpdateAvatar(ctx context.Context, userID, avatar, avatarFormat string) erro
 
 	if err := storage.UpdateUserAvatar(ctx, &sha, userID); err != nil {
 		return fmt.Errorf("falha ao atualizar o avatar do usuário: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateBanner valida e salva o banner do usuário (content-addressable,
+// como o avatar). Quando banner e banner_format são vazios, o banner é
+// removido (referência media NULL). Retorna ErrInvalidInput quando o banner
+// não é um GIF, JPEG ou PNG válido de até 2MB com dimensões de até 1024px e
+// ErrUserNotFound quando o usuário não existe.
+func UpdateBanner(ctx context.Context, userID, banner, bannerFormat string) error {
+	if userID == "" {
+		return ErrUserNotFound
+	}
+
+	if _, err := storage.GetUserByID(ctx, userID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return ErrUserNotFound
+		}
+		return err
+	}
+
+	if banner == "" && bannerFormat == "" {
+		return storage.UpdateUserBanner(ctx, nil, userID)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(banner)
+	if err != nil {
+		return ErrInvalidInput
+	}
+
+	upperFormat := strings.ToUpper(bannerFormat)
+	if !avatarContentMatchesFormat(decoded, upperFormat) {
+		return ErrInvalidInput
+	}
+
+	if len(decoded) > maxBannerBytes {
+		return ErrInvalidInput
+	}
+
+	if err := utils.ValidateImage(decoded, maxBannerDimension); err != nil {
+		return ErrInvalidInput
+	}
+
+	sha, _, err := StoreMediaFromBytes(ctx, decoded, formatToMime(upperFormat))
+	if err != nil {
+		return fmt.Errorf("falha ao gravar o banner do usuário: %w", err)
+	}
+
+	if err := storage.UpdateUserBanner(ctx, &sha, userID); err != nil {
+		return fmt.Errorf("falha ao atualizar o banner do usuário: %w", err)
 	}
 
 	return nil

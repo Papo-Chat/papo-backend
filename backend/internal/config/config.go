@@ -14,6 +14,7 @@ type Config struct {
 	ServerPort        string
 	DatabaseURL       string
 	JWTSecret         string
+	HMACSecret        string
 	BaseURL           string
 	MaxUsernameLength int
 	MaxPasswordLength int
@@ -86,6 +87,7 @@ func LoadConfig() *Config {
 		ServerPort:        getEnv("SERVER_PORT", ""),
 		DatabaseURL:       getEnv("DATABASE_URL", ""),
 		JWTSecret:         getEnv("JWT_SECRET", ""),
+		HMACSecret:        getEnv("HMAC_SECRET", ""),
 		BaseURL:           getEnv("BASE_URL", "https://papo.com/"),
 		MaxUsernameLength: MaxUsernameLength,
 		MaxPasswordLength: MaxPasswordLength,

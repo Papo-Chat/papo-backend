@@ -20,6 +20,8 @@ type profileResponse struct {
 	Nickname        *string    `json:"nickname"`
 	AvatarBlob      []byte     `json:"avatar_blob"`
 	AvatarFormat    string     `json:"avatar_format"`
+	BannerMedia     *string    `json:"banner_media"`
+	Description     *string    `json:"description"`
 	Status          *string    `json:"status"`
 	StatusMessage   *string    `json:"status_message"`
 	StatusUpdatedAt *time.Time `json:"status_updated_at"`
@@ -59,6 +61,8 @@ func ProfileHandler(baseURL string, c echo.Context) error {
 		Nickname:        user.Nickname,
 		AvatarBlob:      user.AvatarBlob,
 		AvatarFormat:    user.AvatarFormat,
+		BannerMedia:     user.BannerMedia,
+		Description:     user.Description,
 		Status:          user.Status,
 		StatusMessage:   user.StatusMessage,
 		StatusUpdatedAt: user.StatusUpdatedAt,
@@ -139,8 +143,9 @@ func UpdateSettingsHandler(baseURL string, c echo.Context) error {
 }
 
 type updateUserRequest struct {
-	Nickname *string `json:"nickname"`
-	Status   *string `json:"status"`
+	Nickname    *string `json:"nickname"`
+	Status      *string `json:"status"`
+	Description *string `json:"description"`
 }
 
 // UpdateUserHandler implementa PUT /users/:user_id.
@@ -175,12 +180,16 @@ func UpdateUserHandler(baseURL string, c echo.Context) error {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "campo 'status' é obrigatório")
 	}
+	if req.Description == nil {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "campo 'description' é obrigatório")
+	}
 
-	switch err := services.UpdateUser(c.Request().Context(), userID, *req.Nickname, *req.Status); {
+	switch err := services.UpdateUser(c.Request().Context(), userID, *req.Nickname, *req.Status, *req.Description); {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"nickname deve ter no máximo 32 caracteres e status no máximo 64 caracteres")
+			"nickname deve ter no máximo 32 caracteres, status no máximo 64 caracteres e description no máximo 512 caracteres")
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "usuário não encontrado")
@@ -310,6 +319,56 @@ func UpdateAvatarHandler(baseURL string, c echo.Context) error {
 
 	return c.JSON(http.StatusOK, map[string]string{
 		"response": "User avatar updated successfully",
+	})
+}
+
+type updateBannerRequest struct {
+	Banner       string `json:"banner"`
+	BannerFormat string `json:"banner_format"`
+}
+
+// UpdateBannerHandler implementa PUT /users/:user_id/banner.
+func UpdateBannerHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	targetID := c.Param("user_id")
+	if targetID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "user_id ausente")
+	}
+	if targetID != userID {
+		return utils.SendProblem(c, baseURL, http.StatusForbidden,
+			"forbidden", "Acesso negado", "não é possível atualizar o banner de outro usuário")
+	}
+
+	var req updateBannerRequest
+	if err := c.Bind(&req); err != nil {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
+	}
+
+	switch err := services.UpdateBanner(c.Request().Context(), userID, req.Banner, req.BannerFormat); {
+	case errors.Is(err, services.ErrInvalidInput):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido",
+			"banner inválido: deve ser base64 de um GIF, JPEG ou PNG de até 2MB")
+	case errors.Is(err, services.ErrUserNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "usuário não encontrado")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao atualizar o banner do usuário: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao atualizar o banner do usuário")
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{
+		"response": "User banner updated successfully",
 	})
 }
 

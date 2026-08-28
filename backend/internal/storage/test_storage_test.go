@@ -497,6 +497,38 @@ func TestUpdateUserAvatar(t *testing.T) {
 	}
 }
 
+func TestUpdateUserBanner(t *testing.T) {
+	user := newTestUser(t)
+	hash := newTestMedia(t, []byte{0x89, 0x50, 0x4e, 0x47})
+
+	if err := UpdateUserBanner(testCtx(), &hash, user.ID); err != nil {
+		t.Fatalf("UpdateUserBanner retornou erro: %v", err)
+	}
+
+	got, err := GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if got.BannerMedia == nil || *got.BannerMedia != hash {
+		t.Errorf("esperava banner_media %s, obtive %v", hash, got.BannerMedia)
+	}
+
+	if err := UpdateUserBanner(testCtx(), nil, user.ID); err != nil {
+		t.Fatalf("UpdateUserBanner(remove) retornou erro: %v", err)
+	}
+	got, err = GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if got.BannerMedia != nil {
+		t.Errorf("esperava banner_media nil, obtive %v", got.BannerMedia)
+	}
+
+	if err := UpdateUserBanner(testCtx(), &hash, randUUID()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para id inexistente, obtive %v", err)
+	}
+}
+
 func TestUpdateUserStatus(t *testing.T) {
 	user := newTestUser(t)
 
@@ -3694,5 +3726,91 @@ func TestGetChannelIDByPreviewID(t *testing.T) {
 	unlinked := newTestPreview(t, "https://channel.example.com/2")
 	if _, err := GetChannelIDByPreviewID(testCtx(), unlinked.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("preview sem vinculo deveria retornar ErrNotFound, obtive %v", err)
+	}
+}
+
+// --- user_channel_state ---
+
+func TestTouchLastReadMessage(t *testing.T) {
+	reader := newTestUser(t)
+	author := newTestUser(t)
+	server := newTestServer(t, nil)
+	channel := newTestChannel(t, server.ID)
+
+	m1, err := CreateMessage(testCtx(), channel.ID, author.ID, "primeira", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	m2, err := CreateMessage(testCtx(), channel.ID, author.ID, "segunda", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+	m3, err := CreateMessage(testCtx(), channel.ID, author.ID, "terceira", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+
+	// primeiro touch cria a linha com a mensagem mais nova
+	if err := TouchLastReadMessage(testCtx(), reader.ID, channel.ID, m3); err != nil {
+		t.Fatalf("TouchLastReadMessage retornou erro: %v", err)
+	}
+	state, err := GetLastReadMessage(testCtx(), reader.ID, channel.ID)
+	if err != nil {
+		t.Fatalf("GetLastReadMessage retornou erro: %v", err)
+	}
+	if state.LastReadMessageID != m3.ID {
+		t.Errorf("esperava last_read_message_id %s, obtive %s", m3.ID, state.LastReadMessageID)
+	}
+	if state.LastReadAt.IsZero() {
+		t.Error("esperava last_read_at preenchido")
+	}
+
+	// mensagem mais antiga não regride o último read
+	if err := TouchLastReadMessage(testCtx(), reader.ID, channel.ID, m1); err != nil {
+		t.Fatalf("TouchLastReadMessage (mais antiga) retornou erro: %v", err)
+	}
+	state, err = GetLastReadMessage(testCtx(), reader.ID, channel.ID)
+	if err != nil {
+		t.Fatalf("GetLastReadMessage retornou erro: %v", err)
+	}
+	if state.LastReadMessageID != m3.ID {
+		t.Errorf("último read não deveria regridir para %s, obtive %s", m1.ID, state.LastReadMessageID)
+	}
+
+	// mesma mensagem de novo: sem mudança
+	if err := TouchLastReadMessage(testCtx(), reader.ID, channel.ID, m3); err != nil {
+		t.Fatalf("TouchLastReadMessage (repetida) retornou erro: %v", err)
+	}
+	state, err = GetLastReadMessage(testCtx(), reader.ID, channel.ID)
+	if err != nil {
+		t.Fatalf("GetLastReadMessage retornou erro: %v", err)
+	}
+	if state.LastReadMessageID != m3.ID {
+		t.Errorf("esperava last_read_message_id %s, obtive %s", m3.ID, state.LastReadMessageID)
+	}
+
+	// mensagem armazenada excluída: o último read avança
+	if err := DeleteMessage(testCtx(), m3.ID); err != nil {
+		t.Fatalf("DeleteMessage retornou erro: %v", err)
+	}
+	if err := TouchLastReadMessage(testCtx(), reader.ID, channel.ID, m2); err != nil {
+		t.Fatalf("TouchLastReadMessage (armazenada excluída) retornou erro: %v", err)
+	}
+	state, err = GetLastReadMessage(testCtx(), reader.ID, channel.ID)
+	if err != nil {
+		t.Fatalf("GetLastReadMessage retornou erro: %v", err)
+	}
+	if state.LastReadMessageID != m2.ID {
+		t.Errorf("esperava last_read_message_id %s após exclusão da armazenada, obtive %s", m2.ID, state.LastReadMessageID)
+	}
+}
+
+func TestGetLastReadMessage(t *testing.T) {
+	reader := newTestUser(t)
+	server := newTestServer(t, nil)
+	channel := newTestChannel(t, server.ID)
+
+	if _, err := GetLastReadMessage(testCtx(), reader.ID, channel.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para estado inexistente, obtive %v", err)
 	}
 }

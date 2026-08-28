@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -780,8 +781,9 @@ func TestUpdateUser(t *testing.T) {
 
 	nickname := "nick_" + randHex(4)
 	status := "disponível"
+	description := "sobre mim"
 
-	if err := UpdateUser(testCtx(), user.ID, nickname, status); err != nil {
+	if err := UpdateUser(testCtx(), user.ID, nickname, status, description); err != nil {
 		t.Fatalf("UpdateUser retornou erro: %v", err)
 	}
 
@@ -795,6 +797,9 @@ func TestUpdateUser(t *testing.T) {
 	if stored.StatusMessage == nil || *stored.StatusMessage != status {
 		t.Errorf("esperava status_message %q, obtive %v", status, stored.StatusMessage)
 	}
+	if stored.Description == nil || *stored.Description != description {
+		t.Errorf("esperava description %q, obtive %v", description, stored.Description)
+	}
 	if stored.StatusUpdatedAt == nil {
 		t.Error("esperava status_updated_at preenchido")
 	}
@@ -802,7 +807,8 @@ func TestUpdateUser(t *testing.T) {
 	// uma segunda atualização substitui os valores anteriores
 	updatedNickname := "nick_" + randHex(4)
 	updatedStatus := "ausente"
-	if err := UpdateUser(testCtx(), user.ID, updatedNickname, updatedStatus); err != nil {
+	updatedDescription := "sobre mim v2"
+	if err := UpdateUser(testCtx(), user.ID, updatedNickname, updatedStatus, updatedDescription); err != nil {
 		t.Fatalf("UpdateUser (segunda atualização) retornou erro: %v", err)
 	}
 	stored, err = storage.GetUserByID(testCtx(), user.ID)
@@ -815,17 +821,32 @@ func TestUpdateUser(t *testing.T) {
 	if stored.StatusMessage == nil || *stored.StatusMessage != updatedStatus {
 		t.Errorf("esperava status_message %q, obtive %v", updatedStatus, stored.StatusMessage)
 	}
+	if stored.Description == nil || *stored.Description != updatedDescription {
+		t.Errorf("esperava description %q, obtive %v", updatedDescription, stored.Description)
+	}
+
+	// description vazia limpa o valor
+	if err := UpdateUser(testCtx(), user.ID, updatedNickname, updatedStatus, ""); err != nil {
+		t.Fatalf("UpdateUser (description vazia) retornou erro: %v", err)
+	}
+	stored, err = storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if stored.Description == nil || *stored.Description != "" {
+		t.Errorf("esperava description vazia, obtive %v", stored.Description)
+	}
 }
 
 func TestUpdateUserEmptyUserID(t *testing.T) {
-	err := UpdateUser(testCtx(), "", "nick", "status")
+	err := UpdateUser(testCtx(), "", "nick", "status", "desc")
 	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
 	}
 }
 
 func TestUpdateUserNonexistentUser(t *testing.T) {
-	err := UpdateUser(testCtx(), randUUID(), "nick", "status")
+	err := UpdateUser(testCtx(), randUUID(), "nick", "status", "desc")
 	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
 	}
@@ -1027,6 +1048,161 @@ func TestUpdateAvatarEmptyUserID(t *testing.T) {
 func TestUpdateAvatarNonexistentUser(t *testing.T) {
 	avatar := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
 	err := UpdateAvatar(testCtx(), randUUID(), avatar, "PNG")
+	if !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
+	}
+}
+
+// --- UpdateBanner ---
+
+func TestUpdateBanner(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		format string
+		banner []byte
+	}{
+		{"PNG", "PNG", pngAvatarBytes(100, 100)},
+		{"JPEG", "JPEG", jpegAvatarBytes(100, 100)},
+		{"GIF", "GIF", gifAvatarBytes(100, 100)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			banner := base64.StdEncoding.EncodeToString(tc.banner)
+			if err := UpdateBanner(testCtx(), user.ID, banner, tc.format); err != nil {
+				t.Fatalf("UpdateBanner retornou erro: %v", err)
+			}
+
+			stored, err := storage.GetUserByID(testCtx(), user.ID)
+			if err != nil {
+				t.Fatalf("GetUserByID retornou erro: %v", err)
+			}
+			// o banco guarda apenas a referência content-addressable
+			if stored.BannerMedia == nil {
+				t.Fatal("esperava banner_media definido no banco")
+			}
+			if _, err := os.Stat(mediaBlobPath(*stored.BannerMedia)); err != nil {
+				t.Errorf("blob do banner não encontrado no storage: %v", err)
+			}
+
+			// o profile retorna apenas a referência (sem blob)
+			profile, err := Profile(testCtx(), user.ID)
+			if err != nil {
+				t.Fatalf("Profile retornou erro: %v", err)
+			}
+			if profile.BannerMedia == nil || *profile.BannerMedia != *stored.BannerMedia {
+				t.Errorf("esperava banner_media %v no profile, obtive %v", *stored.BannerMedia, profile.BannerMedia)
+			}
+		})
+	}
+}
+
+func TestUpdateBannerAllows1024px(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	// 1024px é aceito para banner (limite do avatar é 512px)
+	banner := base64.StdEncoding.EncodeToString(pngAvatarBytes(1024, 100))
+	if err := UpdateBanner(testCtx(), user.ID, banner, "PNG"); err != nil {
+		t.Errorf("esperava banner de 1024px aceito, obtive %v", err)
+	}
+
+	// 1025px é rejeitado
+	banner = base64.StdEncoding.EncodeToString(pngAvatarBytes(1025, 100))
+	if err := UpdateBanner(testCtx(), user.ID, banner, "PNG"); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para banner de 1025px, obtive %v", err)
+	}
+}
+
+func TestUpdateBannerRemovesWhenEmpty(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	// define um banner inicialmente
+	banner := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	if err := UpdateBanner(testCtx(), user.ID, banner, "PNG"); err != nil {
+		t.Fatalf("falha ao definir banner inicial: %v", err)
+	}
+
+	// banner e formato vazios devem remover o banner
+	if err := UpdateBanner(testCtx(), user.ID, "", ""); err != nil {
+		t.Fatalf("UpdateBanner (remoção) retornou erro: %v", err)
+	}
+
+	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if stored.BannerMedia != nil {
+		t.Errorf("esperava banner_media nulo, obtive %q", *stored.BannerMedia)
+	}
+}
+
+func TestUpdateBannerInvalidInput(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	cases := []struct {
+		name         string
+		banner       string
+		bannerFormat string
+	}{
+		{"base64 inválido", "!!!nao-e-base64!!!", "PNG"},
+		{"formato não aceito", base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)), "BMP"},
+		{"formato vazio com banner", base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)), ""},
+		{"conteúdo não corresponde ao formato", base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)), "GIF"},
+		{"banner vazio com formato", "", "PNG"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := UpdateBanner(testCtx(), user.ID, tc.banner, tc.bannerFormat)
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+			}
+		})
+	}
+}
+
+func TestUpdateBannerExceedsMaxSize(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	// PNG válido com tamanho acima do limite de 2MB
+	oversized := make([]byte, 2<<20+1)
+	copy(oversized, pngAvatarBytes(100, 100))
+	banner := base64.StdEncoding.EncodeToString(oversized)
+
+	err = UpdateBanner(testCtx(), user.ID, banner, "PNG")
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para banner acima de 2MB, obtive %v", err)
+	}
+}
+
+func TestUpdateBannerEmptyUserID(t *testing.T) {
+	banner := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	err := UpdateBanner(testCtx(), "", banner, "PNG")
+	if !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
+	}
+}
+
+func TestUpdateBannerNonexistentUser(t *testing.T) {
+	banner := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	err := UpdateBanner(testCtx(), randUUID(), banner, "PNG")
 	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
 	}
@@ -4818,6 +4994,7 @@ func TestDeleteMessageInvalidInput(t *testing.T) {
 // --- UploadAttachment ---
 
 func TestUploadAttachment(t *testing.T) {
+	cfg := config.LoadConfig()
 	user := newTestMessageUser(t)
 
 	attachment, err := UploadAttachment(testCtx(), "documento.txt", strings.NewReader("conteúdo do documento"), user.ID)
@@ -4843,10 +5020,18 @@ func TestUploadAttachment(t *testing.T) {
 		t.Errorf("esperava messages_id nil para upload avulso, obtive %v", attachment.MessagesID)
 	}
 	// o media_sha_hash é o sha256 do conteúdo
-	expectedHash := sha256.Sum256([]byte("conteúdo do documento"))
-	if attachment.MediaShaHash != hex.EncodeToString(expectedHash[:]) {
-		t.Errorf("esperava media_sha_hash %q, obtive %q", hex.EncodeToString(expectedHash[:]), attachment.MediaShaHash)
+
+	mac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
+	mac.Write([]byte("conteúdo do documento"))
+	expectedHash := hex.EncodeToString(mac.Sum(nil))
+
+	if attachment.MediaShaHash != expectedHash {
+		t.Errorf("esperava media_sha_hash %q, obtive %q",
+			expectedHash,
+			attachment.MediaShaHash,
+		)
 	}
+
 	// o blob foi gravado no content-addressable storage
 	if _, err := os.Stat(attachment.FilePath); err != nil {
 		t.Errorf("blob do attachment não encontrado em disco: %v", err)
@@ -5662,11 +5847,13 @@ func TestUpdateUserBoundaryLengths(t *testing.T) {
 		t.Fatalf("failed to create user: %v", err)
 	}
 
-	// exactly 32 runes for nickname and 64 runes for status (multibyte) is accepted
+	// exactly 32 runes for nickname, 64 runes for status and 512 runes for
+	// description (multibyte) are accepted
 	nickname := "n" + strings.Repeat("ç", 31)
 	status := "s" + strings.Repeat("ç", 63)
-	if err := UpdateUser(testCtx(), user.ID, nickname, status); err != nil {
-		t.Fatalf("UpdateUser with 32-rune nickname and 64-rune status returned error: %v", err)
+	description := "d" + strings.Repeat("ç", 511)
+	if err := UpdateUser(testCtx(), user.ID, nickname, status, description); err != nil {
+		t.Fatalf("UpdateUser with 32-rune nickname, 64-rune status and 512-rune description returned error: %v", err)
 	}
 	stored, err := storage.GetUserByID(testCtx(), user.ID)
 	if err != nil {
@@ -5684,14 +5871,20 @@ func TestUpdateUserBoundaryLengths(t *testing.T) {
 
 	// 33 runes for nickname is rejected
 	longNickname := "n" + strings.Repeat("ç", 32)
-	if err := UpdateUser(testCtx(), user.ID, longNickname, "ok"); !errors.Is(err, ErrInvalidInput) {
+	if err := UpdateUser(testCtx(), user.ID, longNickname, "ok", "ok"); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("expected ErrInvalidInput for 33-rune nickname, got %v", err)
 	}
 
 	// 65 runes for status is rejected
 	longStatus := "s" + strings.Repeat("ç", 64)
-	if err := UpdateUser(testCtx(), user.ID, "ok", longStatus); !errors.Is(err, ErrInvalidInput) {
+	if err := UpdateUser(testCtx(), user.ID, "ok", longStatus, "ok"); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("expected ErrInvalidInput for 65-rune status, got %v", err)
+	}
+
+	// 513 runes for description is rejected
+	longDescription := "d" + strings.Repeat("ç", 512)
+	if err := UpdateUser(testCtx(), user.ID, "ok", "ok", longDescription); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for 513-rune description, got %v", err)
 	}
 
 	// rejections must not persist anything
@@ -5704,6 +5897,9 @@ func TestUpdateUserBoundaryLengths(t *testing.T) {
 	}
 	if stored.StatusMessage == nil || *stored.StatusMessage != status {
 		t.Errorf("expected status_message %q after rejections, got %v", status, stored.StatusMessage)
+	}
+	if stored.Description == nil || *stored.Description != description {
+		t.Errorf("expected description %q after rejections, got %v", description, stored.Description)
 	}
 }
 

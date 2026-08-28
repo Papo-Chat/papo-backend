@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -324,6 +325,7 @@ func ensureAttachmentThumbnail(ctx context.Context, attachmentID, blobFile, mime
 // chamador). Retorna ErrAttachmentTooLarge quando o conteúdo excede o
 // tamanho máximo.
 func hashToTempFile(content io.Reader) (string, int64, string, error) {
+	cfg := config.LoadConfig()
 	if err := os.MkdirAll(mediaBaseDir, 0o755); err != nil {
 		return "", 0, "", fmt.Errorf("falha ao criar pasta de mídia: %w", err)
 	}
@@ -344,8 +346,13 @@ func hashToTempFile(content io.Reader) (string, int64, string, error) {
 		return fail(fmt.Errorf("falha ao ajustar permissão do arquivo: %w", err))
 	}
 
-	hasher := sha256.New()
-	limited := &sizeLimitWriter{w: io.MultiWriter(tmp, hasher), limit: maxAttachmentSize}
+	//queremos que o sha256 não seja guessable externamente
+	mac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
+
+	limited := &sizeLimitWriter{
+		w:     io.MultiWriter(tmp, mac),
+		limit: maxAttachmentSize,
+	}
 	size, err := io.Copy(limited, content)
 	if err != nil {
 		if errors.Is(err, ErrAttachmentTooLarge) {
@@ -357,7 +364,7 @@ func hashToTempFile(content io.Reader) (string, int64, string, error) {
 		return fail(fmt.Errorf("falha ao gravar o arquivo: %w", err))
 	}
 
-	hash := hex.EncodeToString(hasher.Sum(nil))
+	hash := hex.EncodeToString(mac.Sum(nil))
 	return hash, size, tmpName, nil
 }
 

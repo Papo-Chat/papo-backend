@@ -29,13 +29,14 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [x] Status Ausente/Ocupado (novo field)
 - [x] Processamento Icons no Backend 
 - [x] Seek (HTTP206) para attachment de vídeos 
-- [ ] User Profile (Descrição, banner) e last_read_message 
+- [x] Adições no User Profile (Descrição, banner), GET /media/:sha_hash e last_read_message
+- [ ] Batch request para user profiles (POST /users/profileBatch com body com ids dos usuários), retorna o mesmo que profile mas array (máximo 50 usuários)
 - [ ] Cleanup (excluir código não usado)
    - Decidir entre multiserver ou single server e solidificar o código a um.
    - Implementar melhor maneira de carregar Cfg (memória, sem carregar IO toda hora)
    - Verificar a necessidade de testes mais elegantes e abrangentes
-- [ ] Crons GC Attachments orfãos/tabela quebrada
 - [ ] Auditoria/Logs para Admins (somente-texto)
+- [ ] Crons GC Attachments orfãos/tabela quebrada
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
 - [ ] React Mensagens
 - [ ] Refresh token rotation com detecção de reuse, tabela endpoint de dispositivos conectados, endpoint de derrubar todas as conexões (inclusive atual)
@@ -121,6 +122,41 @@ chmod +x build-and-run.sh
 
 Backend sobe em `http://localhost:8080`, WebSocket em `ws://localhost:8080/ws`.
 
+### Variáveis de ambiente
+
+```env
+SERVER_PORT=8080
+DATABASE_URL=postgres://papo:papo123@localhost:5432/papo
+
+# Use segredos aleatórios fortes em produção
+//Usado para senhas e auth, OBRIGATÓRIA no mínimo 256bits
+JWT_SECRET=troque_por_um_segredo_aleatorio
+
+//Usado para que o endpoint de midia não sirva hash padrão
+HMAC_SECRET=segredo_de_midia_unguessable
+
+//Url usada para erros RFC 7807, pode ser deixada em branco sem problema
+BASE_URL=https://papo.com/
+
+//Variáveis de usuário
+MAX_USERNAME_LENGTH=16
+MAX_PASSWORD_LENGTH=64
+
+# Limites de autenticação
+AUTH_RATE_LIMIT=5
+AUTH_RATE_BURST=10
+
+# Limite geral
+RATE_LIMIT=20
+RATE_BURST=40
+
+# Origens permitidas, separadas por vírgula
+CORS_ORIGINS=http://localhost:5173,https://localhost:5173
+
+# Desative para reduzir consumo de RAM, mas processamento de imagens será desativado
+THUMBNAIL_ENABLED=true
+```
+
 ## API
 
 Esquema completo em [`openapi.yml`](./openapi.yml).
@@ -128,13 +164,14 @@ Esquema completo em [`openapi.yml`](./openapi.yml).
 | Recurso | Endpoints principais |
 |---|---|
 | Auth | `/auth/register`, `/auth/login`, `/auth/loginServer`, `/auth/whoami`, `/auth/logout` |
-| Users | `/users`, `/users/:id/profile`, `/users/:id`, `/users/:id/ban`, `/users/settings` |
+| Users | `/users`, `/users/:id/profile`, `/users/:id`, `/users/:id/banner`, `/users/:id/ban`, `/users/settings` |
 | Servers | `/servers`, `/servers/:id`, `/servers/:id/roles` |
 | Channels | `/channels`, `/channels/:id`, `/channels/:id/change_position`, `/channels/:id/permissions` |
 | Messages | `/channels/:id/messages`, `/messages`, `/messages/:id` |
 | Emojis | `/emojis`, `/emojis/:id` |
 | Link Preview (Embedding) | `/link-previews/{preview_id}`|
 | Attachments | `/attachments/:id` `/attachments/:id/thumbnail` |
+| Media | `/media/:sha_hash` |
 | Search | `/search` |
 
 Erros seguem RFC 7807 (`application/problem+json`), com header `X-Request-ID` em toda resposta.
