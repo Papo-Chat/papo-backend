@@ -104,13 +104,6 @@ Versão leve:
 
 ## Rodando localmente ou em VPS Simples
 
-```
-.env:
-     THUMBNAIL_ENABLED=false
-```
-
-## Rodando localmente ou em VPS Simples
-
 ```bash
 # banco
 cd infra && docker-compose up -d
