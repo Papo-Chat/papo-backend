@@ -339,19 +339,22 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		path   string
 	}{
 		{http.MethodGet, "/auth/whoami"},
+		{http.MethodGet, "/users"},
 		{http.MethodGet, "/users/" + userID + "/profile"},
 		{http.MethodPut, "/users/settings"},
 		{http.MethodPut, "/users/" + userID},
+		{http.MethodPut, "/users/" + userID + "/status"},
 		{http.MethodPut, "/users/" + userID + "/avatar"},
+		{http.MethodPut, "/users/" + userID + "/banner"},
+		{http.MethodPut, "/users/" + userID + "/password"},
 		{http.MethodPut, "/users/" + userID + "/ban"},
 		{http.MethodPost, "/users/" + userID + "/reset"},
-		{http.MethodGet, "/servers"},
 		{http.MethodPost, "/servers"},
-		{http.MethodGet, "/servers/00000000-0000-4000-8000-000000000000"},
 		{http.MethodPut, "/servers/00000000-0000-4000-8000-000000000000"},
 		{http.MethodGet, "/channels"},
 		{http.MethodPost, "/channels"},
 		{http.MethodPut, "/channels/00000000-0000-4000-8000-000000000000"},
+		{http.MethodPut, "/channels/00000000-0000-4000-8000-000000000000/change_position"},
 		{http.MethodDelete, "/channels/00000000-0000-4000-8000-000000000000"},
 		{http.MethodGet, "/channels/00000000-0000-4000-8000-000000000000/permissions"},
 		{http.MethodPut, "/channels/00000000-0000-4000-8000-000000000000/permissions/00000000-0000-4000-8000-000000000000"},
@@ -360,6 +363,9 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		{http.MethodPut, "/messages/00000000-0000-4000-8000-000000000000"},
 		{http.MethodDelete, "/messages/00000000-0000-4000-8000-000000000000"},
 		{http.MethodGet, "/attachments/00000000-0000-4000-8000-000000000000"},
+		{http.MethodGet, "/attachments/00000000-0000-4000-8000-000000000000/thumbnail"},
+		{http.MethodGet, "/media/0000000000000000000000000000000000000000000000000000000000000000"},
+		{http.MethodGet, "/link-previews/00000000-0000-4000-8000-000000000000"},
 		{http.MethodGet, "/emojis"},
 		{http.MethodPost, "/emojis"},
 		{http.MethodDelete, "/emojis/00000000-0000-4000-8000-000000000000"},
@@ -5397,7 +5403,7 @@ func TestResetUserHandlerNonexistentUser(t *testing.T) {
 }
 
 // --- ListUsersHandler (tarefa 6.4) ---
-/*
+
 func TestListUsersHandler(t *testing.T) {
 	e := newApp()
 	cleanServers(testCtx())
@@ -5405,6 +5411,10 @@ func TestListUsersHandler(t *testing.T) {
 		ID       string `json:"id"`
 		Username string `json:"username"`
 	}
+	// A listagem é paginada (máx. 100 por created_at, id); since limita a
+	// resposta aos usuários criados neste teste, independente dos criados
+	// por outros testes.
+	since := time.Now()
 	bd, _ := json.Marshal(map[string]string{"username": newRandomUsername(), "password": newRandomPassword()})
 	rec1 := do(t, e, http.MethodPost, "/auth/register", bd, nil)
 
@@ -5432,7 +5442,7 @@ func TestListUsersHandler(t *testing.T) {
 		t.Fatalf("register: falha ao decodificar resposta: %v", err)
 	}
 
-	c := newContext(t, http.MethodGet, "/users", nil, "")
+	c := newContext(t, http.MethodGet, "/users?since="+url.QueryEscape(since.Format(time.RFC3339Nano)), nil, "")
 	c.Set(middleware.UserIDContextKey, authUser.ID)
 	rec := recorder(c)
 
@@ -5474,7 +5484,7 @@ func TestListUsersHandler(t *testing.T) {
 		t.Error("outro usuário não aparece na listagem com o username correto")
 	}
 }
-*/
+
 func TestListUsersHandlerMissingAuth(t *testing.T) {
 	c := newContext(t, http.MethodGet, "/users", nil, "")
 	rec := recorder(c)

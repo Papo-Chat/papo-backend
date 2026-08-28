@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -47,76 +48,56 @@ type Config struct {
 	PreviewDescriptionMax int
 }
 
+var (
+	configInstance *Config
+	once           sync.Once
+)
+
 func LoadConfig() *Config {
-	err := godotenv.Load()
-	if err != nil {
-		logrus.Info("Arquivo .env não encontrado, usando variáveis de ambiente")
-	}
-
-	MaxUsernameLength := getEnvInt("MAX_USERNAME_LENGTH", 16)
-	MaxPasswordLength := getEnvInt("MAX_PASSWORD_LENGTH", 64)
-	AuthRateLimit := getEnvInt("AUTH_RATE_LIMIT", 5)
-	AuthRateBurst := getEnvInt("AUTH_RATE_BURST", 10)
-	RateLimit := getEnvInt("RATE_LIMIT", 10)
-	RateBurst := getEnvInt("RATE_BURST", 20)
-	// Padrão permite o frontend local em HTTP e HTTPS (README: localhost:5173).
-	CORSOrigins := getEnvList("CORS_ORIGINS",
-		[]string{"http://localhost:5173", "https://localhost:5173"})
-	SameSite := getEnvBool("SAME_SITE", true)
-
-	ThumbnailEnabled := getEnvBool("THUMBNAIL_ENABLED", true)
-	ThumbnailMaxDim := getEnvInt("THUMBNAIL_MAX_DIM", 1024)
-	GIFThumbnailMaxDim := getEnvInt("GIF_THUMBNAIL_MAX_DIM", 512)
-	ThumbnailMaxPixels := getEnvInt("THUMBNAIL_MAX_PIXELS", 50000000)
-	ThumbnailTimeout := time.Duration(getEnvInt("THUMBNAIL_TIMEOUT", 5)) * time.Second
-	ThumbnailMaxConc := getEnvInt("THUMBNAIL_MAX_CONCURRENCY", 4)
-
-	LinkPreviewEnabled := getEnvBool("LINK_PREVIEW_ENABLED", true)
-	LinkPreviewTimeout := time.Duration(getEnvInt("LINK_PREVIEW_TIMEOUT", 8)) * time.Second
-	LinkPreviewMaxURLs := getEnvInt("LINK_PREVIEW_MAX_URLS", 2)
-	LinkPreviewCacheTTL := time.Duration(getEnvInt("LINK_PREVIEW_CACHE_TTL", 86400)) * time.Second
-	OutboundMaxConc := getEnvInt("OUTBOUND_MAX_CONCURRENCY", 4)
-	RobotsEnabled := getEnvBool("ROBOTS_ENABLED", true)
-	RobotsCacheTTL := time.Duration(getEnvInt("ROBOTS_CACHE_TTL", 3600)) * time.Second
-	PreviewFetchRateGlob := getEnvInt("PREVIEW_FETCH_RATE_GLOBAL", 30)
-	PreviewFetchRateUser := getEnvInt("PREVIEW_FETCH_RATE_PER_USER", 10)
-	PreviewTitleMax := getEnvInt("PREVIEW_TITLE_MAX", 200)
-	PreviewDescriptionMax := getEnvInt("PREVIEW_DESCRIPTION_MAX", 300)
-
-	return &Config{
+	once.Do(func() {
+		err := godotenv.Load()
+		if err != nil {
+			logrus.Info("Arquivo .env não encontrado, usando variáveis de ambiente")
+		}
+	})
+	configInstance = &Config{
 		ServerPort:        getEnv("SERVER_PORT", ""),
 		DatabaseURL:       getEnv("DATABASE_URL", ""),
 		JWTSecret:         getEnv("JWT_SECRET", ""),
 		HMACSecret:        getEnv("HMAC_SECRET", ""),
 		BaseURL:           getEnv("BASE_URL", "https://papo.com/"),
-		MaxUsernameLength: MaxUsernameLength,
-		MaxPasswordLength: MaxPasswordLength,
-		AuthRateLimit:     AuthRateLimit,
-		AuthRateBurst:     AuthRateBurst,
-		RateLimit:         RateLimit,
-		RateBurst:         RateBurst,
-		CORSOrigins:       CORSOrigins,
-		SameSite:          SameSite,
+		MaxUsernameLength: getEnvInt("MAX_USERNAME_LENGTH", 16),
+		MaxPasswordLength: getEnvInt("MAX_PASSWORD_LENGTH", 64),
+		AuthRateLimit:     getEnvInt("AUTH_RATE_LIMIT", 5),
+		AuthRateBurst:     getEnvInt("AUTH_RATE_BURST", 10),
+		RateLimit:         getEnvInt("RATE_LIMIT", 10),
+		RateBurst:         getEnvInt("RATE_BURST", 20),
+		// Padrão permite o frontend local em HTTP e HTTPS (README: localhost:5173).
+		CORSOrigins: getEnvList("CORS_ORIGINS",
+			[]string{"http://localhost:5173", "https://localhost:5173"}),
+		SameSite: getEnvBool("SAME_SITE", true),
 
-		ThumbnailEnabled:   ThumbnailEnabled,
-		ThumbnailMaxDim:    ThumbnailMaxDim,
-		GIFThumbnailMaxDim: GIFThumbnailMaxDim,
-		ThumbnailMaxPixels: ThumbnailMaxPixels,
-		ThumbnailTimeout:   ThumbnailTimeout,
-		ThumbnailMaxConc:   ThumbnailMaxConc,
+		ThumbnailEnabled:   getEnvBool("THUMBNAIL_ENABLED", true),
+		ThumbnailMaxDim:    getEnvInt("THUMBNAIL_MAX_DIM", 1024),
+		GIFThumbnailMaxDim: getEnvInt("GIF_THUMBNAIL_MAX_DIM", 512),
+		ThumbnailMaxPixels: getEnvInt("THUMBNAIL_MAX_PIXELS", 50000000),
+		ThumbnailTimeout:   time.Duration(getEnvInt("THUMBNAIL_TIMEOUT", 5)) * time.Second,
+		ThumbnailMaxConc:   getEnvInt("THUMBNAIL_MAX_CONCURRENCY", 4),
 
-		LinkPreviewEnabled:    LinkPreviewEnabled,
-		LinkPreviewTimeout:    LinkPreviewTimeout,
-		LinkPreviewMaxURLs:    LinkPreviewMaxURLs,
-		LinkPreviewCacheTTL:   LinkPreviewCacheTTL,
-		OutboundMaxConc:       OutboundMaxConc,
-		RobotsEnabled:         RobotsEnabled,
-		RobotsCacheTTL:        RobotsCacheTTL,
-		PreviewFetchRateGlob:  PreviewFetchRateGlob,
-		PreviewFetchRateUser:  PreviewFetchRateUser,
-		PreviewTitleMax:       PreviewTitleMax,
-		PreviewDescriptionMax: PreviewDescriptionMax,
+		LinkPreviewEnabled:    getEnvBool("LINK_PREVIEW_ENABLED", true),
+		LinkPreviewTimeout:    time.Duration(getEnvInt("LINK_PREVIEW_TIMEOUT", 8)) * time.Second,
+		LinkPreviewMaxURLs:    getEnvInt("LINK_PREVIEW_MAX_URLS", 2),
+		LinkPreviewCacheTTL:   time.Duration(getEnvInt("LINK_PREVIEW_CACHE_TTL", 86400)) * time.Second,
+		OutboundMaxConc:       getEnvInt("OUTBOUND_MAX_CONCURRENCY", 4),
+		RobotsEnabled:         getEnvBool("ROBOTS_ENABLED", true),
+		RobotsCacheTTL:        time.Duration(getEnvInt("ROBOTS_CACHE_TTL", 3600)) * time.Second,
+		PreviewFetchRateGlob:  getEnvInt("PREVIEW_FETCH_RATE_GLOBAL", 30),
+		PreviewFetchRateUser:  getEnvInt("PREVIEW_FETCH_RATE_PER_USER", 10),
+		PreviewTitleMax:       getEnvInt("PREVIEW_TITLE_MAX", 200),
+		PreviewDescriptionMax: getEnvInt("PREVIEW_DESCRIPTION_MAX", 300),
 	}
+
+	return configInstance
 }
 
 func getEnv(key string, defaultValue string) string {

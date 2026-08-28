@@ -66,13 +66,13 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 func RegisterServerRoutes(e *echo.Echo, cfg *config.Config) {
 	e.GET("/servers", func(c echo.Context) error {
 		return ListServersHandler(cfg.BaseURL, c)
-	}, middleware.JWTMiddleware)
+	})
 	e.POST("/servers", func(c echo.Context) error {
 		return CreateServerHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 	e.GET("/servers/:server_id", func(c echo.Context) error {
 		return GetServerHandler(cfg.BaseURL, c)
-	}, middleware.JWTMiddleware)
+	})
 	e.PUT("/servers/:server_id", func(c echo.Context) error {
 		return UpdateServerHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware, middleware.RequireServerOwnerOrManageServer())

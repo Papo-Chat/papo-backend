@@ -575,8 +575,6 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Server'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
     post:
@@ -620,8 +618,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Server'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
