@@ -5,7 +5,7 @@
 
 # Papo — Backend
 
-Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples, leve e sem microserviços. Um binário Go, um Postgres, um servidor por instância.
+Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: simples, leve e sem microserviços. Um binário Go, um Postgres, um servidor por instância, onde um Administrador ou Dev. Júnior consegue facilmente entender e manter em operação.
 
 ## Stack
 
@@ -41,7 +41,7 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [ ] React Mensagens
 - [ ] Refresh token rotation com detecção de reuse, tabela endpoint de dispositivos conectados, endpoint de derrubar todas as conexões (inclusive atual)
 - [ ] Direct Messages
-- [ ] Moderação Automatica (Nudez/Gore)
+- [ ] Detecção e moderação Automática (Contra conteúdo sensível)
 - [ ] Bot API
 - [ ] Suporte NoSQL (intercambeavel nas settings) ou particionamento postgresql
 - [ ] Hashed Resync para conexão instável
