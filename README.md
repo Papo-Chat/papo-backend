@@ -90,6 +90,7 @@ backend/
 - **Servidor autoritativo.** O cliente nunca é fonte de verdade — permissão, presença, validação de arquivo e estado de canal são sempre decididos e persistidos no backend.
 - **Attachments endereçados por conteúdo** (SHA-256), com deduplicação automática.
 - **Thumbnail e Link Preview** Processamento de thumbnails muito robusto com etiqueta para robots.txt (oEmbed, OpenGraph, Youtube etc.)
+- **Roles** Sistema de roles simplificado com permissões para acessar canal, moderação e administração.
 
 
 * Pré-requisitos: Go 1.21+, Docker (para o Postgres), [Goose](https://github.com/pressly/goose).
@@ -168,6 +169,7 @@ Esquema completo em [`openapi.yml`](./openapi.yml).
 | Servers | `/servers`, `/servers/:id`, `/servers/:id/roles` |
 | Channels | `/channels`, `/channels/:id`, `/channels/:id/change_position`, `/channels/:id/permissions` |
 | Messages | `/channels/:id/messages`, `/messages`, `/messages/:id` |
+| Roles | `/roles` |
 | Emojis | `/emojis`, `/emojis/:id` |
 | Link Preview (Embedding) | `/link-previews/{preview_id}`|
 | Attachments | `/attachments/:id` `/attachments/:id/thumbnail` |
