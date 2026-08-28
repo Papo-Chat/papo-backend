@@ -93,10 +93,12 @@ backend/
 - **Roles** Sistema de roles simplificado com permissões para acessar canal, moderação e administração.
 
 
-* Pré-requisitos: Go 1.21+, Docker (para o Postgres), [Goose](https://github.com/pressly/goose).
+## Pré-requisitos:
+* Go 1.21+, Docker (para o Postgres), [Goose](https://github.com/pressly/goose).
 * ~3GB RAM para processamento de thumbnails e links.
 
-* Versão leve: 256MB-1GB RAM com processamento de thumbnails e links desativados:
+Versão leve: 
+* 256MB-1GB RAM com processamento de thumbnails e links desativados:
 ```
 .env:
      THUMBNAIL_ENABLED=false
