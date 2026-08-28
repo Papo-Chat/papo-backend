@@ -30,6 +30,7 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Processamento Icons no Backend 
 - [x] Seek (HTTP206) para attachment de vídeos 
 - [x] Adições no User Profile (Descrição, banner), GET /media/:sha_hash e last_read_message
+- [ ] GET servers não deve precisar de auth.
 - [ ] Batch request para user profiles (POST /users/profileBatch com body com ids dos usuários), retorna o mesmo que profile mas array (máximo 50 usuários)
 - [ ] Cleanup (excluir código não usado)
    - Decidir entre multiserver ou single server e solidificar o código a um.
@@ -106,6 +107,13 @@ Versão leve:
 
 ## Rodando localmente ou em VPS Simples
 
+```
+.env:
+     THUMBNAIL_ENABLED=false
+```
+
+## Rodando localmente ou em VPS Simples
+
 ```bash
 # banco
 cd infra && docker-compose up -d
@@ -113,9 +121,9 @@ cd infra && docker-compose up -d
 
 ```bash
 # migrations
-cd ../migrations && goose up
+# necessário configurar .env do goose na pasta infra
+goose up
 ```
-Adicione um segredo JWT válido no .env, sem isso o servidor não vai funcionar.
 
 ```bash
 # backend
@@ -129,19 +137,21 @@ Backend sobe em `http://localhost:8080`, WebSocket em `ws://localhost:8080/ws`.
 
 ```env
 SERVER_PORT=8080
+
+# MUDE O USUARIO E SENHA DO DATABASE EM PRODUÇÃO
 DATABASE_URL=postgres://papo:papo123@localhost:5432/papo
 
 # Use segredos aleatórios fortes em produção
-//Usado para senhas e auth, OBRIGATÓRIA no mínimo 256bits
+# Usado para senhas e auth, OBRIGATÓRIA no mínimo 256bits
 JWT_SECRET=troque_por_um_segredo_aleatorio
 
-//Usado para que o endpoint de midia não sirva hash padrão
+# Usado para que o endpoint de midia não sirva hash padrão
 HMAC_SECRET=segredo_de_midia_unguessable
 
-//Url usada para erros RFC 7807, pode ser deixada em branco sem problema
+# Url usada para erros RFC 7807, pode ser deixada em branco sem problema
 BASE_URL=https://papo.com/
 
-//Variáveis de usuário
+# Variáveis de usuário
 MAX_USERNAME_LENGTH=16
 MAX_PASSWORD_LENGTH=64
 
@@ -155,6 +165,9 @@ RATE_BURST=40
 
 # Origens permitidas, separadas por vírgula
 CORS_ORIGINS=http://localhost:5173,https://localhost:5173
+
+# Cookies gerados aceitam frontend hosteado em endereço diferente do backend com false, nem um pouco recomendado por questões de segurança mas necessário em ambientes caseiros e de testes.
+SAME_ORIGIN=true
 
 # Desative para reduzir consumo de RAM, mas processamento de imagens será desativado
 THUMBNAIL_ENABLED=true
