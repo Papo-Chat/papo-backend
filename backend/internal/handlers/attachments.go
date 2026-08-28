@@ -17,7 +17,8 @@ import (
 // DownloadAttachmentHandler implementa GET /attachments/:file_id.
 // O usuário precisa da permissão read_channel do canal da mensagem que possui
 // o attachment (o dono do servidor do canal sempre pode). A resposta é o
-// arquivo binário com o Content-Type do MIME type detectado no upload.
+// arquivo binário com o Content-Type do MIME type detectado no upload e
+// suporta Range requests (206 Partial Content) via http.ServeContent.
 func DownloadAttachmentHandler(baseURL string, c echo.Context) error {
 	userID, ok := c.Get(middleware.UserIDContextKey).(string)
 	if !ok || userID == "" {
@@ -69,14 +70,11 @@ func DownloadAttachmentHandler(baseURL string, c echo.Context) error {
 	resp := c.Response()
 	resp.Header().Set(echo.HeaderContentType, attachment.MimeType)
 	resp.Header().Set(echo.HeaderContentDisposition, utils.ContentDisposition(attachment.OriginalFileName))
-	resp.Header().Set(echo.HeaderContentLength, strconv.FormatInt(info.Size(), 10))
-	resp.WriteHeader(http.StatusOK)
 
-	if _, err := io.Copy(resp, file); err != nil {
-		utils.Errorf("request_id=%s falha ao enviar o blob do attachment: %v",
-			c.Request().Header.Get(echo.HeaderXRequestID), err)
-		return err
-	}
+	// ServeContent trata Range requests (206 Partial Content, 416 para
+	// intervalo fora do alcance) e If-Modified-Since (304). O blob é
+	// content-addressable e imutável, então o ModTime é estável.
+	http.ServeContent(resp, c.Request(), attachment.OriginalFileName, info.ModTime(), file)
 
 	return nil
 }

@@ -1179,12 +1179,21 @@ paths:
               schema:
                 type: string
                 format: binary
+        '206':
+          description: "Parte do arquivo (Range request; Content-Range indica o intervalo atendido)"
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '416':
+          description: Intervalo fora do alcance do arquivo (Range não satisfatível)
         '500':
           $ref: '#/components/responses/InternalError'
 

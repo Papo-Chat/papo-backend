@@ -28,8 +28,8 @@ Backend de um chat self-hosted, inspirado no Discord dos primeiros anos: simples
 - [x] Implementar evento user_join quando um novo usuário se registrar (para o frontend conseguir adicionar a lista de usuário).
 - [x] Status Ausente/Ocupado (novo field)
 - [x] Processamento Icons no Backend 
-- [ ] Seek (HTTP206) para attachment de vídeos 
-- [ ] User Profile e last_read_message (Descrição, banner)
+- [x] Seek (HTTP206) para attachment de vídeos 
+- [ ] User Profile (Descrição, banner) e last_read_message 
 - [ ] Cleanup (excluir código não usado)
    - Decidir entre multiserver ou single server e solidificar o código a um.
    - Implementar melhor maneira de carregar Cfg (memória, sem carregar IO toda hora)

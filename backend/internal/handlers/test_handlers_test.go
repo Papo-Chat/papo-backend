@@ -9888,3 +9888,67 @@ func TestUpdateUserHandlerNicknameTooLong(t *testing.T) {
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
 		"nickname deve ter no máximo 32 caracteres e status no máximo 64 caracteres")
 }
+
+// TestDownloadAttachmentRoutePartialContent garante que GET
+// /attachments/:file_id atende Range requests (seek) com 206 Partial
+// Content: intervalo inicial (bytes=0-4) e sufixo (bytes=6-) retornam a
+// fatia do blob com Content-Range correto, e intervalo fora do alcance
+// retorna 416.
+func TestDownloadAttachmentRoutePartialContent(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	server := createServerFor(t, userID)
+	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	attachment := newMessageWithAttachmentRoute(t, e, channel.ID, token)
+
+	blob, err := os.ReadFile(mediaPathFor(attachment.MediaShaHash))
+	if err != nil {
+		t.Fatalf("falha ao ler o blob de apoio: %v", err)
+	}
+
+	getRange := func(rangeHeader string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/attachments/"+attachment.ID, nil)
+		req.Header.Set("Range", rangeHeader)
+		req.AddCookie(authCookie(token))
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := getRange("bytes=0-4")
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("esperava status 206, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if ar := rec.Header().Get("Accept-Ranges"); ar != "bytes" {
+		t.Errorf("esperava accept-ranges bytes, obtive %q", ar)
+	}
+	if ct := rec.Header().Get(echo.HeaderContentType); ct != "image/png" {
+		t.Errorf("esperava content-type image/png, obtive %q", ct)
+	}
+	if cl := rec.Header().Get(echo.HeaderContentLength); cl != "5" {
+		t.Errorf("esperava content-length 5, obtive %q", cl)
+	}
+	if cr := rec.Header().Get("Content-Range"); cr != fmt.Sprintf("bytes 0-4/%d", len(blob)) {
+		t.Errorf("esperava content-range %q, obtive %q", fmt.Sprintf("bytes 0-4/%d", len(blob)), cr)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), blob[:5]) {
+		t.Errorf("corpo do 206 não corresponde ao intervalo 0-4 do blob")
+	}
+
+	rec = getRange("bytes=6-")
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("esperava status 206 para bytes=6-, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if cr := rec.Header().Get("Content-Range"); cr != fmt.Sprintf("bytes 6-%d/%d", len(blob)-1, len(blob)) {
+		t.Errorf("esperava content-range %q, obtive %q", fmt.Sprintf("bytes 6-%d/%d", len(blob)-1, len(blob)), cr)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), blob[6:]) {
+		t.Errorf("corpo do 206 não corresponde ao intervalo 6-fim do blob")
+	}
+
+	rec = getRange(fmt.Sprintf("bytes=%d-", len(blob)))
+	if rec.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("esperava status 416 para intervalo fora do alcance, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+}
