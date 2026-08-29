@@ -28,18 +28,17 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Status Ausente/Ocupado (novo field)
 - [x] Seek (HTTP206) para attachment de vídeos 
 - [x] Adições no User Profile (Descrição, banner), GET /media/:sha_hash e last_read_message
-- [ ] Batch request para user profiles (POST /users/profileBatch com body com ids dos usuários), retorna o mesmo que profile mas array (máximo 50 usuários)
-- [ ] Cleanup (excluir código não usado)
-   - Decidir entre multiserver ou single server e solidificar o código a um.
-   - Implementar melhor maneira de carregar Cfg (memória, sem carregar IO toda hora)
-   - Verificar a necessidade de testes mais elegantes e abrangentes
+- [x] Batch request para user profiles (POST /users/profileBatch com body com ids dos usuários), retorna o mesmo que profile mas array (máximo 50 usuários)
+- [ ] Fixar código em single server
 - [ ] Auditoria/Logs para Admins (somente-texto)
 - [ ] Crons GC Attachments orfãos/tabela quebrada
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
 - [ ] React Mensagens
+- [ ] Pin message /POST messages/pin/:id, permissão pin_message
+- [ ] Notificações (persistentes)
 - [ ] Refresh token rotation com detecção de reuse, tabela endpoint de dispositivos conectados, endpoint de derrubar todas as conexões (inclusive atual)
-- [ ] Direct Messages
 - [ ] Detecção e moderação Automática (Contra conteúdo sensível)
+- [ ] Direct Messages
 - [ ] Bot API
 - [ ] Suporte NoSQL (intercambeavel nas settings) ou particionamento postgresql
 - [ ] Hashed Resync para conexão instável
@@ -170,7 +169,7 @@ Esquema completo em [`openapi.yml`](./openapi.yml).
 | Recurso | Endpoints principais |
 |---|---|
 | Auth | `/auth/register`, `/auth/login`, `/auth/loginServer`, `/auth/whoami`, `/auth/logout` |
-| Users | `/users`, `/users/:id/profile`, `/users/:id`, `/users/:id/banner`, `/users/:id/ban`, `/users/settings` |
+| Users | `/users`, `/users/:id/profile`, `/users/profileBatch`, `/users/:id`, `/users/:id/banner`, `/users/:id/ban`, `/users/settings` |
 | Servers | `/servers`, `/servers/:id`, `/servers/:id/roles` |
 | Channels | `/channels`, `/channels/:id`, `/channels/:id/change_position`, `/channels/:id/permissions` |
 | Messages | `/channels/:id/messages`, `/messages`, `/messages/:id` |

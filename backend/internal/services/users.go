@@ -43,6 +43,9 @@ const maxStatusLength = 64
 // userListLimit é o limite de usuários por requisição de listagem.
 const userListLimit = 100
 
+// profileBatchLimit é o limite de ids por requisição de perfis em lote.
+const profileBatchLimit = 50
+
 // UpdateSettings valida e salva as configurações do usuário autenticado.
 // Retorna ErrUserNotFound quando o usuário não existe e ErrInvalidInput
 // quando a configuração contém valores fora dos permitidos.
@@ -132,6 +135,50 @@ func resolveAvatar(ctx context.Context, user *models.User) error {
 	user.AvatarBlob = blob
 	user.AvatarFormat = mimeToFormat(media.MimeType)
 	return nil
+}
+
+// ProfilesBatch retorna os perfis dos usuários solicitados (mesma forma de
+// Profile), na ordem da requisição, pulando ids que não existem. Ids
+// duplicados são considerados uma única vez. Retorna ErrInvalidInput quando a
+// lista de ids é vazia ou excede 50 ids.
+func ProfilesBatch(ctx context.Context, ids []string) ([]models.User, error) {
+	if len(ids) == 0 || len(ids) > profileBatchLimit {
+		return nil, ErrInvalidInput
+	}
+
+	seen := make(map[string]struct{}, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+
+	users, err := storage.GetUsersByIDs(ctx, unique)
+	if err != nil {
+		return nil, err
+	}
+
+	byID := make(map[string]models.User, len(users))
+	for _, user := range users {
+		byID[user.ID] = user
+	}
+
+	profiles := make([]models.User, 0, len(unique))
+	for _, id := range unique {
+		user, ok := byID[id]
+		if !ok {
+			continue
+		}
+		if err := resolveAvatar(ctx, &user); err != nil {
+			return nil, err
+		}
+		profiles = append(profiles, user)
+	}
+
+	return profiles, nil
 }
 
 // ListUsers lista os usuários cadastrados com keyset pagination, sem campos

@@ -36,6 +36,9 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	e.GET("/users/:user_id/profile", func(c echo.Context) error {
 		return ProfileHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
+	e.POST("/users/profileBatch", func(c echo.Context) error {
+		return ProfileBatchHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
 	e.PUT("/users/settings", func(c echo.Context) error {
 		return UpdateSettingsHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)

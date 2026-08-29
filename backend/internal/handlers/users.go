@@ -70,6 +70,73 @@ func ProfileHandler(baseURL string, c echo.Context) error {
 	})
 }
 
+type profileBatchRequest struct {
+	IDs []string `json:"ids"`
+}
+
+type profileBatchResponse struct {
+	Profiles []profileResponse `json:"profiles"`
+}
+
+// ProfileBatchHandler implementa POST /users/profileBatch.
+// Retorna os perfis dos usuários solicitados (mesma forma do profile
+// individual), na ordem da requisição, pulando ids que não existem.
+// Máximo de 50 ids por requisição.
+func ProfileBatchHandler(baseURL string, c echo.Context) error {
+	if _, ok := c.Get(middleware.UserIDContextKey).(string); !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	var req profileBatchRequest
+	if err := c.Bind(&req); err != nil {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
+	}
+	if len(req.IDs) == 0 {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "campo 'ids' é obrigatório")
+	}
+	for _, id := range req.IDs {
+		if id == "" {
+			return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+				"invalid-param", "Parâmetro inválido", "ids não podem ser vazios")
+		}
+	}
+
+	users, err := services.ProfilesBatch(c.Request().Context(), req.IDs)
+	switch {
+	case errors.Is(err, services.ErrInvalidInput):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "máximo de 50 ids por requisição")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao recuperar os perfis dos usuários: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao recuperar os perfis dos usuários")
+	}
+
+	profiles := make([]profileResponse, 0, len(users))
+	for _, user := range users {
+		profiles = append(profiles, profileResponse{
+			ID:              user.ID,
+			Username:        user.Username,
+			Nickname:        user.Nickname,
+			AvatarBlob:      user.AvatarBlob,
+			AvatarFormat:    user.AvatarFormat,
+			BannerMedia:     user.BannerMedia,
+			Description:     user.Description,
+			Status:          user.Status,
+			StatusMessage:   user.StatusMessage,
+			StatusUpdatedAt: user.StatusUpdatedAt,
+			CreatedAt:       user.CreatedAt,
+		})
+	}
+
+	return c.JSON(http.StatusOK, profileBatchResponse{Profiles: profiles})
+}
+
 // ListUsersHandler implementa GET /users.
 // Os parâmetros de query since (timestamp ISO 8601 para polling de novos
 // usuários) e last_id (id do último usuário da página anterior, usado com

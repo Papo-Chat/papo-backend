@@ -138,6 +138,37 @@ func GetUserByID(ctx context.Context, id string) (models.User, error) {
 	return user, nil
 }
 
+// GetUsersByIDs busca os usuários pelos ids informados, sem o password_hash.
+// Retorna apenas os usuários encontrados.
+func GetUsersByIDs(ctx context.Context, ids []string) ([]models.User, error) {
+	if len(ids) == 0 {
+		return []models.User{}, nil
+	}
+
+	rows, err := GetDB().QueryContext(ctx,
+		"SELECT "+userPublicColumns+" FROM users WHERE id = ANY($1)",
+		ids,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao buscar usuários por ids: %w", err)
+	}
+	defer rows.Close()
+
+	users := make([]models.User, 0, len(ids))
+	for rows.Next() {
+		user, err := scanUserPublic(rows)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao ler usuário: %w", err)
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao buscar usuários por ids: %w", err)
+	}
+
+	return users, nil
+}
+
 // GetUserByUsername busca um usuário pelo username, incluindo o password_hash.
 // É a única função que retorna o hash do banco e deve ser usada somente
 // internamente para validação de senha.
