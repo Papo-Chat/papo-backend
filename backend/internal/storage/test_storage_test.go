@@ -358,6 +358,46 @@ func TestGetUserByID(t *testing.T) {
 	}
 }
 
+func TestGetUsersByIDs(t *testing.T) {
+	u1 := newTestUser(t)
+	u2 := newTestUser(t)
+
+	users, err := GetUsersByIDs(testCtx(), []string{u1.ID, u2.ID, randUUID()})
+	if err != nil {
+		t.Fatalf("GetUsersByIDs retornou erro: %v", err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("esperava 2 usuários (id inexistente deve ser pulado), obtive %d", len(users))
+	}
+	set := make(map[string]models.User, len(users))
+	for _, u := range users {
+		set[u.ID] = u
+		if u.PasswordHash != "" {
+			t.Errorf("GetUsersByIDs não deve retornar password_hash, obtive %q", u.PasswordHash)
+		}
+	}
+	for _, want := range []models.User{u1, u2} {
+		got, ok := set[want.ID]
+		if !ok {
+			t.Errorf("usuário %s não foi retornado", want.ID)
+			continue
+		}
+		if got.Username != want.Username {
+			t.Errorf("esperava username %q, obtive %q", want.Username, got.Username)
+		}
+	}
+}
+
+func TestGetUsersByIDSEmpty(t *testing.T) {
+	users, err := GetUsersByIDs(testCtx(), nil)
+	if err != nil {
+		t.Fatalf("GetUsersByIDs retornou erro: %v", err)
+	}
+	if len(users) != 0 {
+		t.Errorf("esperava lista vazia, obtive %d usuários", len(users))
+	}
+}
+
 func TestGetUserByUsername(t *testing.T) {
 	hash := "hash_" + randHex(8)
 	user, _, err := CreateUser(testCtx(), "user_"+randHex(8), hash, "123.123.123.123")

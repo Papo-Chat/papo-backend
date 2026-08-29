@@ -771,6 +771,116 @@ func TestProfileNonexistentUser(t *testing.T) {
 	}
 }
 
+// --- ProfilesBatch ---
+
+func TestProfilesBatch(t *testing.T) {
+	u1, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	u2, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	// a ordem da requisição é preservada e ids inexistentes são pulados
+	profiles, err := ProfilesBatch(testCtx(), []string{u2.ID, randUUID(), u1.ID})
+	if err != nil {
+		t.Fatalf("ProfilesBatch retornou erro: %v", err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("esperava 2 perfis, obtive %d", len(profiles))
+	}
+	if profiles[0].ID != u2.ID || profiles[0].Username != u2.Username {
+		t.Errorf("primeiro perfil não confere (ordem da requisição): got %+v", profiles[0])
+	}
+	if profiles[1].ID != u1.ID || profiles[1].Username != u1.Username {
+		t.Errorf("segundo perfil não confere (ordem da requisição): got %+v", profiles[1])
+	}
+	for _, p := range profiles {
+		if p.PasswordHash != "" {
+			t.Errorf("ProfilesBatch não deve retornar password_hash, obtive %q", p.PasswordHash)
+		}
+	}
+}
+
+func TestProfilesBatchDeduplicates(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	profiles, err := ProfilesBatch(testCtx(), []string{user.ID, user.ID, user.ID})
+	if err != nil {
+		t.Fatalf("ProfilesBatch retornou erro: %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("esperava 1 perfil (ids duplicados), obtive %d", len(profiles))
+	}
+	if profiles[0].ID != user.ID {
+		t.Errorf("esperava id %s, obtive %s", user.ID, profiles[0].ID)
+	}
+}
+
+func TestProfilesBatchEmptyIDs(t *testing.T) {
+	if _, err := ProfilesBatch(testCtx(), nil); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para ids nil, obtive %v", err)
+	}
+	if _, err := ProfilesBatch(testCtx(), []string{}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para ids vazios, obtive %v", err)
+	}
+}
+
+func TestProfilesBatchTooManyIDs(t *testing.T) {
+	ids := make([]string, 0, profileBatchLimit+1)
+	for i := 0; i < profileBatchLimit+1; i++ {
+		ids = append(ids, randUUID())
+	}
+	if _, err := ProfilesBatch(testCtx(), ids); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput para %d ids, obtive %v", len(ids), err)
+	}
+}
+
+func TestProfilesBatchMaxIDSAccepted(t *testing.T) {
+	ids := make([]string, 0, profileBatchLimit)
+	for i := 0; i < profileBatchLimit; i++ {
+		ids = append(ids, randUUID())
+	}
+	profiles, err := ProfilesBatch(testCtx(), ids)
+	if err != nil {
+		t.Fatalf("ProfilesBatch com %d ids retornou erro: %v", profileBatchLimit, err)
+	}
+	if len(profiles) != 0 {
+		t.Errorf("esperava 0 perfis para ids inexistentes, obtive %d", len(profiles))
+	}
+}
+
+func TestProfilesBatchResolvesAvatar(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	avatar := base64.StdEncoding.EncodeToString(pngAvatarBytes(64, 64))
+	if err := UpdateAvatar(testCtx(), user.ID, avatar, "PNG"); err != nil {
+		t.Fatalf("UpdateAvatar retornou erro: %v", err)
+	}
+
+	profiles, err := ProfilesBatch(testCtx(), []string{user.ID})
+	if err != nil {
+		t.Fatalf("ProfilesBatch retornou erro: %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("esperava 1 perfil, obtive %d", len(profiles))
+	}
+	if !bytes.Equal(profiles[0].AvatarBlob, pngAvatarBytes(64, 64)) {
+		t.Error("avatar_blob não confere")
+	}
+	if profiles[0].AvatarFormat != "PNG" {
+		t.Errorf("esperava avatar_format PNG, obtive %q", profiles[0].AvatarFormat)
+	}
+}
+
 // --- UpdateUser ---
 
 func TestUpdateUser(t *testing.T) {

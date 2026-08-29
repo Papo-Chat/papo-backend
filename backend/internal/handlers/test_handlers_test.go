@@ -341,6 +341,7 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		{http.MethodGet, "/auth/whoami"},
 		{http.MethodGet, "/users"},
 		{http.MethodGet, "/users/" + userID + "/profile"},
+		{http.MethodPost, "/users/profileBatch"},
 		{http.MethodPut, "/users/settings"},
 		{http.MethodPut, "/users/" + userID},
 		{http.MethodPut, "/users/" + userID + "/status"},
@@ -591,6 +592,47 @@ func TestProfileRouteWithAuth(t *testing.T) {
 	if resp.ID != userID {
 		t.Errorf("esperava id %q, obtive %q", userID, resp.ID)
 	}
+}
+
+// TestProfileBatchRouteWithAuth garante que POST /users/profileBatch é
+// roteado para o handler de batch (rota estática coexistindo com
+// /users/:user_id) e responde os perfis na ordem da requisição.
+func TestProfileBatchRouteWithAuth(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+
+	body, _ := json.Marshal(map[string][]string{"ids": {userID, randUUID()}})
+	rec := do(t, e, http.MethodPost, "/users/profileBatch", body, authCookie(token))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Profiles []struct {
+			ID string `json:"id"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(resp.Profiles) != 1 {
+		t.Fatalf("esperava 1 perfil (id inexistente deve ser pulado), obtive %d", len(resp.Profiles))
+	}
+	if resp.Profiles[0].ID != userID {
+		t.Errorf("esperava id %q, obtive %q", userID, resp.Profiles[0].ID)
+	}
+}
+
+// TestProfileBatchRouteUnauthorized garante que POST /users/profileBatch sem
+// autenticação é rejeitado com 401 pelo middleware JWT.
+func TestProfileBatchRouteUnauthorized(t *testing.T) {
+	e := newApp()
+
+	body, _ := json.Marshal(map[string][]string{"ids": {randUUID()}})
+	rec := do(t, e, http.MethodPost, "/users/profileBatch", body, nil)
+
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
 }
 
 // TestSettingsRoutePrecedence garante que PUT /users/settings é roteado para
@@ -4602,6 +4644,150 @@ func TestProfileHandlerMissingUserAuth(t *testing.T) {
 
 	if err := ProfileHandler(testBaseURL, c); err != nil {
 		t.Fatalf("ProfileHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+// --- ProfileBatchHandler ---
+
+func TestProfileBatchHandlerSuccess(t *testing.T) {
+	u1, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	u2, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string][]string{"ids": {u2.ID, u1.ID}})
+	c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+	c.Set(middleware.UserIDContextKey, u1.ID)
+	rec := recorder(c)
+
+	if err := ProfileBatchHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ProfileBatchHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Profiles []struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(resp.Profiles) != 2 {
+		t.Fatalf("esperava 2 perfis, obtive %d", len(resp.Profiles))
+	}
+	if resp.Profiles[0].ID != u2.ID || resp.Profiles[0].Username != u2.Username {
+		t.Errorf("primeiro perfil não confere (ordem da requisição): got %+v", resp.Profiles[0])
+	}
+	if resp.Profiles[1].ID != u1.ID || resp.Profiles[1].Username != u1.Username {
+		t.Errorf("segundo perfil não confere (ordem da requisição): got %+v", resp.Profiles[1])
+	}
+}
+
+func TestProfileBatchHandlerSkipsMissingAndDedupes(t *testing.T) {
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string][]string{"ids": {user.ID, randUUID(), user.ID}})
+	c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+	c.Set(middleware.UserIDContextKey, user.ID)
+	rec := recorder(c)
+
+	if err := ProfileBatchHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ProfileBatchHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Profiles []struct {
+			ID string `json:"id"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(resp.Profiles) != 1 || resp.Profiles[0].ID != user.ID {
+		t.Errorf("esperava 1 perfil do usuário %s, obtive %+v", user.ID, resp.Profiles)
+	}
+}
+
+func TestProfileBatchHandlerEmptyIDs(t *testing.T) {
+	t.Run("chave ausente", func(t *testing.T) {
+		c := newContext(t, http.MethodPost, "/users/profileBatch", []byte("{}"), "")
+		c.Set(middleware.UserIDContextKey, randUUID())
+		rec := recorder(c)
+
+		if err := ProfileBatchHandler(testBaseURL, c); err != nil {
+			t.Fatalf("ProfileBatchHandler retornou erro: %v", err)
+		}
+		assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+			"campo 'ids' é obrigatório")
+	})
+
+	t.Run("lista vazia", func(t *testing.T) {
+		body, _ := json.Marshal(map[string][]string{"ids": {}})
+		c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+		c.Set(middleware.UserIDContextKey, randUUID())
+		rec := recorder(c)
+
+		if err := ProfileBatchHandler(testBaseURL, c); err != nil {
+			t.Fatalf("ProfileBatchHandler retornou erro: %v", err)
+		}
+		assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+			"campo 'ids' é obrigatório")
+	})
+}
+
+func TestProfileBatchHandlerEmptyIDEntry(t *testing.T) {
+	body, _ := json.Marshal(map[string][]string{"ids": {""}})
+	c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+	c.Set(middleware.UserIDContextKey, randUUID())
+	rec := recorder(c)
+
+	if err := ProfileBatchHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ProfileBatchHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"ids não podem ser vazios")
+}
+
+func TestProfileBatchHandlerTooManyIDs(t *testing.T) {
+	ids := make([]string, 0, 51)
+	for i := 0; i < 51; i++ {
+		ids = append(ids, randUUID())
+	}
+	body, _ := json.Marshal(map[string][]string{"ids": ids})
+	c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+	c.Set(middleware.UserIDContextKey, randUUID())
+	rec := recorder(c)
+
+	if err := ProfileBatchHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ProfileBatchHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"máximo de 50 ids por requisição")
+}
+
+func TestProfileBatchHandlerMissingUserAuth(t *testing.T) {
+	body, _ := json.Marshal(map[string][]string{"ids": {randUUID()}})
+	c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+	rec := recorder(c)
+
+	if err := ProfileBatchHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ProfileBatchHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
 		"token de autenticação ausente, inválido ou expirado")
