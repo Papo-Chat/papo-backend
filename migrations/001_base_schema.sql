@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS channels (
     name TEXT NOT NULL UNIQUE,
     permissions JSONB DEFAULT '{}',
     position INTEGER NOT NULL,
+    topic TEXT,
     type TEXT NOT NULL DEFAULT 'text' CHECK (type IN ('text', 'category')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     tsv_content TSVECTOR GENERATED ALWAYS AS (to_tsvector('portuguese', name)) STORED
@@ -58,6 +59,7 @@ CREATE TABLE IF NOT EXISTS messages (
     channel_id UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     author_id UUID REFERENCES users(id),
     content TEXT,
+    reply_to UUID,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     edited_at TIMESTAMPTZ DEFAULT NULL,
     tsv_content TSVECTOR GENERATED ALWAYS AS (to_tsvector('portuguese', content)) STORED
@@ -112,7 +114,12 @@ CREATE TABLE IF NOT EXISTS user_roles (
     PRIMARY KEY (user_id, role_id)
 );
 
+ALTER TABLE channels
+    ADD CONSTRAINT channels_topic_text_only CHECK (type <> 'category' OR topic IS NULL);
+
+
 -- +goose Down
+ALTER TABLE channels DROP CONSTRAINT IF EXISTS channels_topic_text_only;
 DROP TABLE IF EXISTS user_roles;
 DROP TABLE IF EXISTS roles;
 DROP TABLE IF EXISTS user_channel_state;

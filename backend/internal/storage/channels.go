@@ -11,7 +11,7 @@ import (
 	"papo/internal/models"
 )
 
-const channelColumns = "id, name, permissions, type, position, created_at"
+const channelColumns = "id, name, permissions, type, position, created_at, topic"
 
 // ErrPositionConflict indica que a posição atual do canal não corresponde
 // à posição informada na requisição.
@@ -36,6 +36,7 @@ func scanChannel(row rowScanner) (models.Channel, error) {
 		&channel.Type,
 		&channel.Position,
 		&channel.CreatedAt,
+		&channel.Topic,
 	)
 	if err != nil {
 		return models.Channel{}, err
@@ -54,7 +55,9 @@ func scanChannel(row rowScanner) (models.Channel, error) {
 // CreateChannel cria um novo canal com permissões vazias e retorna o registro criado.
 // A position é calculada pelo backend: próxima posição (máximo + 1),
 // com a alocação serializada por advisory lock para evitar posições duplicadas.
-func CreateChannel(ctx context.Context, name, channelType string) (models.Channel, error) {
+// Topic vazio é gravado como NULL; a validação (máx 512, apenas canais de
+// texto) é feita na camada de serviço.
+func CreateChannel(ctx context.Context, name, channelType, topic string) (models.Channel, error) {
 	tx, err := GetDB().BeginTx(ctx, nil)
 	if err != nil {
 		return models.Channel{}, fmt.Errorf("falha ao criar canal: %w", err)
@@ -68,11 +71,17 @@ func CreateChannel(ctx context.Context, name, channelType string) (models.Channe
 		return models.Channel{}, fmt.Errorf("falha ao criar canal: %w", err)
 	}
 
+	// topic vazio vira NULL (canal sem tópico)
+	var topicArg any
+	if topic != "" {
+		topicArg = topic
+	}
+
 	row := tx.QueryRowContext(ctx,
-		`INSERT INTO channels (name, type, position)
-		 VALUES ($1, $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM channels))
+		`INSERT INTO channels (name, type, position, topic)
+		 VALUES ($1, $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM channels), $3)
 		 RETURNING `+channelColumns,
-		name, channelType,
+		name, channelType, topicArg,
 	)
 
 	channel, err := scanChannel(row)
@@ -141,14 +150,26 @@ func ListChannels(ctx context.Context) ([]models.Channel, error) {
 	return channels, nil
 }
 
-// UpdateChannel renomeia um canal pelo id e retorna o canal atualizado.
+// UpdateChannel renomeia um canal pelo id e, opcionalmente, atualiza o topic.
 // Nome duplicado retorna ErrUniqueViolation.
-func UpdateChannel(ctx context.Context, id, name string) (models.Channel, error) {
-	row := GetDB().QueryRowContext(ctx,
-		"UPDATE channels SET name = $2 WHERE id = $1 RETURNING "+channelColumns,
-		id, name,
-	)
+// Topic nil deixa o tópico atual inalterado; Topic não-nil grava o valor
+// (string vazia limpa o tópico, gravando NULL).
+func UpdateChannel(ctx context.Context, id, name string, topic *string) (models.Channel, error) {
+	var query string
+	var args []any
+	if topic == nil {
+		query = "UPDATE channels SET name = $2 WHERE id = $1 RETURNING " + channelColumns
+		args = []any{id, name}
+	} else {
+		var topicArg any
+		if *topic != "" {
+			topicArg = *topic
+		}
+		query = "UPDATE channels SET name = $2, topic = $3 WHERE id = $1 RETURNING " + channelColumns
+		args = []any{id, name, topicArg}
+	}
 
+	row := GetDB().QueryRowContext(ctx, query, args...)
 	channel, err := scanChannel(row)
 	if err != nil {
 		return models.Channel{}, mapStorageError(err)
@@ -279,7 +300,7 @@ func DeleteChannel(ctx context.Context, id string) error {
 // channelSummaryColumns é a seleção da visão ChannelSummary: dados do canal,
 // última mensagem (LATERAL, pode ser NULL) e o username do autor da última
 // mensagem (LEFT JOIN, pode ser NULL).
-const channelSummaryColumns = `c.id, c.name, c.permissions, c.type, c.position, c.created_at,
+const channelSummaryColumns = `c.id, c.name, c.permissions, c.type, c.position, c.created_at, c.topic,
 	lm.id, lm.content, lm.author_id, u.username, lm.created_at`
 
 // channelSummaryJoins traz a última mensagem de cada canal (mesma ordem de
@@ -310,6 +331,7 @@ func scanChannelSummary(row rowScanner, roleNames map[string]string) (models.Cha
 		&summary.Type,
 		&summary.Position,
 		&summary.CreatedAt,
+		&summary.Topic,
 		&lastMessageID,
 		&lastMessageContent,
 		&lastMessageAuthorID,

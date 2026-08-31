@@ -8,7 +8,7 @@ import (
 	"papo/internal/models"
 )
 
-const messageColumns = "id, channel_id, author_id, content, created_at, edited_at"
+const messageColumns = "id, channel_id, author_id, content, created_at, edited_at, reply_to"
 
 func scanMessage(row rowScanner) (models.Message, error) {
 	var message models.Message
@@ -19,6 +19,7 @@ func scanMessage(row rowScanner) (models.Message, error) {
 		&message.Content,
 		&message.CreatedAt,
 		&message.EditedAt,
+		&message.ReplyTo,
 	)
 	if err != nil {
 		return models.Message{}, err
@@ -29,12 +30,14 @@ func scanMessage(row rowScanner) (models.Message, error) {
 
 // CreateMessage cria uma nova mensagem e retorna o registro criado.
 // Content vazio é gravado como NULL (a mensagem pode ter apenas
-// attachments).
+// attachments). ReplyTo vazio é gravado como NULL (sem referência); a
+// validação de existência/mesmo canal da mensagem referenciada é feita na
+// camada de serviço.
 // Se attachmentIDs não for vazio, os attachments (já inseridos na etapa
 // anterior do fluxo de criação de mensagem) são vinculados à mensagem na
 // mesma transação do INSERT.
-func CreateMessage(ctx context.Context, channelID, authorID, content string, attachmentIDs []string) (models.Message, error) {
-	const insertMessage = "INSERT INTO messages (channel_id, author_id, content) VALUES ($1, $2, $3) RETURNING " + messageColumns
+func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo string, attachmentIDs []string) (models.Message, error) {
+	const insertMessage = "INSERT INTO messages (channel_id, author_id, content, reply_to) VALUES ($1, $2, $3, $4) RETURNING " + messageColumns
 
 	// content vazio vira NULL na coluna (nullable)
 	var contentArg any
@@ -42,8 +45,14 @@ func CreateMessage(ctx context.Context, channelID, authorID, content string, att
 		contentArg = content
 	}
 
+	// replyTo vazio vira NULL (sem referência)
+	var replyToArg any
+	if replyTo != "" {
+		replyToArg = replyTo
+	}
+
 	if len(attachmentIDs) == 0 {
-		message, err := scanMessage(GetDB().QueryRowContext(ctx, insertMessage, channelID, authorID, contentArg))
+		message, err := scanMessage(GetDB().QueryRowContext(ctx, insertMessage, channelID, authorID, contentArg, replyToArg))
 		if err != nil {
 			return models.Message{}, mapStorageError(err)
 		}
@@ -56,7 +65,7 @@ func CreateMessage(ctx context.Context, channelID, authorID, content string, att
 	}
 	defer tx.Rollback()
 
-	message, err := scanMessage(tx.QueryRowContext(ctx, insertMessage, channelID, authorID, contentArg))
+	message, err := scanMessage(tx.QueryRowContext(ctx, insertMessage, channelID, authorID, contentArg, replyToArg))
 	if err != nil {
 		return models.Message{}, mapStorageError(err)
 	}

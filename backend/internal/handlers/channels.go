@@ -30,8 +30,9 @@ func ListChannelsHandler(baseURL string, c echo.Context) error {
 }
 
 type createChannelRequest struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Name  string `json:"name"`
+	Type  string `json:"type"`
+	Topic string `json:"topic"`
 }
 
 // CreateChannelHandler implementa POST /channels.
@@ -42,12 +43,12 @@ func CreateChannelHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	channel, err := services.CreateChannel(c.Request().Context(), req.Name, req.Type)
+	channel, err := services.CreateChannel(c.Request().Context(), req.Name, req.Type, req.Topic)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
+			"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
 	case errors.Is(err, services.ErrChannelLimitReached):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"channel-limit-reached", "Limite de canais atingido",
@@ -70,13 +71,15 @@ func CreateChannelHandler(baseURL string, c echo.Context) error {
 		Name:        channel.Name,
 		Position:    channel.Position,
 		ChannelType: channel.Type,
+		Topic:       channel.Topic,
 	})
 
 	return c.JSON(http.StatusCreated, channel)
 }
 
 type updateChannelRequest struct {
-	Name string `json:"name"`
+	Name  string  `json:"name"`
+	Topic *string `json:"topic"`
 }
 
 // UpdateChannelHandler implementa PUT /channels/:channel_id.
@@ -95,12 +98,12 @@ func UpdateChannelHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	channel, err := services.UpdateChannel(c.Request().Context(), channelID, req.Name)
+	channel, err := services.UpdateChannel(c.Request().Context(), channelID, req.Name, req.Topic)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"name é obrigatório e deve ter no máximo 32 caracteres")
+			"name é obrigatório e deve ter no máximo 32 caracteres; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
 	case errors.Is(err, services.ErrChannelNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "canal não encontrado")
@@ -121,6 +124,7 @@ func UpdateChannelHandler(baseURL string, c echo.Context) error {
 		ChannelID: channel.ID,
 		Name:      channel.Name,
 		Position:  channel.Position,
+		Topic:     channel.Topic,
 	})
 
 	return c.JSON(http.StatusOK, channel)
@@ -288,6 +292,7 @@ func ChangeChannelPositionHandler(baseURL string, c echo.Context) error {
 		ChannelID: channel.ID,
 		Name:      channel.Name,
 		Position:  channel.Position,
+		Topic:     channel.Topic,
 	})
 
 	return c.JSON(http.StatusOK, channel)

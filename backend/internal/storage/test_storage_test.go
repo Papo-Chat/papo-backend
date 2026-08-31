@@ -296,7 +296,7 @@ func newTestServer(t *testing.T, ownerID *string) models.Server {
 
 func newTestChannel(t *testing.T) models.Channel {
 	t.Helper()
-	channel, err := CreateChannel(testCtx(), "channel_"+randHex(8), "text")
+	channel, err := CreateChannel(testCtx(), "channel_"+randHex(8), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal de apoio: %v", err)
 	}
@@ -1014,7 +1014,7 @@ func TestCreateChannel(t *testing.T) {
 	_ = newTestServer(t, nil)
 	name := "channel_" + randHex(8)
 
-	channel, err := CreateChannel(testCtx(), name, "text")
+	channel, err := CreateChannel(testCtx(), name, "text", "")
 	if err != nil {
 		t.Fatalf("CreateChannel retornou erro: %v", err)
 	}
@@ -1035,7 +1035,7 @@ func TestCreateChannel(t *testing.T) {
 		t.Error("esperava created_at preenchido")
 	}
 
-	category, err := CreateChannel(testCtx(), "channel_"+randHex(8), "category")
+	category, err := CreateChannel(testCtx(), "channel_"+randHex(8), "category", "")
 	if err != nil {
 		t.Fatalf("CreateChannel(category) retornou erro: %v", err)
 	}
@@ -1043,7 +1043,7 @@ func TestCreateChannel(t *testing.T) {
 		t.Errorf("esperava type %q, obtive %q", "category", category.Type)
 	}
 
-	if _, err := CreateChannel(testCtx(), "channel_"+randHex(8), "voice"); err == nil {
+	if _, err := CreateChannel(testCtx(), "channel_"+randHex(8), "voice", ""); err == nil {
 		t.Error("esperava erro para type inválido, obtive nil")
 	}
 }
@@ -1052,11 +1052,46 @@ func TestCreateChannelDuplicateName(t *testing.T) {
 	_ = newTestServer(t, nil)
 	name := "channel_" + randHex(8)
 
-	if _, err := CreateChannel(testCtx(), name, "text"); err != nil {
+	if _, err := CreateChannel(testCtx(), name, "text", ""); err != nil {
 		t.Fatalf("falha ao criar primeiro canal: %v", err)
 	}
-	if _, err := CreateChannel(testCtx(), name, "text"); !errors.Is(err, ErrUniqueViolation) {
+	if _, err := CreateChannel(testCtx(), name, "text", ""); !errors.Is(err, ErrUniqueViolation) {
 		t.Errorf("esperava ErrUniqueViolation, obtive %v", err)
+	}
+}
+
+func TestCreateChannelTopic(t *testing.T) {
+	_ = newTestServer(t, nil)
+
+	topic := "tópico de canal"
+	channel, err := CreateChannel(testCtx(), "channel_"+randHex(8), "text", topic)
+	if err != nil {
+		t.Fatalf("CreateChannel com topic retornou erro: %v", err)
+	}
+	if channel.Topic == nil || *channel.Topic != topic {
+		t.Errorf("esperava topic %q, obtive %v", topic, channel.Topic)
+	}
+
+	// topic vazio é gravado como NULL
+	noTopic, err := CreateChannel(testCtx(), "channel_"+randHex(8), "text", "")
+	if err != nil {
+		t.Fatalf("CreateChannel sem topic retornou erro: %v", err)
+	}
+	if noTopic.Topic != nil {
+		t.Errorf("esperava topic nil, obtive %v", noTopic.Topic)
+	}
+}
+
+func TestChannelsTopicCheckConstraint(t *testing.T) {
+	_ = newTestServer(t, nil)
+
+	// o banco rejeita canal category com topic (CHECK constraint)
+	_, err := GetDB().ExecContext(testCtx(),
+		`INSERT INTO channels (name, type, position, topic)
+		 VALUES ($1, 'category', 1, 'topic')`,
+		"check_"+randHex(8))
+	if err == nil {
+		t.Error("esperava erro do banco para canal category com topic, obtive nil")
 	}
 }
 
@@ -1106,7 +1141,7 @@ func TestUpdateChannel(t *testing.T) {
 	}
 
 	newName := "channel_" + randHex(8)
-	updated, err := UpdateChannel(testCtx(), channel.ID, newName)
+	updated, err := UpdateChannel(testCtx(), channel.ID, newName, nil)
 	if err != nil {
 		t.Fatalf("UpdateChannel retornou erro: %v", err)
 	}
@@ -1143,7 +1178,7 @@ func TestUpdateChannelDuplicateName(t *testing.T) {
 	c2 := newTestChannel(t)
 
 	// a constraint UNIQUE de channels.name é global
-	if _, err := UpdateChannel(testCtx(), c1.ID, c2.Name); !errors.Is(err, ErrUniqueViolation) {
+	if _, err := UpdateChannel(testCtx(), c1.ID, c2.Name, nil); !errors.Is(err, ErrUniqueViolation) {
 		t.Errorf("esperava ErrUniqueViolation, obtive %v", err)
 	}
 
@@ -1158,7 +1193,7 @@ func TestUpdateChannelDuplicateName(t *testing.T) {
 }
 
 func TestUpdateChannelNotFound(t *testing.T) {
-	if _, err := UpdateChannel(testCtx(), randUUID(), "channel_"+randHex(8)); !errors.Is(err, ErrNotFound) {
+	if _, err := UpdateChannel(testCtx(), randUUID(), "channel_"+randHex(8), nil); !errors.Is(err, ErrNotFound) {
 		t.Errorf("esperava ErrNotFound para id inexistente, obtive %v", err)
 	}
 }
@@ -1359,11 +1394,11 @@ func TestListChannelSummaries(t *testing.T) {
 	}
 	// garante timestamps distintos para a última mensagem
 	time.Sleep(10 * time.Millisecond)
-	if _, err := CreateMessage(testCtx(), c1.ID, author.ID, "primeira", nil); err != nil {
+	if _, err := CreateMessage(testCtx(), c1.ID, author.ID, "primeira", "", nil); err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m2, err := CreateMessage(testCtx(), c1.ID, author.ID, "segunda", nil)
+	m2, err := CreateMessage(testCtx(), c1.ID, author.ID, "segunda", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -1456,7 +1491,7 @@ func TestGetChannelSummary(t *testing.T) {
 		t.Fatalf("falha ao configurar permissões do canal: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "mensagem única", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "mensagem única", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -2283,7 +2318,7 @@ func TestCreateMessage(t *testing.T) {
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
 
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "olá mundo", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "olá mundo", "", nil)
 	if err != nil {
 		t.Fatalf("CreateMessage retornou erro: %v", err)
 	}
@@ -2312,7 +2347,7 @@ func TestCreateMessageEmptyContent(t *testing.T) {
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
 
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "", "", nil)
 	if err != nil {
 		t.Fatalf("CreateMessage retornou erro: %v", err)
 	}
@@ -2323,6 +2358,38 @@ func TestCreateMessageEmptyContent(t *testing.T) {
 	}
 	if loaded.Content != nil {
 		t.Errorf("esperava content NULL para content vazio, obtive %q", *loaded.Content)
+	}
+}
+
+func TestCreateMessageReplyTo(t *testing.T) {
+	author := newTestUser(t)
+	_ = newTestServer(t, nil)
+	channel := newTestChannel(t)
+
+	target, err := CreateMessage(testCtx(), channel.ID, author.ID, "mensagem alvo", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem alvo: %v", err)
+	}
+
+	// reply_to vazio é gravado como NULL
+	if target.ReplyTo != nil {
+		t.Errorf("esperava reply_to nil, obtive %v", target.ReplyTo)
+	}
+
+	reply, err := CreateMessage(testCtx(), channel.ID, author.ID, "resposta", target.ID, nil)
+	if err != nil {
+		t.Fatalf("CreateMessage com reply_to retornou erro: %v", err)
+	}
+	if reply.ReplyTo == nil || *reply.ReplyTo != target.ID {
+		t.Errorf("esperava reply_to %s, obtive %v", target.ID, reply.ReplyTo)
+	}
+
+	loaded, err := GetMessageByID(testCtx(), reply.ID)
+	if err != nil {
+		t.Fatalf("GetMessageByID retornou erro: %v", err)
+	}
+	if loaded.ReplyTo == nil || *loaded.ReplyTo != target.ID {
+		t.Errorf("esperava reply_to %s no banco, obtive %v", target.ID, loaded.ReplyTo)
 	}
 }
 
@@ -2344,7 +2411,7 @@ func TestCreateMessageWithAttachments(t *testing.T) {
 		attachmentIDs = append(attachmentIDs, attachment.ID)
 	}
 
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "com arquivos", attachmentIDs)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "com arquivos", "", attachmentIDs)
 	if err != nil {
 		t.Fatalf("CreateMessage retornou erro: %v", err)
 	}
@@ -2365,7 +2432,7 @@ func TestGetMessageByID(t *testing.T) {
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
 
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "conteúdo", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "conteúdo", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -2388,19 +2455,19 @@ func TestListMessagesByChannel(t *testing.T) {
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
 
-	first, err := CreateMessage(testCtx(), channel.ID, author.ID, "primeira", nil)
+	first, err := CreateMessage(testCtx(), channel.ID, author.ID, "primeira", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar primeira mensagem: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	second, err := CreateMessage(testCtx(), channel.ID, author.ID, "segunda", nil)
+	second, err := CreateMessage(testCtx(), channel.ID, author.ID, "segunda", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar segunda mensagem: %v", err)
 	}
 
 	// canal vizinho com mensagem que não pode vazar
 	otherChannel := newTestChannel(t)
-	if _, err := CreateMessage(testCtx(), otherChannel.ID, author.ID, "de outro canal", nil); err != nil {
+	if _, err := CreateMessage(testCtx(), otherChannel.ID, author.ID, "de outro canal", "", nil); err != nil {
 		t.Fatalf("falha ao criar mensagem de outro canal: %v", err)
 	}
 
@@ -2442,7 +2509,7 @@ func TestListMessagesWithAttachmentsByChannel(t *testing.T) {
 	channel := newTestChannel(t)
 
 	// mensagem sem attachment
-	plain, err := CreateMessage(testCtx(), channel.ID, author.ID, "sem attachment", nil)
+	plain, err := CreateMessage(testCtx(), channel.ID, author.ID, "sem attachment", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem sem attachment: %v", err)
 	}
@@ -2460,7 +2527,7 @@ func TestListMessagesWithAttachmentsByChannel(t *testing.T) {
 		}
 		attachmentIDs = append(attachmentIDs, attachment.ID)
 	}
-	withAttachments, err := CreateMessage(testCtx(), channel.ID, author.ID, "com attachments", attachmentIDs)
+	withAttachments, err := CreateMessage(testCtx(), channel.ID, author.ID, "com attachments", "", attachmentIDs)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem com attachments: %v", err)
 	}
@@ -2517,7 +2584,7 @@ func TestUpdateMessage(t *testing.T) {
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
 
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "original", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "original", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -2551,7 +2618,7 @@ func TestDeleteMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar attachment de apoio: %v", err)
 	}
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "vai ser apagada", []string{attachment.ID})
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "vai ser apagada", "", []string{attachment.ID})
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -2673,7 +2740,7 @@ func TestListAttachmentsByMessage(t *testing.T) {
 		}
 		attachmentIDs = append(attachmentIDs, attachment.ID)
 	}
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "com attachments", attachmentIDs)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "com attachments", "", attachmentIDs)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -2692,7 +2759,7 @@ func TestListAttachmentsByMessage(t *testing.T) {
 	}
 
 	// mensagem sem attachments: fatia vazia não nula
-	emptyMessage, err := CreateMessage(testCtx(), channel.ID, author.ID, "sem attachments", nil)
+	emptyMessage, err := CreateMessage(testCtx(), channel.ID, author.ID, "sem attachments", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -2775,17 +2842,17 @@ func TestSearchMessages(t *testing.T) {
 		t.Fatalf("falha ao atribuir role ao leitor: %v", err)
 	}
 
-	m1, err := CreateMessage(testCtx(), channel.ID, owner.ID, "zebra borboleta", nil)
+	m1, err := CreateMessage(testCtx(), channel.ID, owner.ID, "zebra borboleta", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 1: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m2, err := CreateMessage(testCtx(), channel.ID, reader.ID, "borboleta vagalume", nil)
+	m2, err := CreateMessage(testCtx(), channel.ID, reader.ID, "borboleta vagalume", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 2: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m3, err := CreateMessage(testCtx(), channel.ID, stranger.ID, "vagalume", nil)
+	m3, err := CreateMessage(testCtx(), channel.ID, stranger.ID, "vagalume", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 3: %v", err)
 	}
@@ -2798,12 +2865,12 @@ func TestSearchMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar attachment de apoio: %v", err)
 	}
-	m4, err := CreateMessage(testCtx(), channel.ID, owner.ID, "peixe", []string{attachment.ID})
+	m4, err := CreateMessage(testCtx(), channel.ID, owner.ID, "peixe", "", []string{attachment.ID})
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 4 com attachment: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m5, err := CreateMessage(testCtx(), restricted.ID, owner.ID, "zebra secreta", nil)
+	m5, err := CreateMessage(testCtx(), restricted.ID, owner.ID, "zebra secreta", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 5 no canal restrito: %v", err)
 	}
@@ -3013,7 +3080,7 @@ func TestSearchMessages(t *testing.T) {
 
 	t.Run("limit acima do máximo", func(t *testing.T) {
 		for i := 0; i < 105; i++ {
-			if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "clamp "+randHex(2), nil); err != nil {
+			if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "clamp "+randHex(2), "", nil); err != nil {
 				t.Fatalf("falha ao criar mensagem de clamp %d: %v", i, err)
 			}
 		}
@@ -3276,7 +3343,7 @@ func TestAttachmentThumbnailCascadeOnMessageDelete(t *testing.T) {
 		t.Fatalf("falha ao criar thumbnail de apoio: %v", err)
 	}
 
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "com anexo", []string{attachment.ID})
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "com anexo", "", []string{attachment.ID})
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -3361,7 +3428,7 @@ func TestAddMessagePreviews(t *testing.T) {
 	author := newTestUser(t)
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "msg", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "msg", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -3410,7 +3477,7 @@ func TestReplaceMessagePreviews(t *testing.T) {
 	author := newTestUser(t)
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "msg", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "msg", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -3453,15 +3520,15 @@ func TestListPreviewsByMessageIDs(t *testing.T) {
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
 
-	m1, err := CreateMessage(testCtx(), channel.ID, author.ID, "m1", nil)
+	m1, err := CreateMessage(testCtx(), channel.ID, author.ID, "m1", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
-	m2, err := CreateMessage(testCtx(), channel.ID, author.ID, "m2", nil)
+	m2, err := CreateMessage(testCtx(), channel.ID, author.ID, "m2", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
-	m3, err := CreateMessage(testCtx(), channel.ID, author.ID, "m3", nil)
+	m3, err := CreateMessage(testCtx(), channel.ID, author.ID, "m3", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -3504,7 +3571,7 @@ func TestGetChannelIDByPreviewID(t *testing.T) {
 	author := newTestUser(t)
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
-	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "msg", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "msg", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -3536,15 +3603,15 @@ func TestTouchLastReadMessage(t *testing.T) {
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
 
-	m1, err := CreateMessage(testCtx(), channel.ID, author.ID, "primeira", nil)
+	m1, err := CreateMessage(testCtx(), channel.ID, author.ID, "primeira", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
-	m2, err := CreateMessage(testCtx(), channel.ID, author.ID, "segunda", nil)
+	m2, err := CreateMessage(testCtx(), channel.ID, author.ID, "segunda", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
-	m3, err := CreateMessage(testCtx(), channel.ID, author.ID, "terceira", nil)
+	m3, err := CreateMessage(testCtx(), channel.ID, author.ID, "terceira", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}

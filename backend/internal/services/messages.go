@@ -151,15 +151,21 @@ func setAttachmentThumbnails(attachments *[]models.MessageAttachment, thumbnails
 // chamado por uma goroutine no handler) e chegam via WS new_preview. A
 // resposta retorna Previews nil.
 //
+// replyTo é opcional: quando informado, a mensagem referenciada deve existir
+// e estar no MESMO canal (a referência pode virar apontador pendente depois,
+// se a mensagem referenciada for excluída).
+//
 // Retorna ErrInvalidInput quando channel_id ou author_id estão ausentes,
 // quando content excede 8192 caracteres, quando a mensagem não tem content
-// nem attachments ou quando um attachment tem nome inválido,
+// nem attachments, quando um attachment tem nome inválido ou quando replyTo
+// referencia uma mensagem de outro canal,
 // ErrTooManyAttachments quando a mensagem tem mais de 10 attachments,
 // ErrChannelNotFound quando o canal não existe,
+// ErrMessageNotFound quando replyTo referencia uma mensagem inexistente,
 // ErrPermissionDenied quando o autor não pode enviar mensagens no canal ou
 // enviar attachments no servidor e ErrAttachmentTooLarge quando um arquivo
 // excede 100MB.
-func CreateMessage(ctx context.Context, channelID, authorID, content string, attachments []AttachmentInput) (models.MessageWithAttachment, error) {
+func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo string, attachments []AttachmentInput) (models.MessageWithAttachment, error) {
 	if channelID == "" {
 		return models.MessageWithAttachment{}, ErrChannelNotFound
 	}
@@ -209,6 +215,21 @@ func CreateMessage(ctx context.Context, channelID, authorID, content string, att
 		}
 	}
 
+	// Valida o reply_to (se informado): a mensagem referenciada deve existir
+	// e estar no mesmo canal.
+	if replyTo != "" {
+		referenced, err := storage.GetMessageByID(ctx, replyTo)
+		if errors.Is(err, storage.ErrNotFound) {
+			return models.MessageWithAttachment{}, ErrMessageNotFound
+		}
+		if err != nil {
+			return models.MessageWithAttachment{}, err
+		}
+		if referenced.ChannelID != channelID {
+			return models.MessageWithAttachment{}, ErrInvalidInput
+		}
+	}
+
 	createdAttachments := make([]models.Attachments, 0, len(attachments))
 	attachmentIDs := make([]string, 0, len(attachments))
 	for _, att := range attachments {
@@ -220,7 +241,7 @@ func CreateMessage(ctx context.Context, channelID, authorID, content string, att
 		attachmentIDs = append(attachmentIDs, created.ID)
 	}
 
-	message, err := storage.CreateMessage(ctx, channelID, authorID, content, attachmentIDs)
+	message, err := storage.CreateMessage(ctx, channelID, authorID, content, replyTo, attachmentIDs)
 	if err != nil {
 		return models.MessageWithAttachment{}, err
 	}

@@ -56,6 +56,8 @@ type HeartbeatInbound struct {
 
 // MessageOutbound é o evento de nova mensagem distribuído aos clientes.
 // Attachments omite o campo quando a mensagem não tem attachments.
+// ReplyTo é a mensagem referenciada (null quando a mensagem não é uma
+// resposta); pode apontar para uma mensagem já excluída (apontador pendente).
 type MessageOutbound struct {
 	Type        EventType                  `json:"type"`
 	ID          string                     `json:"id"`
@@ -63,6 +65,7 @@ type MessageOutbound struct {
 	AuthorID    string                     `json:"author_id"`
 	Content     string                     `json:"content"`
 	CreatedAt   time.Time                  `json:"created_at"`
+	ReplyTo     *string                    `json:"reply_to"`
 	Attachments []models.MessageAttachment `json:"attachments,omitempty"`
 }
 
@@ -101,20 +104,24 @@ type RemovePreviewOutbound struct {
 }
 
 // ChannelCreateOutbound é o evento de criação de canal distribuído aos clientes.
+// Topic é null para canais category (ou sem tópico).
 type ChannelCreateOutbound struct {
 	Type        EventType `json:"type"`
 	ChannelID   string    `json:"channel_id"`
 	Name        string    `json:"name"`
 	ChannelType string    `json:"channel_type"`
 	Position    int       `json:"position"`
+	Topic       *string   `json:"topic"`
 }
 
 // ChannelUpdateOutbound é o evento de atualização de canal distribuído aos clientes.
+// Topic é null para canais category (ou sem tópico).
 type ChannelUpdateOutbound struct {
 	Type      EventType `json:"type"`
 	ChannelID string    `json:"channel_id"`
 	Name      string    `json:"name"`
 	Position  int       `json:"position"`
+	Topic     *string   `json:"topic"`
 }
 
 // ChannelDeleteOutbound é o evento de exclusão de canal distribuído aos clientes.

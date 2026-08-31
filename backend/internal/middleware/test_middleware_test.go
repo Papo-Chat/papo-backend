@@ -422,7 +422,7 @@ func assignRole(t *testing.T, userID, roleID string) {
 // newChannel cria um canal de apoio.
 func newChannel(t *testing.T) models.Channel {
 	t.Helper()
-	channel, err := storage.CreateChannel(context.Background(), "channel_"+randHex(8), "text")
+	channel, err := storage.CreateChannel(context.Background(), "channel_"+randHex(8), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal de apoio: %v", err)
 	}

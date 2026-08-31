@@ -28,6 +28,10 @@ var ErrChannelPositionConflict = errors.New("posição do canal desatualizada")
 // maxChannelNameLength é o tamanho máximo do nome de um canal (32 caracteres, README).
 const maxChannelNameLength = 32
 
+// maxChannelTopicLength é o tamanho máximo do tópico de um canal
+// (512 caracteres, README).
+const maxChannelTopicLength = 512
+
 // maxChannels é o número máximo de canais (500, README).
 const maxChannels = 500
 
@@ -38,13 +42,15 @@ func ListChannels(ctx context.Context) ([]models.ChannelSummary, error) {
 }
 
 // CreateChannel cria um novo canal
-// (README: o body de criação tem name e type; type é opcional e padrão
-// "text", aceita "text" ou "category").
+// (README: o body de criação tem name, type e topic; type é opcional e padrão
+// "text", aceita "text" ou "category"; topic é opcional, máx 512 caracteres e
+// válido apenas para canais de texto).
 // Retorna ErrInvalidInput quando o nome está vazio ou acima de 32
-// caracteres, quando o type é inválido, ErrChannelLimitReached quando o
+// caracteres, quando o type é inválido, quando o topic excede 512 caracteres
+// ou quando um canal category recebe topic, ErrChannelLimitReached quando o
 // limite de 500 canais já foi atingido e ErrChannelNameTaken quando o nome
 // já está em uso.
-func CreateChannel(ctx context.Context, name, channelType string) (models.ChannelSummary, error) {
+func CreateChannel(ctx context.Context, name, channelType, topic string) (models.ChannelSummary, error) {
 	if channelType == "" {
 		channelType = "text"
 	}
@@ -52,6 +58,12 @@ func CreateChannel(ctx context.Context, name, channelType string) (models.Channe
 		return models.ChannelSummary{}, ErrInvalidInput
 	}
 	if name == "" || utf8.RuneCountInString(name) > maxChannelNameLength {
+		return models.ChannelSummary{}, ErrInvalidInput
+	}
+	if utf8.RuneCountInString(topic) > maxChannelTopicLength {
+		return models.ChannelSummary{}, ErrInvalidInput
+	}
+	if channelType == "category" && topic != "" {
 		return models.ChannelSummary{}, ErrInvalidInput
 	}
 
@@ -63,7 +75,7 @@ func CreateChannel(ctx context.Context, name, channelType string) (models.Channe
 		return models.ChannelSummary{}, ErrChannelLimitReached
 	}
 
-	channel, err := storage.CreateChannel(ctx, name, channelType)
+	channel, err := storage.CreateChannel(ctx, name, channelType, topic)
 	if errors.Is(err, storage.ErrUniqueViolation) {
 		return models.ChannelSummary{}, ErrChannelNameTaken
 	}
@@ -76,11 +88,16 @@ func CreateChannel(ctx context.Context, name, channelType string) (models.Channe
 	return storage.GetChannelSummary(ctx, channel.ID)
 }
 
-// UpdateChannel renomeia um canal pelo id (README: PUT /channels/:channel_id).
+// UpdateChannel renomeia um canal pelo id e, opcionalmente, atualiza o topic
+// (README: PUT /channels/:channel_id).
+// Topic nil não altera o tópico; Topic não-nil define o tópico (string vazia
+// limpa o tópico). O topic é válido apenas para canais de texto (máx 512
+// caracteres).
 // Retorna ErrInvalidInput quando o nome está vazio ou acima de 32
-// caracteres, ErrChannelNotFound quando o canal não existe e
+// caracteres, quando o topic excede 512 caracteres ou quando um canal
+// category recebe topic, ErrChannelNotFound quando o canal não existe e
 // ErrChannelNameTaken quando o nome já está em uso.
-func UpdateChannel(ctx context.Context, id, name string) (models.ChannelSummary, error) {
+func UpdateChannel(ctx context.Context, id, name string, topic *string) (models.ChannelSummary, error) {
 	if id == "" {
 		return models.ChannelSummary{}, ErrChannelNotFound
 	}
@@ -88,14 +105,24 @@ func UpdateChannel(ctx context.Context, id, name string) (models.ChannelSummary,
 		return models.ChannelSummary{}, ErrInvalidInput
 	}
 
-	if _, err := storage.GetChannelByID(ctx, id); err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return models.ChannelSummary{}, ErrChannelNotFound
-		}
+	channel, err := storage.GetChannelByID(ctx, id)
+	if errors.Is(err, storage.ErrNotFound) {
+		return models.ChannelSummary{}, ErrChannelNotFound
+	}
+	if err != nil {
 		return models.ChannelSummary{}, err
 	}
 
-	if _, err := storage.UpdateChannel(ctx, id, name); err != nil {
+	if topic != nil {
+		if utf8.RuneCountInString(*topic) > maxChannelTopicLength {
+			return models.ChannelSummary{}, ErrInvalidInput
+		}
+		if channel.Type == "category" && *topic != "" {
+			return models.ChannelSummary{}, ErrInvalidInput
+		}
+	}
+
+	if _, err := storage.UpdateChannel(ctx, id, name, topic); err != nil {
 		if errors.Is(err, storage.ErrUniqueViolation) {
 			return models.ChannelSummary{}, ErrChannelNameTaken
 		}

@@ -1432,7 +1432,7 @@ func createServerFor(t *testing.T, userID string) models.Server {
 // createChannelFor cria um canal text e retorna o registro criado.
 func createChannelFor(t *testing.T, name string) models.Channel {
 	t.Helper()
-	channel, err := storage.CreateChannel(context.Background(), name, "text")
+	channel, err := storage.CreateChannel(context.Background(), name, "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -1544,6 +1544,37 @@ func TestCreateChannelRouteOwner(t *testing.T) {
 	}
 }
 
+// TestCreateChannelRouteWithTopic garante que um POST /channels com topic
+// persiste o tópico e o expõe na resposta.
+func TestCreateChannelRouteWithTopic(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+
+	topic := "tópico do canal"
+	body, _ := json.Marshal(map[string]string{"name": "chn_" + randHex(4), "topic": topic})
+	rec := do(t, e, http.MethodPost, "/channels", body, authCookie(token))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp models.ChannelSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.Topic == nil || *resp.Topic != topic {
+		t.Errorf("esperava topic %q, obtive %v", topic, resp.Topic)
+	}
+
+	stored, err := storage.GetChannelByID(context.Background(), resp.ID)
+	if err != nil {
+		t.Fatalf("GetChannelByID retornou erro: %v", err)
+	}
+	if stored.Topic == nil || *stored.Topic != topic {
+		t.Errorf("esperava topic %q persistido, obtive %v", topic, stored.Topic)
+	}
+}
+
 // TestCreateChannelRouteForbiddenWithoutPermission garante que um usuário sem
 // permissão manage_channels é negado com 403.
 func TestCreateChannelRouteForbiddenWithoutPermission(t *testing.T) {
@@ -1588,7 +1619,7 @@ func TestCreateChannelRouteInvalidInput(t *testing.T) {
 		body, _ := json.Marshal(map[string]string{"name": name})
 		rec := do(t, e, http.MethodPost, "/channels", body, authCookie(token))
 		assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-			"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
+			"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
 	}
 }
 
@@ -1640,6 +1671,38 @@ func TestUpdateChannelRouteOwner(t *testing.T) {
 	}
 }
 
+// TestUpdateChannelRouteWithTopic garante que um PUT /channels/:channel_id com
+// topic atualiza o tópico e o expõe na resposta.
+func TestUpdateChannelRouteWithTopic(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+
+	topic := "novo tópico"
+	body, _ := json.Marshal(map[string]string{"name": channel.Name, "topic": topic})
+	rec := do(t, e, http.MethodPut, "/channels/"+channel.ID, body, authCookie(token))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp models.ChannelSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.Topic == nil || *resp.Topic != topic {
+		t.Errorf("esperava topic %q, obtive %v", topic, resp.Topic)
+	}
+
+	stored, err := storage.GetChannelByID(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatalf("GetChannelByID retornou erro: %v", err)
+	}
+	if stored.Topic == nil || *stored.Topic != topic {
+		t.Errorf("esperava topic %q persistido, obtive %v", topic, stored.Topic)
+	}
+}
+
 // TestUpdateChannelRouteForbiddenWithoutPermission garante que um usuário sem
 // permissão manage_channels no servidor do canal é negado com 403.
 func TestUpdateChannelRouteForbiddenWithoutPermission(t *testing.T) {
@@ -1668,7 +1731,7 @@ func TestUpdateChannelRouteInvalidInput(t *testing.T) {
 	rec := do(t, e, http.MethodPut, "/channels/"+channel.ID, body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"name é obrigatório e deve ter no máximo 32 caracteres")
+		"name é obrigatório e deve ter no máximo 32 caracteres; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
 }
 
 // TestUpdateChannelRouteNotFound garante que PUT /channels/:channel_id
@@ -2409,12 +2472,12 @@ func TestListMessagesRouteSuccess(t *testing.T) {
 	userID, token := registerAndLogin(t, e)
 	createServerFor(t, userID)
 	channel := createChannelFor(t, "chn_"+randHex(4))
-	first, err := storage.CreateMessage(context.Background(), channel.ID, userID, "primeira", nil)
+	first, err := storage.CreateMessage(context.Background(), channel.ID, userID, "primeira", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar primeira mensagem: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	second, err := storage.CreateMessage(context.Background(), channel.ID, userID, "segunda", nil)
+	second, err := storage.CreateMessage(context.Background(), channel.ID, userID, "segunda", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar segunda mensagem: %v", err)
 	}
@@ -2476,6 +2539,61 @@ func TestCreateMessageRouteOwner(t *testing.T) {
 	}
 	if stored.Content == nil || *stored.Content != "olá mundo" {
 		t.Errorf("esperava content %q persistido, obtive %v", "olá mundo", stored.Content)
+	}
+}
+
+// TestCreateMessageRouteWithReplyTo garante que um POST /messages com reply_to
+// persiste a referência e a expõe na resposta.
+func TestCreateMessageRouteWithReplyTo(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+
+	targetRec := doMultipart(t, e, http.MethodPost, "/messages",
+		map[string]string{"channel_id": channel.ID, "content": "mensagem alvo"}, nil, authCookie(token))
+	if targetRec.Code != http.StatusCreated {
+		t.Fatalf("esperava status 201 para mensagem alvo, obtive %d (corpo: %s)", targetRec.Code, targetRec.Body.String())
+	}
+	var target models.MessageWithAttachment
+	if err := json.Unmarshal(targetRec.Body.Bytes(), &target); err != nil {
+		t.Fatalf("falha ao decodificar mensagem alvo: %v", err)
+	}
+
+	rec := doMultipart(t, e, http.MethodPost, "/messages",
+		map[string]string{"channel_id": channel.ID, "content": "resposta", "reply_to": target.ID}, nil, authCookie(token))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp models.MessageWithAttachment
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.ReplyTo == nil || *resp.ReplyTo != target.ID {
+		t.Errorf("esperava reply_to %q, obtive %v", target.ID, resp.ReplyTo)
+	}
+
+	stored, err := storage.GetMessageByID(context.Background(), resp.ID)
+	if err != nil {
+		t.Fatalf("GetMessageByID retornou erro: %v", err)
+	}
+	if stored.ReplyTo == nil || *stored.ReplyTo != target.ID {
+		t.Errorf("esperava reply_to %q persistido, obtive %v", target.ID, stored.ReplyTo)
+	}
+}
+
+// TestCreateMessageRouteReplyToNotFound garante que um POST /messages com
+// reply_to inexistente retorna 404.
+func TestCreateMessageRouteReplyToNotFound(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+
+	rec := doMultipart(t, e, http.MethodPost, "/messages",
+		map[string]string{"channel_id": channel.ID, "content": "resposta", "reply_to": randUUID()}, nil, authCookie(token))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("esperava status 404, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2556,7 +2674,7 @@ func TestCreateMessageRouteContentTooLong(t *testing.T) {
 		map[string]string{"channel_id": channel.ID, "content": strings.Repeat("a", 8193)}, nil, authCookie(token))
 
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"channel_id é obrigatório; content tem no máximo 8192 caracteres; a mensagem precisa de content ou attachment; nome do attachment inválido")
+		"channel_id é obrigatório; content tem no máximo 8192 caracteres; a mensagem precisa de content ou attachment; nome do attachment inválido; reply_to deve referenciar uma mensagem do mesmo canal")
 }
 
 // TestUpdateMessageRouteAuthor garante que o autor edita sua mensagem via
@@ -2566,7 +2684,7 @@ func TestUpdateMessageRouteAuthor(t *testing.T) {
 	userID, token := registerAndLogin(t, e)
 	createServerFor(t, userID)
 	channel := createChannelFor(t, "chn_"+randHex(4))
-	message, err := storage.CreateMessage(context.Background(), channel.ID, userID, "original", nil)
+	message, err := storage.CreateMessage(context.Background(), channel.ID, userID, "original", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -2600,7 +2718,7 @@ func TestUpdateMessageRouteForbiddenOtherUser(t *testing.T) {
 	_, actorToken := registerAndLogin(t, e)
 	createServerFor(t, ownerID)
 	channel := createChannelFor(t, "chn_"+randHex(4))
-	message, err := storage.CreateMessage(context.Background(), channel.ID, ownerID, "x", nil)
+	message, err := storage.CreateMessage(context.Background(), channel.ID, ownerID, "x", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -2631,7 +2749,7 @@ func TestDeleteMessageRouteAuthor(t *testing.T) {
 	userID, token := registerAndLogin(t, e)
 	createServerFor(t, userID)
 	channel := createChannelFor(t, "chn_"+randHex(4))
-	message, err := storage.CreateMessage(context.Background(), channel.ID, userID, "a excluir", nil)
+	message, err := storage.CreateMessage(context.Background(), channel.ID, userID, "a excluir", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -2654,7 +2772,7 @@ func TestDeleteMessageRouteForbiddenOtherUser(t *testing.T) {
 	_, strangerToken := registerAndLogin(t, e)
 	createServerFor(t, ownerID)
 	channel := createChannelFor(t, "chn_"+randHex(4))
-	message, err := storage.CreateMessage(context.Background(), channel.ID, ownerID, "x", nil)
+	message, err := storage.CreateMessage(context.Background(), channel.ID, ownerID, "x", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -2673,7 +2791,7 @@ func TestDeleteMessageRouteWithDeleteMessagesRole(t *testing.T) {
 	actorID, actorToken := registerAndLogin(t, e)
 	createServerFor(t, ownerID)
 	channel := createChannelFor(t, "chn_"+randHex(4))
-	message, err := storage.CreateMessage(context.Background(), channel.ID, ownerID, "x", nil)
+	message, err := storage.CreateMessage(context.Background(), channel.ID, ownerID, "x", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -2701,7 +2819,7 @@ func TestDeleteMessageRouteOwnerDeletesOtherMessage(t *testing.T) {
 	otherID, _ := registerAndLogin(t, e)
 	createServerFor(t, ownerID)
 	channel := createChannelFor(t, "chn_"+randHex(4))
-	message, err := storage.CreateMessage(context.Background(), channel.ID, otherID, "x", nil)
+	message, err := storage.CreateMessage(context.Background(), channel.ID, otherID, "x", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -3308,7 +3426,7 @@ func TestSearchRouteWithAuth(t *testing.T) {
 	createServerFor(t, userID)
 	channel := createChannelFor(t, "chn_"+randHex(4))
 	unique := "w" + randHex(8)
-	msg, err := storage.CreateMessage(context.Background(), channel.ID, userID, "mensagem "+unique, nil)
+	msg, err := storage.CreateMessage(context.Background(), channel.ID, userID, "mensagem "+unique, "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -5730,7 +5848,7 @@ func TestGetServersHandlerSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	if _, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text"); err != nil {
+	if _, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", ""); err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
@@ -5803,7 +5921,7 @@ func TestGetServerHandlerSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	if _, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text"); err != nil {
+	if _, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", ""); err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 	if _, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{}); err != nil {
@@ -6314,11 +6432,11 @@ func TestListChannelsHandlerSuccess(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channelA, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channelA, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
-	channelB, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channelB, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6452,7 +6570,7 @@ func TestCreateChannelHandlerMissingName(t *testing.T) {
 		t.Fatalf("CreateChannelHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
+		"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
 }
 
 func TestCreateChannelHandlerNameTaken(t *testing.T) {
@@ -6463,7 +6581,7 @@ func TestCreateChannelHandlerNameTaken(t *testing.T) {
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 	channelName := "canal_" + randHex(4)
-	if _, err := storage.CreateChannel(testCtx(), channelName, "text"); err != nil {
+	if _, err := storage.CreateChannel(testCtx(), channelName, "text", ""); err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
@@ -6487,7 +6605,7 @@ func TestUpdateChannelHandlerSuccess(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6558,7 +6676,7 @@ func TestUpdateChannelHandlerInvalidJSON(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6581,7 +6699,7 @@ func TestUpdateChannelHandlerMissingName(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6595,7 +6713,7 @@ func TestUpdateChannelHandlerMissingName(t *testing.T) {
 	if err := UpdateChannelHandler(testBaseURL, c); err != nil {
 		t.Fatalf("UpdateChannelHandler retornou erro: %v", err)
 	}
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "name é obrigatório e deve ter no máximo 32 caracteres")
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "name é obrigatório e deve ter no máximo 32 caracteres; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
 }
 
 func TestUpdateChannelHandlerNotFound(t *testing.T) {
@@ -6618,12 +6736,12 @@ func TestUpdateChannelHandlerNameTaken(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 	takenName := "canal_" + randHex(4)
-	if _, err := storage.CreateChannel(testCtx(), takenName, "text"); err != nil {
+	if _, err := storage.CreateChannel(testCtx(), takenName, "text", ""); err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
@@ -6657,7 +6775,7 @@ func TestDeleteChannelHandlerSuccess(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6716,7 +6834,7 @@ func TestGetChannelPermissionsHandlerEmpty(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6758,7 +6876,7 @@ func TestGetChannelPermissionsHandlerSuccess(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6843,7 +6961,7 @@ func TestUpdateChannelPermissionsHandlerSuccess(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6929,7 +7047,7 @@ func TestUpdateChannelPermissionsHandlerMissingRoleID(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6953,7 +7071,7 @@ func TestUpdateChannelPermissionsHandlerInvalidJSON(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -7005,7 +7123,7 @@ func TestUpdateChannelPermissionsHandlerRoleNotFound(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -7032,15 +7150,15 @@ func TestChangeChannelPositionHandlerSuccess(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	c1, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	c1, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar primeiro canal: %v", err)
 	}
-	c2, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	c2, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar segundo canal: %v", err)
 	}
-	c3, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	c3, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar terceiro canal: %v", err)
 	}
@@ -7104,7 +7222,7 @@ func TestChangeChannelPositionHandlerInvalidJSON(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -7127,7 +7245,7 @@ func TestChangeChannelPositionHandlerInvalidPosition(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -7165,11 +7283,11 @@ func TestChangeChannelPositionHandlerConflict(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	c1, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
+	c1, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar primeiro canal: %v", err)
 	}
-	if _, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text"); err != nil {
+	if _, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text", ""); err != nil {
 		t.Fatalf("falha ao criar segundo canal: %v", err)
 	}
 
@@ -8463,7 +8581,7 @@ func createServerAndChannelTest(t *testing.T, ownerID string) (models.Server, mo
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := storage.CreateChannel(testCtx(), "chn_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "chn_"+randHex(4), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -8516,12 +8634,12 @@ func TestListMessagesHandlerEmpty(t *testing.T) {
 func TestListMessagesHandlerSuccess(t *testing.T) {
 	owner := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
-	first, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "primeira mensagem", nil)
+	first, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "primeira mensagem", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar primeira mensagem: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	second, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "segunda mensagem", nil)
+	second, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "segunda mensagem", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar segunda mensagem: %v", err)
 	}
@@ -8566,12 +8684,12 @@ func TestListMessagesHandlerSuccess(t *testing.T) {
 func TestListMessagesHandlerSince(t *testing.T) {
 	owner := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
-	first, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", nil)
+	first, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar primeira mensagem: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	if _, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", nil); err != nil {
+	if _, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", "", nil); err != nil {
 		t.Fatalf("falha ao criar segunda mensagem: %v", err)
 	}
 
@@ -8800,7 +8918,7 @@ func TestCreateMessageHandlerMissingContentAndAttachment(t *testing.T) {
 		t.Fatalf("CreateMessageHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"channel_id é obrigatório; content tem no máximo 8192 caracteres; a mensagem precisa de content ou attachment; nome do attachment inválido")
+		"channel_id é obrigatório; content tem no máximo 8192 caracteres; a mensagem precisa de content ou attachment; nome do attachment inválido; reply_to deve referenciar uma mensagem do mesmo canal")
 }
 
 func TestCreateMessageHandlerContentTooLong(t *testing.T) {
@@ -8816,7 +8934,7 @@ func TestCreateMessageHandlerContentTooLong(t *testing.T) {
 		t.Fatalf("CreateMessageHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"channel_id é obrigatório; content tem no máximo 8192 caracteres; a mensagem precisa de content ou attachment; nome do attachment inválido")
+		"channel_id é obrigatório; content tem no máximo 8192 caracteres; a mensagem precisa de content ou attachment; nome do attachment inválido; reply_to deve referenciar uma mensagem do mesmo canal")
 }
 
 func TestCreateMessageHandlerChannelNotFound(t *testing.T) {
@@ -8883,7 +9001,7 @@ func TestCreateMessageHandlerInvalidMultipart(t *testing.T) {
 func TestUpdateMessageHandlerSuccess(t *testing.T) {
 	owner := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
-	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "original", nil)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "original", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -8919,7 +9037,7 @@ func TestUpdateMessageHandlerSuccess(t *testing.T) {
 func TestUpdateMessageHandlerClearContent(t *testing.T) {
 	owner := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
-	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", nil)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -8967,7 +9085,7 @@ func TestUpdateMessageHandlerForbiddenOtherUser(t *testing.T) {
 	owner := newTestMessageUser(t)
 	actor := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
-	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "x", nil)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "x", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -8989,7 +9107,7 @@ func TestUpdateMessageHandlerForbiddenOtherUser(t *testing.T) {
 func TestUpdateMessageHandlerContentTooLong(t *testing.T) {
 	owner := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
-	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "x", nil)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "x", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -9029,7 +9147,7 @@ func TestUpdateMessageHandlerInvalidJSON(t *testing.T) {
 func TestDeleteMessageHandlerSuccess(t *testing.T) {
 	owner := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
-	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "a excluir", nil)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "a excluir", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -9073,7 +9191,7 @@ func TestDeleteMessageHandlerForbiddenOtherUser(t *testing.T) {
 	owner := newTestMessageUser(t)
 	actor := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
-	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "x", nil)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "x", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -9095,7 +9213,7 @@ func TestDeleteMessageHandlerWithDeleteMessagesRole(t *testing.T) {
 	owner := newTestMessageUser(t)
 	actor := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
-	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "x", nil)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "x", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -9131,7 +9249,7 @@ func TestDeleteMessageHandlerOwnerDeletesOtherMessage(t *testing.T) {
 	owner := newTestMessageUser(t)
 	other := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
-	message, err := storage.CreateMessage(testCtx(), channel.ID, other.ID, "x", nil)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, other.ID, "x", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -9537,11 +9655,11 @@ func TestSearchHandlerSuccess(t *testing.T) {
 	owner := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
 	unique := "w" + randHex(8)
-	msg, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem "+unique, nil)
+	msg, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem "+unique, "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
-	if _, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "outra mensagem", nil); err != nil {
+	if _, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "outra mensagem", "", nil); err != nil {
 		t.Fatalf("falha ao criar outra mensagem: %v", err)
 	}
 
@@ -9591,17 +9709,17 @@ func TestSearchHandlerSinceCursor(t *testing.T) {
 	owner := newTestMessageUser(t)
 	_, channel := createServerAndChannelTest(t, owner.ID)
 	unique := "w" + randHex(8)
-	m1, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "busca "+unique, nil)
+	m1, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "busca "+unique, "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar m1: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m2, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "busca "+unique, nil)
+	m2, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "busca "+unique, "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar m2: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m3, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "busca "+unique, nil)
+	m3, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "busca "+unique, "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar m3: %v", err)
 	}

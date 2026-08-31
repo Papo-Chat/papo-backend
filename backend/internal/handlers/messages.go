@@ -86,6 +86,7 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 
 	channelID := c.FormValue("channel_id")
 	content := c.FormValue("content")
+	replyTo := c.FormValue("reply_to")
 
 	var inputs []services.AttachmentInput
 	if c.Request().MultipartForm != nil {
@@ -105,16 +106,20 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 		}
 	}
 
-	message, err := services.CreateMessage(c.Request().Context(), channelID, userID, content, inputs)
+	message, err := services.CreateMessage(c.Request().Context(), channelID, userID, content, replyTo, inputs)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"channel_id é obrigatório; content tem no máximo 8192 caracteres; a mensagem precisa de content ou attachment; nome do attachment inválido")
+			"channel_id é obrigatório; content tem no máximo 8192 caracteres; a mensagem precisa de content ou attachment; nome do attachment inválido; reply_to deve referenciar uma mensagem do mesmo canal")
 	case errors.Is(err, services.ErrTooManyAttachments):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
 			"máximo de 10 attachments por mensagem")
+	case errors.Is(err, services.ErrMessageNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado",
+			"reply_to referencia uma mensagem inexistente")
 	case errors.Is(err, services.ErrChannelNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "canal não encontrado")
@@ -142,6 +147,7 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 		AuthorID:    derefString(message.AuthorID),
 		Content:     derefString(message.Content),
 		CreatedAt:   message.CreatedAt,
+		ReplyTo:     message.ReplyTo,
 		Attachments: message.Attachments,
 	})
 
