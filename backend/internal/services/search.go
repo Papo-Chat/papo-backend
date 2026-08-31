@@ -21,12 +21,10 @@ const searchDateLayout = "2006-01-02"
 // combináveis: texto, autor, intervalo de datas (inclusive) e attachment.
 // Pelo menos 1 filtro é obrigatório.
 //
-// serverID é opcional: quando informado, filtra os resultados por servidor.
-//
 // A autorização é a mesma da leitura de mensagens: os resultados são
-// limitados a canais legíveis pelo usuário (canais de servidores dos quais
-// ele é dono, canais abertos sem permissões definidas ou canais em que uma
-// das suas roles do servidor tem read_channel).
+// limitados a canais legíveis pelo usuário (dono do servidor, canais abertos
+// sem permissões definidas ou canais em que uma das suas roles tem
+// read_channel).
 //
 // A paginação usa o cursor (since, last_id) = (created_at, id), 100
 // resultados por página; has_more indica se existe próxima página. A
@@ -36,7 +34,7 @@ const searchDateLayout = "2006-01-02"
 // nenhum filtro, quando order não é asc/desc, quando date_start ou date_end
 // estão em formato inválido, quando date_start é depois de date_end ou
 // quando since/last_id são fornecidos separados.
-func SearchMessages(ctx context.Context, req models.SearchRequest, serverID string, since *time.Time, lastID string, userID string) (models.SearchResponse, error) {
+func SearchMessages(ctx context.Context, req models.SearchRequest, since *time.Time, lastID string, userID string) (models.SearchResponse, error) {
 	if userID == "" {
 		return models.SearchResponse{}, ErrInvalidInput
 	}
@@ -86,7 +84,6 @@ func SearchMessages(ctx context.Context, req models.SearchRequest, serverID stri
 		UserID:             userID,
 		Text:               text,
 		AuthorID:           req.Author,
-		ServerID:           serverID,
 		DateStart:          dateStart,
 		DateEndExclusive:   dateEndExclusive,
 		ContainsAttachment: req.ContainsAttachment,

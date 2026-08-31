@@ -16,7 +16,6 @@ type RolePermissions struct {
 // Role representa a tabela roles.
 type Role struct {
 	ID          string          `db:"id" json:"id"`
-	ServerID    string          `db:"server_id" json:"server_id"`
 	Name        string          `db:"name" json:"name"`
 	Color       *string         `db:"color" json:"color"`
 	Permissions RolePermissions `db:"permissions" json:"permissions"`

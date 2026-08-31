@@ -23,33 +23,12 @@ const maxIconBytes = 2 << 20
 // maxServerNameLength é o tamanho máximo do nome de um servidor (32 caracteres, README).
 const maxServerNameLength = 32
 
-// ListServers lista todos os servidores com o username do dono e as
-// contagens de canais, membros e roles. O blob do ícone e o formato são
-// resolvidos da tabela media e do disco.
-func ListServers(ctx context.Context) ([]models.ServerSummary, error) {
-	summaries, err := storage.ListServerSummaries(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	for i := range summaries {
-		if err := resolveServerSummaryIcon(ctx, &summaries[i]); err != nil {
-			return nil, err
-		}
-	}
-
-	return summaries, nil
-}
-
-// GetServer retorna o detalhe do servidor pelo id, com o blob do ícone e o
-// formato resolvidos da tabela media e do disco.
+// GetServer retorna o servidor do backend (1 backend = 1 servidor) com o
+// username do dono e as contagens de canais, membros e roles. O blob do ícone
+// e o formato são resolvidos da tabela media e do disco.
 // Retorna ErrServerNotFound quando o servidor não existe.
-func GetServer(ctx context.Context, id string) (models.ServerSummary, error) {
-	if id == "" {
-		return models.ServerSummary{}, ErrServerNotFound
-	}
-
-	summary, err := storage.GetServerSummary(ctx, id)
+func GetServer(ctx context.Context) (models.ServerSummary, error) {
+	summary, err := storage.GetServerSummary(ctx)
 	if errors.Is(err, storage.ErrNotFound) {
 		return models.ServerSummary{}, ErrServerNotFound
 	}
@@ -99,20 +78,12 @@ func CreateServer(ctx context.Context, name string, ownerID *string) (models.Ser
 // ErrInvalidInput quando o nome está vazio ou acima de 32 caracteres, quando
 // o ícone não é um GIF, JPEG ou PNG válido de até 2MB com dimensões de até
 // 512px ou quando o servidor é privado sem senha.
-// Atualmente um backend só roda um servidor, então ao tentar criar outro servidor
-// com o servidor atual criado não funciona
+// O sistema tem um único servidor (coluna singleton UNIQUE na tabela
+// servers): tentar criar um segundo servidor retorna ErrServerAlreadyCreated
+// (violação da constraint única).
 func CreateServerWithIcon(ctx context.Context, name, icon, iconFormat string, public bool, password *string, ownerID *string) (models.Server, error) {
 	if name == "" || utf8.RuneCountInString(name) > maxServerNameLength {
 		return models.Server{}, ErrInvalidInput
-	}
-
-	svCount, err := storage.CountServers(ctx)
-	if err != nil {
-		return models.Server{}, err
-	}
-
-	if svCount > 0 {
-		return models.Server{}, ErrServerAlreadyCreated
 	}
 
 	var iconMedia *string
@@ -142,16 +113,24 @@ func CreateServerWithIcon(ctx context.Context, name, icon, iconFormat string, pu
 		iconMedia = &sha
 	}
 
+	var passwordHash *string
 	if password != nil {
-		passwordHash, err := serverPasswordHash(public, *password)
+		hash, err := serverPasswordHash(public, *password)
 		if err != nil {
 			return models.Server{}, err
 		}
-		return storage.CreateServerWithIcon(ctx, name, iconMedia, public, ownerID, passwordHash)
+		passwordHash = hash
 	}
 
-	return storage.CreateServerWithIcon(ctx, name, iconMedia, public, ownerID, nil)
+	server, err := storage.CreateServerWithIcon(ctx, name, iconMedia, public, ownerID, passwordHash)
+	if errors.Is(err, storage.ErrUniqueViolation) {
+		return models.Server{}, ErrServerAlreadyCreated
+	}
+	if err != nil {
+		return models.Server{}, err
+	}
 
+	return server, nil
 }
 
 // serverPasswordHash resolve o password_hash a partir do estado final do
@@ -181,15 +160,12 @@ func serverPasswordHash(isPublic bool, password string) (*string, error) {
 // quando o nome está vazio ou acima de 32 caracteres, quando o ícone não é
 // um GIF, JPEG ou PNG válido de até 2MB com dimensões de até 512px ou quando
 // o servidor privado não tem senha.
-func UpdateServer(ctx context.Context, id, name, icon, iconFormat string, public *bool, password *string) error {
-	if id == "" {
-		return ErrServerNotFound
-	}
+func UpdateServer(ctx context.Context, name, icon, iconFormat string, public *bool, password *string) error {
 	if name == "" || utf8.RuneCountInString(name) > maxServerNameLength {
 		return ErrInvalidInput
 	}
 
-	current, err := storage.GetServerByID(ctx, id)
+	current, err := storage.GetServer(ctx)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return ErrServerNotFound
@@ -236,7 +212,7 @@ func UpdateServer(ctx context.Context, id, name, icon, iconFormat string, public
 		if err != nil {
 			return err
 		}
-		if _, err := storage.UpdateServer(ctx, id, models.Server{
+		if _, err := storage.UpdateServer(ctx, current.ID, models.Server{
 			Name:         name,
 			IconMedia:    iconMedia,
 			PublicServer: isPublic,
@@ -245,7 +221,7 @@ func UpdateServer(ctx context.Context, id, name, icon, iconFormat string, public
 		}
 		return nil
 	} else {
-		if _, err := storage.UpdateServer(ctx, id, models.Server{
+		if _, err := storage.UpdateServer(ctx, current.ID, models.Server{
 			Name:         name,
 			IconMedia:    iconMedia,
 			PublicServer: true,

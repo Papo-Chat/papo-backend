@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Singleton: o sistema tem exatamente 1 servidor (1 backend = 1 server).
+-- A coluna singleton garante no máximo 1 row via UNIQUE.
 CREATE TABLE IF NOT EXISTS servers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_id UUID REFERENCES users(id),
@@ -37,12 +39,12 @@ CREATE TABLE IF NOT EXISTS servers (
     icon_media TEXT REFERENCES media(sha_hash),
     public_server BOOLEAN NOT NULL DEFAULT TRUE,
     password_hash TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    singleton BOOLEAN NOT NULL DEFAULT TRUE CHECK (singleton) UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS channels (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    server_id UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
     name TEXT NOT NULL UNIQUE,
     permissions JSONB DEFAULT '{}',
     position INTEGER NOT NULL,
@@ -72,7 +74,6 @@ CREATE TABLE IF NOT EXISTS attachments (
 
 CREATE TABLE IF NOT EXISTS emojis (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    server_id UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
     name TEXT UNIQUE NOT NULL,
     image_media TEXT NOT NULL REFERENCES media(sha_hash),
     created_by UUID REFERENCES users(id),
@@ -97,12 +98,11 @@ CREATE TABLE IF NOT EXISTS user_settings (
 
 CREATE TABLE IF NOT EXISTS roles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    server_id UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     color TEXT,
     permissions JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (server_id, name)
+    UNIQUE (name)
 );
 
 CREATE TABLE IF NOT EXISTS user_roles (

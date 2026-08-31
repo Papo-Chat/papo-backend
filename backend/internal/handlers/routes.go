@@ -65,18 +65,19 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware, middleware.RequireSelfOrServerOwner())
 }
 
-// RegisterServerRoutes registra as rotas de servidores.
+// RegisterServerRoutes registra as rotas do servidor (1 backend = 1
+// servidor; GET /servers e GET /server retornam o mesmo objeto).
 func RegisterServerRoutes(e *echo.Echo, cfg *config.Config) {
 	e.GET("/servers", func(c echo.Context) error {
-		return ListServersHandler(cfg.BaseURL, c)
+		return GetServerHandler(cfg.BaseURL, c)
 	})
 	e.POST("/servers", func(c echo.Context) error {
 		return CreateServerHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
-	e.GET("/servers/:server_id", func(c echo.Context) error {
+	e.GET("/server", func(c echo.Context) error {
 		return GetServerHandler(cfg.BaseURL, c)
 	})
-	e.PUT("/servers/:server_id", func(c echo.Context) error {
+	e.PUT("/server", func(c echo.Context) error {
 		return UpdateServerHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware, middleware.RequireServerOwnerOrManageServer())
 }
@@ -161,10 +162,10 @@ func RegisterEmojiRoutes(e *echo.Echo, cfg *config.Config) {
 
 // RegisterRoleRoutes registra as rotas de roles e de atribuição de roles a usuários.
 func RegisterRoleRoutes(e *echo.Echo, cfg *config.Config) {
-	e.GET("/servers/:server_id/roles", func(c echo.Context) error {
+	e.GET("/roles", func(c echo.Context) error {
 		return ListRolesHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
-	e.POST("/servers/:server_id/roles", func(c echo.Context) error {
+	e.POST("/roles", func(c echo.Context) error {
 		return CreateRoleHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware, middleware.RequireManageRoles())
 	e.PUT("/roles/:role_id", func(c echo.Context) error {

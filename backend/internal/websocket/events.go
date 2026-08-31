@@ -104,7 +104,6 @@ type RemovePreviewOutbound struct {
 type ChannelCreateOutbound struct {
 	Type        EventType `json:"type"`
 	ChannelID   string    `json:"channel_id"`
-	ServerID    string    `json:"server_id"`
 	Name        string    `json:"name"`
 	ChannelType string    `json:"channel_type"`
 	Position    int       `json:"position"`
@@ -114,7 +113,6 @@ type ChannelCreateOutbound struct {
 type ChannelUpdateOutbound struct {
 	Type      EventType `json:"type"`
 	ChannelID string    `json:"channel_id"`
-	ServerID  string    `json:"server_id"`
 	Name      string    `json:"name"`
 	Position  int       `json:"position"`
 }
@@ -123,7 +121,6 @@ type ChannelUpdateOutbound struct {
 type ChannelDeleteOutbound struct {
 	Type      EventType `json:"type"`
 	ChannelID string    `json:"channel_id"`
-	ServerID  string    `json:"server_id"`
 }
 
 // TypingOutbound é o evento de digitação distribuído aos clientes.

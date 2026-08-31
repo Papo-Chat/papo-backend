@@ -11,7 +11,7 @@ import (
 	"papo/internal/models"
 )
 
-const channelColumns = "id, server_id, name, permissions, type, position, created_at"
+const channelColumns = "id, name, permissions, type, position, created_at"
 
 // ErrPositionConflict indica que a posição atual do canal não corresponde
 // à posição informada na requisição.
@@ -22,18 +22,15 @@ var ErrPositionConflict = errors.New("posição do canal desatualizada")
 var ErrInvalidPosition = errors.New("posição de canal inválida")
 
 // channelPositionLockKey é a chave do advisory lock que serializa a
-// alocação de posições de canais por servidor (criação e mudança de
-// posição), evitando posições duplicadas em escrita concorrente.
-func channelPositionLockKey(serverID string) string {
-	return "papo:channel-position:" + serverID
-}
+// alocação de posições de canais (criação e mudança de posição), evitando
+// posições duplicadas em escrita concorrente.
+const channelPositionLockKey = "papo:channel-position"
 
 func scanChannel(row rowScanner) (models.Channel, error) {
 	var channel models.Channel
 	var permissions []byte
 	err := row.Scan(
 		&channel.ID,
-		&channel.ServerID,
 		&channel.Name,
 		&permissions,
 		&channel.Type,
@@ -55,9 +52,9 @@ func scanChannel(row rowScanner) (models.Channel, error) {
 }
 
 // CreateChannel cria um novo canal com permissões vazias e retorna o registro criado.
-// A position é calculada pelo backend: próxima posição do servidor (máximo + 1),
-// com a alocação serializada por servidor para evitar posições duplicadas.
-func CreateChannel(ctx context.Context, serverID, name, channelType string) (models.Channel, error) {
+// A position é calculada pelo backend: próxima posição (máximo + 1),
+// com a alocação serializada por advisory lock para evitar posições duplicadas.
+func CreateChannel(ctx context.Context, name, channelType string) (models.Channel, error) {
 	tx, err := GetDB().BeginTx(ctx, nil)
 	if err != nil {
 		return models.Channel{}, fmt.Errorf("falha ao criar canal: %w", err)
@@ -66,16 +63,16 @@ func CreateChannel(ctx context.Context, serverID, name, channelType string) (mod
 
 	if _, err := tx.ExecContext(ctx,
 		"SELECT pg_advisory_xact_lock(hashtext($1))",
-		channelPositionLockKey(serverID),
+		channelPositionLockKey,
 	); err != nil {
 		return models.Channel{}, fmt.Errorf("falha ao criar canal: %w", err)
 	}
 
 	row := tx.QueryRowContext(ctx,
-		`INSERT INTO channels (server_id, name, type, position)
-		 VALUES ($1, $2, $3, (SELECT COALESCE(MAX(position), 0) + 1 FROM channels WHERE server_id = $1))
+		`INSERT INTO channels (name, type, position)
+		 VALUES ($1, $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM channels))
 		 RETURNING `+channelColumns,
-		serverID, name, channelType,
+		name, channelType,
 	)
 
 	channel, err := scanChannel(row)
@@ -90,12 +87,11 @@ func CreateChannel(ctx context.Context, serverID, name, channelType string) (mod
 	return channel, nil
 }
 
-// CountChannelsByServer conta os canais de um servidor.
-func CountChannelsByServer(ctx context.Context, serverID string) (int, error) {
+// CountChannels conta os canais.
+func CountChannels(ctx context.Context) (int, error) {
 	var count int
 	err := GetDB().QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM channels WHERE server_id = $1",
-		serverID,
+		"SELECT COUNT(*) FROM channels",
 	).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("falha ao contar canais: %w", err)
@@ -119,12 +115,11 @@ func GetChannelByID(ctx context.Context, id string) (models.Channel, error) {
 	return channel, nil
 }
 
-// ListChannelsByServer lista os canais de um servidor ordenados por posição
-// (position), com created_at e id como desempate.
-func ListChannelsByServer(ctx context.Context, serverID string) ([]models.Channel, error) {
+// ListChannels lista os canais ordenados por posição (position), com
+// created_at e id como desempate.
+func ListChannels(ctx context.Context) ([]models.Channel, error) {
 	rows, err := GetDB().QueryContext(ctx,
-		"SELECT "+channelColumns+" FROM channels WHERE server_id = $1 ORDER BY position, created_at, id LIMIT 500",
-		serverID,
+		"SELECT "+channelColumns+" FROM channels ORDER BY position, created_at, id LIMIT 500",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar canais: %w", err)
@@ -187,21 +182,13 @@ func UpdateChannelPermissions(ctx context.Context, channelID, roleID string, per
 }
 
 // ChangeChannelPosition move um canal para newPosition e recalcula as
-// posições dos demais canais do servidor (as posições permanecem contíguas,
-// de 1 até o número de canais). A operação é serializada por servidor com o
-// mesmo advisory lock da criação.
+// posições dos demais canais (as posições permanecem contíguas, de 1 até o
+// número de canais). A operação é serializada com o mesmo advisory lock da
+// criação.
 // Retorna ErrNotFound quando o canal não existe, ErrPositionConflict quando
 // o canal não está em oldPosition e ErrInvalidPosition quando newPosition
 // está fora do intervalo.
 func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, newPosition int) (models.Channel, error) {
-	var serverID string
-	if err := GetDB().QueryRowContext(ctx,
-		"SELECT server_id FROM channels WHERE id = $1",
-		channelID,
-	).Scan(&serverID); err != nil {
-		return models.Channel{}, mapStorageError(err)
-	}
-
 	tx, err := GetDB().BeginTx(ctx, nil)
 	if err != nil {
 		return models.Channel{}, fmt.Errorf("falha ao mudar posição do canal: %w", err)
@@ -210,7 +197,7 @@ func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, n
 
 	if _, err := tx.ExecContext(ctx,
 		"SELECT pg_advisory_xact_lock(hashtext($1))",
-		channelPositionLockKey(serverID),
+		channelPositionLockKey,
 	); err != nil {
 		return models.Channel{}, fmt.Errorf("falha ao mudar posição do canal: %w", err)
 	}
@@ -229,8 +216,7 @@ func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, n
 
 	var count int
 	if err := tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM channels WHERE server_id = $1",
-		serverID,
+		"SELECT COUNT(*) FROM channels",
 	).Scan(&count); err != nil {
 		return models.Channel{}, fmt.Errorf("falha ao mudar posição do canal: %w", err)
 	}
@@ -242,15 +228,15 @@ func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, n
 	// abrir (ou fechar) espaço para o canal movido.
 	if newPosition > oldPosition {
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE channels SET position = position - 1 WHERE server_id = $1 AND position > $2 AND position <= $3",
-			serverID, oldPosition, newPosition,
+			"UPDATE channels SET position = position - 1 WHERE position > $1 AND position <= $2",
+			oldPosition, newPosition,
 		); err != nil {
 			return models.Channel{}, fmt.Errorf("falha ao mudar posição do canal: %w", err)
 		}
 	} else if newPosition < oldPosition {
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE channels SET position = position + 1 WHERE server_id = $1 AND position >= $2 AND position < $3",
-			serverID, newPosition, oldPosition,
+			"UPDATE channels SET position = position + 1 WHERE position >= $1 AND position < $2",
+			newPosition, oldPosition,
 		); err != nil {
 			return models.Channel{}, fmt.Errorf("falha ao mudar posição do canal: %w", err)
 		}
@@ -293,7 +279,7 @@ func DeleteChannel(ctx context.Context, id string) error {
 // channelSummaryColumns é a seleção da visão ChannelSummary: dados do canal,
 // última mensagem (LATERAL, pode ser NULL) e o username do autor da última
 // mensagem (LEFT JOIN, pode ser NULL).
-const channelSummaryColumns = `c.id, c.server_id, c.name, c.permissions, c.type, c.position, c.created_at,
+const channelSummaryColumns = `c.id, c.name, c.permissions, c.type, c.position, c.created_at,
 	lm.id, lm.content, lm.author_id, u.username, lm.created_at`
 
 // channelSummaryJoins traz a última mensagem de cada canal (mesma ordem de
@@ -319,7 +305,6 @@ func scanChannelSummary(row rowScanner, roleNames map[string]string) (models.Cha
 
 	err := row.Scan(
 		&summary.ID,
-		&summary.ServerID,
 		&summary.Name,
 		&permissions,
 		&summary.Type,
@@ -395,17 +380,12 @@ func listRoleNames(ctx context.Context) (map[string]string, error) {
 }
 
 // ListChannelSummaries lista os canais com a visão ChannelSummary, ordenados
-// por posição (position). serverID é opcional (filtro por servidor).
-func ListChannelSummaries(ctx context.Context, serverID *string) ([]models.ChannelSummary, error) {
-	query := "SELECT " + channelSummaryColumns + " " + channelSummaryJoins
-	args := []any{}
-	if serverID != nil && *serverID != "" {
-		query += " WHERE c.server_id = $1"
-		args = append(args, *serverID)
-	}
-	query += " ORDER BY c.position, c.created_at, c.id LIMIT 500"
+// por posição (position).
+func ListChannelSummaries(ctx context.Context) ([]models.ChannelSummary, error) {
+	query := "SELECT " + channelSummaryColumns + " " + channelSummaryJoins +
+		" ORDER BY c.position, c.created_at, c.id LIMIT 500"
 
-	rows, err := GetDB().QueryContext(ctx, query, args...)
+	rows, err := GetDB().QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar canais: %w", err)
 	}

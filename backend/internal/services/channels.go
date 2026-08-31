@@ -18,8 +18,8 @@ var ErrChannelNameTaken = errors.New("nome do canal já existe")
 // ErrRoleNotFound indica que a role não existe.
 var ErrRoleNotFound = errors.New("role não encontrada")
 
-// ErrChannelLimitReached indica que o servidor atingiu o limite de canais.
-var ErrChannelLimitReached = errors.New("servidor atingiu o limite de canais")
+// ErrChannelLimitReached indica que o limite de canais foi atingido.
+var ErrChannelLimitReached = errors.New("limite de canais atingido")
 
 // ErrChannelPositionConflict indica que a posição atual do canal não
 // corresponde à old_position informada (a ordem mudou após a leitura).
@@ -28,54 +28,42 @@ var ErrChannelPositionConflict = errors.New("posição do canal desatualizada")
 // maxChannelNameLength é o tamanho máximo do nome de um canal (32 caracteres, README).
 const maxChannelNameLength = 32
 
-// maxChannelsPerServer é o número máximo de canais por servidor (500, README).
-const maxChannelsPerServer = 500
+// maxChannels é o número máximo de canais (500, README).
+const maxChannels = 500
 
 // ListChannels lista os canais com permissões expandidas e a última mensagem
-// de cada um (README). serverID é opcional: quando informado, filtra os
-// canais por servidor.
-func ListChannels(ctx context.Context, serverID *string) ([]models.ChannelSummary, error) {
-	if serverID != nil && *serverID == "" {
-		serverID = nil
-	}
-
-	return storage.ListChannelSummaries(ctx, serverID)
+// de cada um (README).
+func ListChannels(ctx context.Context) ([]models.ChannelSummary, error) {
+	return storage.ListChannelSummaries(ctx)
 }
 
-// CreateChannel cria um novo canal em um servidor
-// (README: o body de criação tem server_id, name e type; type é
-// opcional e padrão "text", aceita "text" ou "category").
+// CreateChannel cria um novo canal
+// (README: o body de criação tem name e type; type é opcional e padrão
+// "text", aceita "text" ou "category").
 // Retorna ErrInvalidInput quando o nome está vazio ou acima de 32
-// caracteres, quando o type é inválido, ErrServerNotFound quando o
-// servidor não existe, ErrChannelLimitReached quando o servidor já
-// possui 500 canais e ErrChannelNameTaken quando o nome já está em uso.
-func CreateChannel(ctx context.Context, serverID, name, channelType string) (models.ChannelSummary, error) {
+// caracteres, quando o type é inválido, ErrChannelLimitReached quando o
+// limite de 500 canais já foi atingido e ErrChannelNameTaken quando o nome
+// já está em uso.
+func CreateChannel(ctx context.Context, name, channelType string) (models.ChannelSummary, error) {
 	if channelType == "" {
 		channelType = "text"
 	}
 	if channelType != "text" && channelType != "category" {
 		return models.ChannelSummary{}, ErrInvalidInput
 	}
-	if serverID == "" || name == "" || utf8.RuneCountInString(name) > maxChannelNameLength {
+	if name == "" || utf8.RuneCountInString(name) > maxChannelNameLength {
 		return models.ChannelSummary{}, ErrInvalidInput
 	}
 
-	if _, err := storage.GetServerByID(ctx, serverID); err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return models.ChannelSummary{}, ErrServerNotFound
-		}
-		return models.ChannelSummary{}, err
-	}
-
-	count, err := storage.CountChannelsByServer(ctx, serverID)
+	count, err := storage.CountChannels(ctx)
 	if err != nil {
 		return models.ChannelSummary{}, err
 	}
-	if count >= maxChannelsPerServer {
+	if count >= maxChannels {
 		return models.ChannelSummary{}, ErrChannelLimitReached
 	}
 
-	channel, err := storage.CreateChannel(ctx, serverID, name, channelType)
+	channel, err := storage.CreateChannel(ctx, name, channelType)
 	if errors.Is(err, storage.ErrUniqueViolation) {
 		return models.ChannelSummary{}, ErrChannelNameTaken
 	}
@@ -154,29 +142,27 @@ func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, n
 }
 
 // DeleteChannel exclui um canal pelo id (README: 204 when successful).
-// Retorna o server_id do canal excluído (para o evento WebSocket de
-// exclusão) e ErrChannelNotFound quando o canal não existe.
-func DeleteChannel(ctx context.Context, id string) (string, error) {
+// Retorna ErrChannelNotFound quando o canal não existe.
+func DeleteChannel(ctx context.Context, id string) error {
 	if id == "" {
-		return "", ErrChannelNotFound
+		return ErrChannelNotFound
 	}
 
-	channel, err := storage.GetChannelByID(ctx, id)
-	if errors.Is(err, storage.ErrNotFound) {
-		return "", ErrChannelNotFound
-	}
-	if err != nil {
-		return "", err
+	if _, err := storage.GetChannelByID(ctx, id); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return ErrChannelNotFound
+		}
+		return err
 	}
 
 	if err := storage.DeleteChannel(ctx, id); err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return "", ErrChannelNotFound
+			return ErrChannelNotFound
 		}
-		return "", err
+		return err
 	}
 
-	return channel.ServerID, nil
+	return nil
 }
 
 // GetChannelPermissions retorna as permissões de um canal expandidas por
@@ -260,8 +246,8 @@ func ChannelReaders(ctx context.Context, channelID string, userIDs []string) (ma
 		return allowed, nil
 	}
 
-	server, err := storage.GetServerByID(ctx, channel.ServerID)
-	if err != nil {
+	server, err := storage.GetServer(ctx)
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return allowed, err
 	}
 	if server.OwnerID != nil {
@@ -296,8 +282,8 @@ func ChannelReaders(ctx context.Context, channelID string, userIDs []string) (ma
 // UpdateChannelPermissions define as permissões de uma role em um canal
 // (README: PUT /channels/:channel_id/permissions/:role_id) e retorna as
 // permissões resultantes.
-// Retorna ErrChannelNotFound quando o canal não existe, ErrRoleNotFound quando
-// a role não existe ou pertence a outro servidor.
+// Retorna ErrChannelNotFound quando o canal não existe e ErrRoleNotFound
+// quando a role não existe.
 func UpdateChannelPermissions(ctx context.Context, channelID, roleID string, permission models.ChannelPermission) (models.ChannelPermission, error) {
 	if channelID == "" || roleID == "" {
 		if channelID == "" {
@@ -306,24 +292,18 @@ func UpdateChannelPermissions(ctx context.Context, channelID, roleID string, per
 		return models.ChannelPermission{}, ErrRoleNotFound
 	}
 
-	channel, err := storage.GetChannelByID(ctx, channelID)
-	if errors.Is(err, storage.ErrNotFound) {
-		return models.ChannelPermission{}, ErrChannelNotFound
-	}
-	if err != nil {
+	if _, err := storage.GetChannelByID(ctx, channelID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return models.ChannelPermission{}, ErrChannelNotFound
+		}
 		return models.ChannelPermission{}, err
 	}
 
-	role, err := storage.GetRoleByID(ctx, roleID)
-	if errors.Is(err, storage.ErrNotFound) {
-		return models.ChannelPermission{}, ErrRoleNotFound
-	}
-	if err != nil {
+	if _, err := storage.GetRoleByID(ctx, roleID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return models.ChannelPermission{}, ErrRoleNotFound
+		}
 		return models.ChannelPermission{}, err
-	}
-
-	if role.ServerID != channel.ServerID {
-		return models.ChannelPermission{}, ErrRoleNotFound
 	}
 
 	if _, err := storage.UpdateChannelPermissions(ctx, channelID, roleID, permission); err != nil {

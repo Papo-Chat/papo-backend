@@ -19,7 +19,6 @@ type SearchParams struct {
 	UserID             string
 	Text               string
 	AuthorID           string
-	ServerID           string
 	DateStart          *time.Time
 	DateEndExclusive   *time.Time
 	ContainsAttachment *bool
@@ -30,9 +29,9 @@ type SearchParams struct {
 }
 
 // SearchMessages busca mensagens com full-text search e filtros combináveis,
-// retornando apenas mensagens de canais legíveis pelo usuário: canais de
-// servidores dos quais ele é dono, canais abertos (sem permissões definidas)
-// ou canais em que uma das suas roles do servidor tem read_channel.
+// retornando apenas mensagens de canais legíveis pelo usuário: dono do
+// servidor, canais abertos (sem permissões definidas) ou canais em que uma
+// das suas roles tem read_channel.
 // A ordenação é por created_at, id (asc ou desc); quando há texto, o score
 // (ts_rank) é retornado por resultado. O LIMIT é limit+1 para o chamador
 // determinar has_more.
@@ -65,9 +64,6 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 	if p.AuthorID != "" {
 		conds = append(conds, "m.author_id = "+arg(p.AuthorID))
 	}
-	if p.ServerID != "" {
-		conds = append(conds, "c.server_id = "+arg(p.ServerID))
-	}
 	if p.DateStart != nil {
 		conds = append(conds, "m.created_at >= "+arg(*p.DateStart))
 	}
@@ -92,11 +88,11 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 	}
 
 	conds = append(conds, "( "+
-		"EXISTS (SELECT 1 FROM servers s WHERE s.id = c.server_id AND s.owner_id = "+userID+") "+
+		"EXISTS (SELECT 1 FROM servers s WHERE s.owner_id = "+userID+") "+
 		"OR c.permissions IS NULL "+
 		"OR c.permissions = '{}'::jsonb "+
 		"OR EXISTS (SELECT 1 FROM user_roles ur "+
-		"JOIN roles r ON r.id = ur.role_id AND r.server_id = c.server_id "+
+		"JOIN roles r ON r.id = ur.role_id "+
 		"WHERE ur.user_id = "+userID+" AND (c.permissions -> r.id::text ->> 'read_channel') = 'true') "+
 		")")
 
@@ -105,7 +101,7 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 		order = "ASC"
 	}
 
-	query := "SELECT m.id, m.content, m.created_at, c.id, c.name, c.server_id, m.author_id, u.username, " +
+	query := "SELECT m.id, m.content, m.created_at, c.id, c.name, m.author_id, u.username, " +
 		scoreExpr + " AS score " +
 		"FROM messages m " +
 		"JOIN channels c ON c.id = m.channel_id " +
@@ -128,7 +124,6 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 			&result.CreatedAt,
 			&result.ChannelID,
 			&result.ChannelName,
-			&result.ServerID,
 			&result.AuthorID,
 			&result.AuthorUsername,
 			&result.Score,

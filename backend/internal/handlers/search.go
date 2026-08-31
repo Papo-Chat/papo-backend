@@ -14,10 +14,9 @@ import (
 )
 
 // SearchHandler implementa POST /search.
-// Os parâmetros de query server_id (filtro por servidor), since (cursor de
-// paginação em created_at, ISO 8601) e last_id (id do último resultado da
-// página anterior, usado com since como cursor exato) são opcionais; máx. 100
-// resultados por resposta.
+// Os parâmetros de query since (cursor de paginação em created_at, ISO 8601)
+// e last_id (id do último resultado da página anterior, usado com since como
+// cursor exato) são opcionais; máx. 100 resultados por resposta.
 func SearchHandler(baseURL string, c echo.Context) error {
 	userID, ok := c.Get(middleware.UserIDContextKey).(string)
 	if !ok || userID == "" {
@@ -32,8 +31,6 @@ func SearchHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	serverID := c.QueryParam("server_id")
-
 	var since *time.Time
 	if value := c.QueryParam("since"); value != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, value)
@@ -46,7 +43,7 @@ func SearchHandler(baseURL string, c echo.Context) error {
 	}
 	lastID := c.QueryParam("last_id")
 
-	resp, err := services.SearchMessages(c.Request().Context(), req, serverID, since, lastID, userID)
+	resp, err := services.SearchMessages(c.Request().Context(), req, since, lastID, userID)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,

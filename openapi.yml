@@ -599,25 +599,20 @@ paths:
   /servers:
     get:
       tags: [Servers]
-      summary: Lista servidores
+      summary: Retorna o servidor
       responses:
         '200':
-          description: Lista de servidores
+          description: O servidor
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  servers:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Server'
+                $ref: '#/components/schemas/Server'
         '500':
           $ref: '#/components/responses/InternalError'
     post:
       tags: [Servers]
-      summary: Cria servidor
-      description: "Permission Check: Table Servers have no registry"
+      summary: Cria o servidor
+      description: "Permission Check: Table Servers have no registry (somente 1 servidor)"
       requestBody:
         required: true
         content:
@@ -639,15 +634,19 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: O servidor já foi criado (máximo de 1)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /servers/{server_id}:
+  /server:
     get:
       tags: [Servers]
       summary: Detalhes do servidor
-      parameters:
-        - $ref: '#/components/parameters/ServerId'
       responses:
         '200':
           description: Detalhes do servidor
@@ -663,8 +662,6 @@ paths:
       tags: [Servers]
       summary: Altera o servidor (nome, ícone, senha e visibilidade)
       description: "Permission Check: dono do servidor ou `manage_server`"
-      parameters:
-        - $ref: '#/components/parameters/ServerId'
       requestBody:
         required: true
         content:
@@ -693,12 +690,10 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /servers/{server_id}/roles:
+  /roles:
     get:
       tags: [Roles]
-      summary: Lista roles do servidor
-      parameters:
-        - $ref: '#/components/parameters/ServerId'
+      summary: Lista roles
       responses:
         '200':
           description: Lista de roles
@@ -713,16 +708,12 @@ paths:
                       $ref: '#/components/schemas/Role'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
     post:
       tags: [Roles]
-      summary: Cria role no servidor
+      summary: Cria role
       description: "Permission Check: `manage_roles`"
-      parameters:
-        - $ref: '#/components/parameters/ServerId'
       requestBody:
         required: true
         content:
@@ -746,10 +737,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
         '409':
-          description: Nome de role já existe no servidor
+          description: Nome de role já existe
           content:
             application/problem+json:
               schema:
@@ -790,7 +779,7 @@ paths:
          '404':
            $ref: '#/components/responses/NotFound'
          '409':
-           description: Nome de role já existe no servidor
+           description: Nome de role já existe
            content:
              application/problem+json:
                schema:
@@ -819,14 +808,6 @@ paths:
     get:
       tags: [Channels]
       summary: Lista canais
-      parameters:
-        - name: server_id
-          in: query
-          required: false
-          schema:
-            type: string
-            format: uuid
-          description: Filtro por servidor
       responses:
         '200':
           description: Lista de canais
@@ -869,10 +850,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
         '409':
-          description: Nome de canal já existe
+          description: Nome de canal já existe ou limite de canais atingido (500)
           content:
             application/problem+json:
               schema:
@@ -1133,13 +1112,6 @@ paths:
       tags: [Emojis]
       summary: Lista emojis (Limite de 25 por requisição, use cursor com since + last_id para paginar)
       parameters:
-        - name: server_id
-          in: query
-          required: false
-          schema:
-            type: string
-            format: uuid
-          description: Filtro por servidor
         - name: since
           in: query
           required: false
@@ -1198,10 +1170,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
         '409':
-          description: Nome de emoji já existe no servidor
+          description: Nome de emoji já existe ou limite de emojis atingido (500)
           content:
             application/problem+json:
               schema:
@@ -1369,16 +1339,9 @@ paths:
       summary: Busca com diversos parâmetros (Limite de 100 por requisição, use cursor com since + last_id para paginar)
       description: |
         Os resultados são limitados a canais legíveis pelo usuário autenticado
-        (canais de servidores dos quais ele é dono, canais abertos sem permissões
-        definidas ou canais em que uma das suas roles do servidor tem read_channel).
+        (dono do servidor, canais abertos sem permissões definidas ou canais
+        em que uma das suas roles tem read_channel).
       parameters:
-        - name: server_id
-          in: query
-          required: false
-          schema:
-            type: string
-            format: uuid
-          description: Filtro por servidor
         - name: since
           in: query
           required: false
@@ -1429,9 +1392,9 @@ paths:
         | `message`        | outbound  | `{ type: "message", id, channel_id, author_id, content, attachments, created_at }`         |
         | `message_edit`   | outbound  | `{ type: "message_edit", id, channel_id, content, edited_at }`                          |
         | `message_delete` | outbound  | `{ type: "message_delete", id, channel_id }`                                            |
-        | `channel_create` | outbound  | `{ type: "channel_create", channel_id, server_id, name, position }`                     |
-        | `channel_update` | outbound  | `{ type: "channel_update", channel_id, server_id, name, position }`                     |
-        | `channel_delete` | outbound  | `{ type: "channel_delete", channel_id, server_id }`                                     |
+        | `channel_create` | outbound  | `{ type: "channel_create", channel_id, name, channel_type, position }`                 |
+        | `channel_update` | outbound  | `{ type: "channel_update", channel_id, name, position }`                               |
+        | `channel_delete` | outbound  | `{ type: "channel_delete", channel_id }`                                               |
         | `typing`         | inbound   | `{ type: "typing", channel_id }`                                                        |
         | `typing`         | outbound  | `{ type: "typing", channel_id, user_id, is_typing }`                                    |
         | `avatar_update`  | outbound  | `{ type: "avatar_update", user_id }`                                                    |
@@ -1458,13 +1421,6 @@ components:
   parameters:
     UserId:
       name: user_id
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
-    ServerId:
-      name: server_id
       in: path
       required: true
       schema:
@@ -1862,10 +1818,6 @@ components:
       type: object
       required: [name]
       properties:
-        id:
-          type: string
-          format: uuid
-          description: ID do servidor (o id da URL é o autoritativo)
         name:
           type: string
         icon_blob:
@@ -1956,16 +1908,11 @@ components:
           type: integer
         role_count:
           type: integer
-          nullable: true
-          description: Presente somente em GET /servers/{server_id}
 
     Channel:
       type: object
       properties:
         id:
-          type: string
-          format: uuid
-        server_id:
           type: string
           format: uuid
         name:
@@ -1975,7 +1922,7 @@ components:
           enum: [text, category]
         position:
           type: integer
-          description: Posição do canal na visualização do servidor (1-based)
+          description: Posição do canal na visualização (1-based)
         permissions:
           type: array
           items:
@@ -2020,11 +1967,8 @@ components:
 
     CreateChannelRequest:
       type: object
-      required: [server_id, name]
+      required: [name]
       properties:
-        server_id:
-          type: string
-          format: uuid
         name:
           type: string
         type:
@@ -2217,9 +2161,6 @@ components:
         id:
           type: string
           format: uuid
-        server_id:
-          type: string
-          format: uuid
         name:
           type: string
         color:
@@ -2299,9 +2240,6 @@ components:
         id:
           type: string
           format: uuid
-        server_id:
-          type: string
-          format: uuid
         name:
           type: string
         format:
@@ -2319,11 +2257,8 @@ components:
 
     CreateEmojiRequest:
       type: object
-      required: [server_id, name, image_blob, format]
+      required: [name, image_blob, format]
       properties:
-        server_id:
-          type: string
-          format: uuid
         name:
           type: string
         image_blob:
@@ -2387,9 +2322,6 @@ components:
           format: uuid
         channel_name:
           type: string
-        server_id:
-          type: string
-          format: uuid
         author_id:
           type: string
           format: uuid

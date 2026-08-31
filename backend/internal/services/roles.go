@@ -10,8 +10,8 @@ import (
 	"papo/internal/storage"
 )
 
-// ErrRoleNameTaken indica que o nome da role já existe no servidor.
-var ErrRoleNameTaken = errors.New("nome da role já existe no servidor")
+// ErrRoleNameTaken indica que o nome da role já existe.
+var ErrRoleNameTaken = errors.New("nome da role já existe")
 
 // ErrUserRoleNotFound indica que o usuário não possui a role atribuída.
 var ErrUserRoleNotFound = errors.New("role não atribuída ao usuário")
@@ -22,29 +22,16 @@ const maxRoleNameLength = 32
 // hexColorPattern valida cores no formato hexadecimal #RRGGBB (ex.: #FF0000).
 var hexColorPattern = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
 
-// ListRoles lista as roles de um servidor (README: GET /servers/:server_id/roles).
-// Retorna ErrServerNotFound quando o servidor não existe.
-func ListRoles(ctx context.Context, serverID string) ([]models.Role, error) {
-	if serverID == "" {
-		return nil, ErrServerNotFound
-	}
-
-	if _, err := storage.GetServerByID(ctx, serverID); err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return nil, ErrServerNotFound
-		}
-		return nil, err
-	}
-
-	return storage.ListRolesByServer(ctx, serverID)
+// ListRoles lista as roles (README: GET /roles).
+func ListRoles(ctx context.Context) ([]models.Role, error) {
+	return storage.ListRoles(ctx)
 }
 
-// CreateRole cria uma role em um servidor (README: POST /servers/:server_id/roles).
+// CreateRole cria uma role (README: POST /roles).
 // Retorna ErrInvalidInput quando o nome está vazio ou acima de 32 caracteres ou
-// quando a cor não é um hexadecimal #RRGGBB, ErrServerNotFound quando o
-// servidor não existe e ErrRoleNameTaken quando o nome já está em uso no
-// servidor.
-func CreateRole(ctx context.Context, serverID, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
+// quando a cor não é um hexadecimal #RRGGBB e ErrRoleNameTaken quando o nome
+// já está em uso.
+func CreateRole(ctx context.Context, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
 	if name == "" || utf8.RuneCountInString(name) > maxRoleNameLength {
 		return models.Role{}, ErrInvalidInput
 	}
@@ -53,14 +40,7 @@ func CreateRole(ctx context.Context, serverID, name string, color *string, permi
 		return models.Role{}, ErrInvalidInput
 	}
 
-	if _, err := storage.GetServerByID(ctx, serverID); err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return models.Role{}, ErrServerNotFound
-		}
-		return models.Role{}, err
-	}
-
-	role, err := storage.CreateRole(ctx, serverID, name, color, permissions)
+	role, err := storage.CreateRole(ctx, name, color, permissions)
 	if errors.Is(err, storage.ErrUniqueViolation) {
 		return models.Role{}, ErrRoleNameTaken
 	}
@@ -75,8 +55,7 @@ func CreateRole(ctx context.Context, serverID, name string, color *string, permi
 // (README: PUT /roles/:role_id).
 // Retorna ErrRoleNotFound quando a role não existe, ErrInvalidInput quando o
 // nome está vazio ou acima de 32 caracteres ou quando a cor não é um
-// hexadecimal #RRGGBB e ErrRoleNameTaken quando o nome já está em uso no
-// servidor.
+// hexadecimal #RRGGBB e ErrRoleNameTaken quando o nome já está em uso.
 func UpdateRole(ctx context.Context, roleID, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
 	if roleID == "" {
 		return models.Role{}, ErrRoleNotFound
@@ -110,7 +89,7 @@ func UpdateRole(ctx context.Context, roleID, name string, color *string, permiss
 
 // DeleteRole exclui uma role (README: DELETE /roles/:role_id). O storage remove
 // a role, as atribuições dos usuários (ON DELETE CASCADE) e as entradas das
-// permissões dos canais do servidor, de forma atômica.
+// permissões dos canais, de forma atômica.
 // Retorna ErrRoleNotFound quando a role não existe.
 func DeleteRole(ctx context.Context, roleID string) error {
 	if roleID == "" {

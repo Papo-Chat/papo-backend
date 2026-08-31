@@ -11,14 +11,13 @@ import (
 
 // emojiColumns inclui o mime_type da tabela media (join) para o service
 // resolver o formato da imagem.
-const emojiColumns = "e.id, e.server_id, e.name, e.image_media, m.mime_type, e.created_by, e.created_at"
+const emojiColumns = "e.id, e.name, e.image_media, m.mime_type, e.created_by, e.created_at"
 const emojiFrom = "FROM emojis e JOIN media m ON m.sha_hash = e.image_media"
 
 func scanEmoji(row rowScanner) (models.Emoji, error) {
 	var emoji models.Emoji
 	err := row.Scan(
 		&emoji.ID,
-		&emoji.ServerID,
 		&emoji.Name,
 		&emoji.ImageMedia,
 		&emoji.MimeType,
@@ -35,18 +34,18 @@ func scanEmoji(row rowScanner) (models.Emoji, error) {
 // CreateEmoji cria um novo emoji e retorna o registro criado.
 // imageMedia é a referência do blob da imagem na tabela media.
 // Nomes duplicados retornam ErrUniqueViolation.
-func CreateEmoji(ctx context.Context, serverID, name, imageMedia string, createdBy *string) (models.Emoji, error) {
+func CreateEmoji(ctx context.Context, name, imageMedia string, createdBy *string) (models.Emoji, error) {
 	// O SELECT lê o resultado do RETURNING (não a tabela emojis): a query
 	// principal e o CTE de dados compartilham o mesmo snapshot, então a
 	// linha inserida ainda não seria visível na tabela.
 	row := GetDB().QueryRowContext(ctx,
 		`WITH inserted AS (
-			INSERT INTO emojis (server_id, name, image_media, created_by) VALUES ($1, $2, $3, $4)
-			RETURNING id, server_id, name, image_media, created_by, created_at
+			INSERT INTO emojis (name, image_media, created_by) VALUES ($1, $2, $3)
+			RETURNING id, name, image_media, created_by, created_at
 		 )
-		 SELECT i.id, i.server_id, i.name, i.image_media, m.mime_type, i.created_by, i.created_at
+		 SELECT i.id, i.name, i.image_media, m.mime_type, i.created_by, i.created_at
 		 FROM inserted i JOIN media m ON m.sha_hash = i.image_media`,
-		serverID, name, imageMedia, createdBy,
+		name, imageMedia, createdBy,
 	)
 
 	emoji, err := scanEmoji(row)
@@ -73,20 +72,15 @@ func GetEmojiByID(ctx context.Context, id string) (models.Emoji, error) {
 }
 
 // ListEmojis lista os emojis ordenados por data de criação.
-// serverID é opcional (filtro por servidor).
 // Se since for fornecido, retorna apenas emojis criados após esse timestamp;
 // se lastID for fornecido junto, o cursor é o par (created_at, id) e o filtro
 // inclui emojis criados no mesmo timestamp com id maior que lastID (evita
 // pular emojis com timestamp igual).
 // Se limit for > 0, retorna no máximo limit emojis.
-func ListEmojis(ctx context.Context, serverID *string, since *time.Time, lastID string, limit int) ([]models.Emoji, error) {
+func ListEmojis(ctx context.Context, since *time.Time, lastID string, limit int) ([]models.Emoji, error) {
 	query := "SELECT " + emojiColumns + " " + emojiFrom
 	args := []any{}
 	where := ""
-	if serverID != nil && *serverID != "" {
-		where = "e.server_id = $" + strconv.Itoa(len(args)+1)
-		args = append(args, *serverID)
-	}
 	if since != nil {
 		var cond string
 		if lastID != "" {
@@ -133,17 +127,11 @@ func ListEmojis(ctx context.Context, serverID *string, since *time.Time, lastID 
 	return emojis, nil
 }
 
-// ListEmojisByServer lista os emojis de um servidor ordenados por data de criação.
-func ListEmojisByServer(ctx context.Context, serverID string) ([]models.Emoji, error) {
-	return ListEmojis(ctx, &serverID, nil, "", 0)
-}
-
-// CountEmojisByServer conta os emojis de um servidor.
-func CountEmojisByServer(ctx context.Context, serverID string) (int, error) {
+// CountEmojis conta os emojis.
+func CountEmojis(ctx context.Context) (int, error) {
 	var count int
 	err := GetDB().QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM emojis WHERE server_id = $1",
-		serverID,
+		"SELECT COUNT(*) FROM emojis",
 	).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("falha ao contar emojis: %w", err)

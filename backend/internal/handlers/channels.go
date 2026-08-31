@@ -17,14 +17,8 @@ type channelListResponse struct {
 }
 
 // ListChannelsHandler implementa GET /channels.
-// O parâmetro de query server_id é opcional (filtro por servidor).
 func ListChannelsHandler(baseURL string, c echo.Context) error {
-	var serverID *string
-	if value := c.QueryParam("server_id"); value != "" {
-		serverID = &value
-	}
-
-	channels, err := services.ListChannels(c.Request().Context(), serverID)
+	channels, err := services.ListChannels(c.Request().Context())
 	if err != nil {
 		utils.Errorf("request_id=%s falha ao listar canais: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
@@ -36,9 +30,8 @@ func ListChannelsHandler(baseURL string, c echo.Context) error {
 }
 
 type createChannelRequest struct {
-	ServerID string `json:"server_id"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 // CreateChannelHandler implementa POST /channels.
@@ -49,19 +42,16 @@ func CreateChannelHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	channel, err := services.CreateChannel(c.Request().Context(), req.ServerID, req.Name, req.Type)
+	channel, err := services.CreateChannel(c.Request().Context(), req.Name, req.Type)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"server_id e name são obrigatórios; name deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
-	case errors.Is(err, services.ErrServerNotFound):
-		return utils.SendProblem(c, baseURL, http.StatusNotFound,
-			"not-found", "Recurso não encontrado", "servidor não encontrado")
+			"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
 	case errors.Is(err, services.ErrChannelLimitReached):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"channel-limit-reached", "Limite de canais atingido",
-			"o servidor já possui o número máximo de canais (500)")
+			"o número máximo de canais (500) já foi atingido")
 	case errors.Is(err, services.ErrChannelNameTaken):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"channel-name-taken", "Nome de canal já existe",
@@ -77,7 +67,6 @@ func CreateChannelHandler(baseURL string, c echo.Context) error {
 	websocket.GetHub().Broadcast(websocket.ChannelCreateOutbound{
 		Type:        websocket.EventTypeChannelCreate,
 		ChannelID:   channel.ID,
-		ServerID:    channel.ServerID,
 		Name:        channel.Name,
 		Position:    channel.Position,
 		ChannelType: channel.Type,
@@ -130,7 +119,6 @@ func UpdateChannelHandler(baseURL string, c echo.Context) error {
 	websocket.GetHub().Broadcast(websocket.ChannelUpdateOutbound{
 		Type:      websocket.EventTypeChannelUpdate,
 		ChannelID: channel.ID,
-		ServerID:  channel.ServerID,
 		Name:      channel.Name,
 		Position:  channel.Position,
 	})
@@ -146,7 +134,7 @@ func DeleteChannelHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "channel_id ausente")
 	}
 
-	serverID, err := services.DeleteChannel(c.Request().Context(), channelID)
+	err := services.DeleteChannel(c.Request().Context(), channelID)
 	switch {
 	case errors.Is(err, services.ErrChannelNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
@@ -162,7 +150,6 @@ func DeleteChannelHandler(baseURL string, c echo.Context) error {
 	websocket.GetHub().Broadcast(websocket.ChannelDeleteOutbound{
 		Type:      websocket.EventTypeChannelDelete,
 		ChannelID: channelID,
-		ServerID:  serverID,
 	})
 
 	return c.NoContent(http.StatusNoContent)
@@ -279,7 +266,7 @@ func ChangeChannelPositionHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"old_position e new_position devem ser posições válidas (1 até o número de canais do servidor)")
+			"old_position e new_position devem ser posições válidas (1 até o número de canais)")
 	case errors.Is(err, services.ErrChannelNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "canal não encontrado")
@@ -299,7 +286,6 @@ func ChangeChannelPositionHandler(baseURL string, c echo.Context) error {
 	websocket.GetHub().Broadcast(websocket.ChannelUpdateOutbound{
 		Type:      websocket.EventTypeChannelUpdate,
 		ChannelID: channel.ID,
-		ServerID:  channel.ServerID,
 		Name:      channel.Name,
 		Position:  channel.Position,
 	})

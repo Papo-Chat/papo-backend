@@ -15,19 +15,10 @@ type roleListResponse struct {
 	Roles []models.Role `json:"roles"`
 }
 
-// ListRolesHandler implementa GET /servers/:server_id/roles.
+// ListRolesHandler implementa GET /roles.
 func ListRolesHandler(baseURL string, c echo.Context) error {
-	serverID := c.Param("server_id")
-	if serverID == "" {
-		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
-			"invalid-param", "Parâmetro inválido", "server_id ausente")
-	}
-
-	roles, err := services.ListRoles(c.Request().Context(), serverID)
+	roles, err := services.ListRoles(c.Request().Context())
 	switch {
-	case errors.Is(err, services.ErrServerNotFound):
-		return utils.SendProblem(c, baseURL, http.StatusNotFound,
-			"not-found", "Recurso não encontrado", "servidor não encontrado")
 	case err != nil:
 		utils.Errorf("request_id=%s falha ao listar roles: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
@@ -44,35 +35,26 @@ type createRoleRequest struct {
 	Permissions models.RolePermissions `json:"permissions"`
 }
 
-// CreateRoleHandler implementa POST /servers/:server_id/roles.
+// CreateRoleHandler implementa POST /roles.
 // Permissão: dono do servidor ou role `manage_roles`
 // (middleware RequireManageRoles).
 func CreateRoleHandler(baseURL string, c echo.Context) error {
-	serverID := c.Param("server_id")
-	if serverID == "" {
-		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
-			"invalid-param", "Parâmetro inválido", "server_id ausente")
-	}
-
 	var req createRoleRequest
 	if err := c.Bind(&req); err != nil {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	role, err := services.CreateRole(c.Request().Context(), serverID, req.Name, req.Color, req.Permissions)
+	role, err := services.CreateRole(c.Request().Context(), req.Name, req.Color, req.Permissions)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
 			"name é obrigatório e deve ter no máximo 32 caracteres; color deve ser hexadecimal #RRGGBB")
-	case errors.Is(err, services.ErrServerNotFound):
-		return utils.SendProblem(c, baseURL, http.StatusNotFound,
-			"not-found", "Recurso não encontrado", "servidor não encontrado")
 	case errors.Is(err, services.ErrRoleNameTaken):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"role-name-taken", "Nome de role já existe",
-			"o nome informado já está em uso no servidor")
+			"o nome informado já está em uso")
 	case err != nil:
 		utils.Errorf("request_id=%s falha ao criar role: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
@@ -117,7 +99,7 @@ func UpdateRoleHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrRoleNameTaken):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"role-name-taken", "Nome de role já existe",
-			"o nome informado já está em uso no servidor")
+			"o nome informado já está em uso")
 	case err != nil:
 		utils.Errorf("request_id=%s falha ao atualizar role: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)

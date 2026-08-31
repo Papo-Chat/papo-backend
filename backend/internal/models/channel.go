@@ -11,11 +11,10 @@ type ChannelPermission struct {
 
 // Channel representa a tabela channels.
 // Permissions mapeia role_id para as permissões dessa role no canal.
-// Position é a posição do canal na visualização do servidor (1-based,
-// pseudo-unique por servidor, calculada pelo backend).
+// Position é a posição do canal na visualização (1-based, pseudo-unique,
+// calculada pelo backend).
 type Channel struct {
 	ID          string                       `db:"id" json:"id"`
-	ServerID    string                       `db:"server_id" json:"server_id"`
 	Name        string                       `db:"name" json:"name"`
 	Permissions map[string]ChannelPermission `db:"permissions" json:"permissions"`
 	Type        string                       `db:"type" json:"type"`
@@ -46,7 +45,6 @@ type ChannelLastMessage struct {
 // canal (null quando o canal não tem mensagens).
 type ChannelSummary struct {
 	ID          string                   `json:"id"`
-	ServerID    string                   `json:"server_id"`
 	Name        string                   `json:"name"`
 	Type        string                   `json:"type"`
 	Position    int                      `json:"position"`

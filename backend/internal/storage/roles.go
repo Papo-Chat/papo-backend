@@ -8,7 +8,7 @@ import (
 	"papo/internal/models"
 )
 
-const roleColumns = "id, server_id, name, color, permissions, created_at"
+const roleColumns = "id, name, color, permissions, created_at"
 
 const userRoleColumns = "user_id, role_id, assigned_at"
 
@@ -17,7 +17,6 @@ func scanRole(row rowScanner) (models.Role, error) {
 	var permissions []byte
 	err := row.Scan(
 		&role.ID,
-		&role.ServerID,
 		&role.Name,
 		&role.Color,
 		&permissions,
@@ -52,15 +51,15 @@ func scanUserRole(row rowScanner) (models.UserRole, error) {
 }
 
 // CreateRole cria uma nova role e retorna o registro criado.
-func CreateRole(ctx context.Context, serverID, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
+func CreateRole(ctx context.Context, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
 	permissionJSON, err := json.Marshal(permissions)
 	if err != nil {
 		return models.Role{}, fmt.Errorf("falha ao codificar permissões da role: %w", err)
 	}
 
 	row := GetDB().QueryRowContext(ctx,
-		"INSERT INTO roles (server_id, name, color, permissions) VALUES ($1, $2, $3, $4) RETURNING "+roleColumns,
-		serverID, name, color, string(permissionJSON),
+		"INSERT INTO roles (name, color, permissions) VALUES ($1, $2, $3) RETURNING "+roleColumns,
+		name, color, string(permissionJSON),
 	)
 
 	role, err := scanRole(row)
@@ -86,11 +85,10 @@ func GetRoleByID(ctx context.Context, id string) (models.Role, error) {
 	return role, nil
 }
 
-// ListRolesByServer lista as roles de um servidor ordenadas por data de criação.
-func ListRolesByServer(ctx context.Context, serverID string) ([]models.Role, error) {
+// ListRoles lista as roles ordenadas por data de criação.
+func ListRoles(ctx context.Context) ([]models.Role, error) {
 	rows, err := GetDB().QueryContext(ctx,
-		"SELECT "+roleColumns+" FROM roles WHERE server_id = $1 ORDER BY created_at, id",
-		serverID,
+		"SELECT "+roleColumns+" FROM roles ORDER BY created_at, id",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar roles: %w", err)
@@ -137,7 +135,7 @@ func UpdateRole(ctx context.Context, id string, role models.Role) (models.Role, 
 }
 
 // DeleteRole deleta uma role por id e remove sua entrada das permissões
-// de todos os canais do servidor, de maneira atômica
+// de todos os canais, de maneira atômica
 // na table user_roles isso já ocorre no cascade.
 func DeleteRole(ctx context.Context, id string) error {
 	tx, err := GetDB().BeginTx(ctx, nil)
@@ -146,17 +144,9 @@ func DeleteRole(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 
-	var serverID string
-	if err := tx.QueryRowContext(ctx,
-		"SELECT server_id FROM roles WHERE id = $1",
-		id,
-	).Scan(&serverID); err != nil {
-		return mapStorageError(err)
-	}
-
 	if _, err := tx.ExecContext(ctx,
-		"UPDATE channels SET permissions = permissions - $2 WHERE server_id = $1 AND permissions ? $2",
-		serverID, id,
+		"UPDATE channels SET permissions = permissions - $1 WHERE permissions ? $1",
+		id,
 	); err != nil {
 		return fmt.Errorf("falha ao excluir role: %w", err)
 	}

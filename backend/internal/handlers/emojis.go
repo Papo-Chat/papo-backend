@@ -13,16 +13,10 @@ import (
 )
 
 // ListEmojisHandler implementa GET /emojis.
-// Os parâmetros de query server_id (filtro por servidor), since (cursor de
-// paginação em created_at, ISO 8601) e last_id (id do último emoji da página
-// anterior, usado com since como cursor exato) são opcionais; máx. 25 emojis
-// por resposta.
+// Os parâmetros de query since (cursor de paginação em created_at, ISO 8601)
+// e last_id (id do último emoji da página anterior, usado com since como
+// cursor exato) são opcionais; máx. 25 emojis por resposta.
 func ListEmojisHandler(baseURL string, c echo.Context) error {
-	var serverID *string
-	if value := c.QueryParam("server_id"); value != "" {
-		serverID = &value
-	}
-
 	var since *time.Time
 	if value := c.QueryParam("since"); value != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, value)
@@ -35,7 +29,7 @@ func ListEmojisHandler(baseURL string, c echo.Context) error {
 	}
 	lastID := c.QueryParam("last_id")
 
-	list, err := services.ListEmojis(c.Request().Context(), serverID, since, lastID)
+	list, err := services.ListEmojis(c.Request().Context(), since, lastID)
 	if err != nil {
 		utils.Errorf("request_id=%s falha ao listar emojis: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
@@ -47,7 +41,6 @@ func ListEmojisHandler(baseURL string, c echo.Context) error {
 }
 
 type createEmojiRequest struct {
-	ServerID  string `json:"server_id"`
 	Name      string `json:"name"`
 	Format    string `json:"format"`
 	ImageBlob string `json:"image_blob"`
@@ -70,20 +63,17 @@ func CreateEmojiHandler(baseURL string, c echo.Context) error {
 			"token de autenticação ausente, inválido ou expirado")
 	}
 
-	emoji, err := services.CreateEmoji(c.Request().Context(), req.ServerID, req.Name, req.Format, req.ImageBlob, userID)
+	emoji, err := services.CreateEmoji(c.Request().Context(), req.Name, req.Format, req.ImageBlob, userID)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"server_id, name, format e image_blob são obrigatórios; name deve ter no máximo 32 caracteres; "+
+			"name, format e image_blob são obrigatórios; name deve ter no máximo 32 caracteres; "+
 				"format deve ser GIF, JPEG ou PNG; image_blob deve ser base64 de uma imagem com no máximo 256kb")
-	case errors.Is(err, services.ErrServerNotFound):
-		return utils.SendProblem(c, baseURL, http.StatusNotFound,
-			"not-found", "Recurso não encontrado", "servidor não encontrado")
 	case errors.Is(err, services.ErrEmojiLimitReached):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"emoji-limit-reached", "Limite de emojis atingido",
-			"o servidor já possui o número máximo de emojis (500)")
+			"o número máximo de emojis (500) já foi atingido")
 	case errors.Is(err, services.ErrEmojiNameTaken):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"emoji-name-taken", "Nome de emoji já existe",
@@ -99,8 +89,7 @@ func CreateEmojiHandler(baseURL string, c echo.Context) error {
 }
 
 // DeleteEmojiHandler implementa DELETE /emojis/:emoji_id.
-// Permissão: autor do emoji, dono do servidor ou role `manage_server`
-// do servidor do emoji.
+// Permissão: autor do emoji, dono do servidor ou role `manage_server`.
 func DeleteEmojiHandler(baseURL string, c echo.Context) error {
 	emojiID := c.Param("emoji_id")
 	if emojiID == "" {

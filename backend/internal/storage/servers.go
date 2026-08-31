@@ -76,11 +76,11 @@ func CreateServerWithIcon(ctx context.Context, name string, iconMedia *string, p
 	return server, nil
 }
 
-// GetServerByID busca um servidor pelo id, sem o password_hash.
-func GetServerByID(ctx context.Context, id string) (models.Server, error) {
+// GetServer busca o servidor do backend (1 backend = 1 servidor), sem o
+// password_hash.
+func GetServer(ctx context.Context) (models.Server, error) {
 	row := GetDB().QueryRowContext(ctx,
-		"SELECT "+serverPublicColumns+" FROM servers WHERE id = $1",
-		id,
+		"SELECT "+serverPublicColumns+" FROM servers LIMIT 1",
 	)
 
 	server, err := scanServerPublic(row)
@@ -149,15 +149,14 @@ func ListServers(ctx context.Context) ([]models.Server, error) {
 	return servers, nil
 }
 
-// serverSummaryColumns é a seleção comum da visão ServerSummary: dados do
+// serverSummaryColumns é a seleção da visão ServerSummary: dados do
 // servidor, username do dono (LEFT JOIN, pode ser NULL) e contagens de
-// canais, membros (por enquanto todos os usuários pertencem ao mesmo
-// servidor, então é o total da tabela users) e roles.
+// canais, membros (total da tabela users) e roles.
 const serverSummaryColumns = `s.id, s.owner_id, u.username AS owner_username, s.name, s.icon_media,
 	s.public_server, s.created_at,
-	(SELECT COUNT(*) FROM channels ch WHERE ch.server_id = s.id) AS channel_count,
+	(SELECT COUNT(*) FROM channels) AS channel_count,
 	(SELECT COUNT(*) FROM users) AS member_count,
-	(SELECT COUNT(*) FROM roles r WHERE r.server_id = s.id) AS role_count`
+	(SELECT COUNT(*) FROM roles) AS role_count`
 
 func scanServerSummary(row rowScanner) (models.ServerSummary, error) {
 	var summary models.ServerSummary
@@ -180,39 +179,11 @@ func scanServerSummary(row rowScanner) (models.ServerSummary, error) {
 	return summary, nil
 }
 
-// ListServerSummaries lista todos os servidores com a visão ServerSummary,
-// ordenados por data de criação.
-func ListServerSummaries(ctx context.Context) ([]models.ServerSummary, error) {
-	rows, err := GetDB().QueryContext(ctx,
-		"SELECT "+serverSummaryColumns+
-			" FROM servers s LEFT JOIN users u ON u.id = s.owner_id ORDER BY s.created_at, s.id",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("falha ao listar servidores: %w", err)
-	}
-	defer rows.Close()
-
-	summaries := make([]models.ServerSummary, 0)
-	for rows.Next() {
-		summary, err := scanServerSummary(rows)
-		if err != nil {
-			return nil, fmt.Errorf("falha ao ler servidor: %w", err)
-		}
-		summaries = append(summaries, summary)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("falha ao listar servidores: %w", err)
-	}
-
-	return summaries, nil
-}
-
-// GetServerSummary busca um servidor pelo id com a visão ServerSummary.
-func GetServerSummary(ctx context.Context, id string) (models.ServerSummary, error) {
+// GetServerSummary busca o servidor do backend com a visão ServerSummary.
+func GetServerSummary(ctx context.Context) (models.ServerSummary, error) {
 	row := GetDB().QueryRowContext(ctx,
 		"SELECT "+serverSummaryColumns+
-			" FROM servers s LEFT JOIN users u ON u.id = s.owner_id WHERE s.id = $1",
-		id,
+			" FROM servers s LEFT JOIN users u ON u.id = s.owner_id LIMIT 1",
 	)
 
 	summary, err := scanServerSummary(row)
@@ -221,20 +192,6 @@ func GetServerSummary(ctx context.Context, id string) (models.ServerSummary, err
 	}
 
 	return summary, nil
-}
-
-// CountServers é usado para saber se o server já foi criado
-func CountServers(ctx context.Context) (int, error) {
-	var count int
-
-	row := GetDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM servers")
-	err := row.Scan(&count)
-
-	if err != nil {
-		return 0, mapStorageError(err)
-	}
-
-	return count, nil
 }
 
 // UpdateServer atualiza o nome, o ícone, a visibilidade e a senha do servidor

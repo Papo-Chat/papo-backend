@@ -8,7 +8,6 @@ import "time"
 // da API.
 type Emoji struct {
 	ID         string    `db:"id" json:"id"`
-	ServerID   string    `db:"server_id" json:"server_id"`
 	Name       string    `db:"name" json:"name"`
 	ImageMedia string    `db:"image_media" json:"-"`
 	MimeType   string    `db:"mime_type" json:"-"`

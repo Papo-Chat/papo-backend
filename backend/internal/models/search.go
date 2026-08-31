@@ -22,7 +22,6 @@ type SearchResult struct {
 	Content        *string   `json:"content"`
 	ChannelID      string    `json:"channel_id"`
 	ChannelName    string    `json:"channel_name"`
-	ServerID       string    `json:"server_id"`
 	AuthorID       *string   `json:"author_id"`
 	AuthorUsername *string   `json:"author_username"`
 	CreatedAt      time.Time `json:"created_at"`

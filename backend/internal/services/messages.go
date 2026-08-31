@@ -198,7 +198,7 @@ func CreateMessage(ctx context.Context, channelID, authorID, content string, att
 	}
 
 	if len(attachments) > 0 {
-		allowed, err := userHasRolePermission(ctx, channel.ServerID, authorID, func(p models.RolePermissions) bool {
+		allowed, err := userHasRolePermission(ctx, authorID, func(p models.RolePermissions) bool {
 			return p.SendAttachment
 		})
 		if err != nil {
@@ -491,18 +491,18 @@ func deleteMessage(ctx context.Context, messageID string) error {
 }
 
 // userHasChannelPermission verifica se o usuário possui a permissão de canal
-// informada. O dono do servidor do canal possui implicitamente todas as
-// permissões (mesma regra do middleware de permissão de roles).
+// informada. O dono do servidor possui implicitamente todas as permissões
+// (mesma regra do middleware de permissão de roles).
 //
 // O parâmetro freeIfOpen controla o comportamento em canal aberto (canal sem
 // roles com permissões definidas): quando true, a permissão é livre para
 // todos (usado para read_channel e send_messages); quando false, a permissão
 // precisa ser concedida explicitamente em uma role mesmo em canal aberto
 // (usado para delete_messages). Nos demais casos, o usuário precisa da
-// permissão em ao menos uma das roles atribuídas a ele no servidor do canal.
+// permissão em ao menos uma das roles atribuídas a ele.
 func userHasChannelPermission(ctx context.Context, channel models.Channel, userID string, freeIfOpen bool, hasPermission func(models.ChannelPermission) bool) (bool, error) {
-	server, err := storage.GetServerByID(ctx, channel.ServerID)
-	if err != nil {
+	server, err := storage.GetServer(ctx)
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return false, err
 	}
 
@@ -520,9 +520,6 @@ func userHasChannelPermission(ctx context.Context, channel models.Channel, userI
 	}
 
 	for _, role := range roles {
-		if role.ServerID != channel.ServerID {
-			continue
-		}
 		if permission, ok := channel.Permissions[role.ID]; ok && hasPermission(permission) {
 			return true, nil
 		}
@@ -532,13 +529,12 @@ func userHasChannelPermission(ctx context.Context, channel models.Channel, userI
 }
 
 // userHasRolePermission verifica se o usuário possui a permissão de role
-// informada no servidor. O dono do servidor possui implicitamente todas as
-// permissões (mesma regra do middleware de permissão de roles); os demais
-// usuários precisam da permissão em ao menos uma das roles atribuídas a eles
-// no servidor.
-func userHasRolePermission(ctx context.Context, serverID, userID string, hasPermission func(models.RolePermissions) bool) (bool, error) {
-	server, err := storage.GetServerByID(ctx, serverID)
-	if err != nil {
+// informada. O dono do servidor possui implicitamente todas as permissões
+// (mesma regra do middleware de permissão de roles); os demais usuários
+// precisam da permissão em ao menos uma das roles atribuídas a eles.
+func userHasRolePermission(ctx context.Context, userID string, hasPermission func(models.RolePermissions) bool) (bool, error) {
+	server, err := storage.GetServer(ctx)
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return false, err
 	}
 
@@ -552,7 +548,7 @@ func userHasRolePermission(ctx context.Context, serverID, userID string, hasPerm
 	}
 
 	for _, role := range roles {
-		if role.ServerID == serverID && hasPermission(role.Permissions) {
+		if hasPermission(role.Permissions) {
 			return true, nil
 		}
 	}

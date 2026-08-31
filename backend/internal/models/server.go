@@ -19,7 +19,7 @@ type Server struct {
 }
 
 // ServerSummary representa a visão de servidor para listagem e detalhe
-// (GET /servers e GET /servers/:server_id), com o username do dono e as
+// (GET /servers e GET /server), com o username do dono e as
 // contagens de canais, membros e roles.
 type ServerSummary struct {
 	ID            string    `db:"id" json:"id"`
