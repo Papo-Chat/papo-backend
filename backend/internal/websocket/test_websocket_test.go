@@ -278,24 +278,37 @@ func newTestUser(t *testing.T) models.User {
 	return user
 }
 
-// removeAllServersTest limpa a tabela servers (as dependências são removidas
-// em cascata) para isolar os testes que dependem do estado do servidor do
-// backend (1 backend = 1 servidor).
+// removeAllServersTest limpa todo o estado com escopo de servidor (incluindo
+// a tabela servers) para isolar os testes que dependem do estado do servidor
+// do backend (1 backend = 1 servidor).
 func removeAllServersTest(t *testing.T) {
 	t.Helper()
-	if _, err := storage.GetDB().ExecContext(testCtx(), "DELETE FROM servers"); err != nil {
-		t.Fatalf("falha ao limpar a tabela servers: %v", err)
+	for _, query := range []string{
+		"DELETE FROM user_roles",
+		"DELETE FROM roles",
+		"DELETE FROM attachment_thumbnails",
+		"DELETE FROM attachments",
+		"DELETE FROM messages",
+		"DELETE FROM user_channel_state",
+		"DELETE FROM channels",
+		"DELETE FROM emojis",
+		"DELETE FROM servers",
+	} {
+		if _, err := storage.GetDB().ExecContext(testCtx(), query); err != nil {
+			t.Fatalf("falha ao limpar o estado do servidor: %v", err)
+		}
 	}
 }
 
 // newTestServerChannel cria um servidor (com o dono informado) e um canal nele.
 func newTestServerChannel(t *testing.T, ownerID *string) (models.Server, models.ChannelSummary) {
 	t.Helper()
+	removeAllServersTest(t)
 	server, err := services.CreateServer(testCtx(), "server_"+randHex(8), ownerID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor de teste: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), server.ID, "chan_"+randHex(8), "text")
+	channel, err := services.CreateChannel(testCtx(), "chan_"+randHex(8), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal de teste: %v", err)
 	}
@@ -306,7 +319,7 @@ func newTestServerChannel(t *testing.T, ownerID *string) (models.Server, models.
 // atribui ao usuário (mesmo padrão dos testes de services).
 func grantChannelReadPermission(t *testing.T, server models.Server, channel models.ChannelSummary, user models.User) {
 	t.Helper()
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(8), nil, models.RolePermissions{})
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(8), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role de teste: %v", err)
 	}

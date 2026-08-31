@@ -30,11 +30,14 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Adições no User Profile (Descrição, banner), GET /media/:sha_hash e last_read_message
 - [x] Batch request para user profiles (POST /users/profileBatch com body com ids dos usuários), retorna o mesmo que profile mas array (máximo 50 usuários)
 - [x] Fixar código em single server
+- [ ] Dois novos campos:
+     - Adicionar campo reply_to na tabela de mensagens (permitir uma mensagem referenciar outra). Porém a mensagem anterior pode ser excluída.
+     - Adicionar campo topic na tabela de canais (máximo 512 caracteres), valido apenas para canais de texto.
 - [ ] Auditoria/Logs para Admins (somente-texto)
 - [ ] Crons GC Attachments orfãos/tabela quebrada
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
 - [ ] React Mensagens
-- [ ] Pin message /POST messages/pin/:id, permissão pin_message
+- [ ] Pin message /POST messages/:id/pin/ permissão pin_message, tabela pinned_messages, delete cascade.
 - [ ] Notificações (persistentes)
 - [ ] Refresh token rotation com detecção de reuse, tabela endpoint de dispositivos conectados, endpoint de derrubar todas as conexões (inclusive atual)
 - [ ] Detecção e moderação Automática (Contra conteúdo sensível)

@@ -374,20 +374,37 @@ func newUser(t *testing.T) string {
 	return user.ID
 }
 
-// newServer cria um servidor de apoio; ownerID pode ser nil.
+// newServer cria um servidor de apoio; ownerID pode ser nil. O servidor é
+// singleton no banco, então os dados de testes anteriores são removidos antes.
 func newServer(t *testing.T, ownerID *string) models.Server {
 	t.Helper()
-	server, err := storage.CreateServer(context.Background(), "server_"+randHex(8), ownerID)
+	ctx := context.Background()
+	for _, query := range []string{
+		"DELETE FROM user_roles",
+		"DELETE FROM roles",
+		"DELETE FROM attachment_thumbnails",
+		"DELETE FROM attachments",
+		"DELETE FROM messages",
+		"DELETE FROM user_channel_state",
+		"DELETE FROM channels",
+		"DELETE FROM emojis",
+		"DELETE FROM servers",
+	} {
+		if _, err := storage.GetDB().ExecContext(ctx, query); err != nil {
+			t.Fatalf("falha ao limpar o banco antes de criar o servidor de apoio: %v", err)
+		}
+	}
+	server, err := storage.CreateServer(ctx, "server_"+randHex(8), ownerID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor de apoio: %v", err)
 	}
 	return server
 }
 
-// newRole cria uma role de apoio no servidor informado.
-func newRole(t *testing.T, serverID string, permissions models.RolePermissions) models.Role {
+// newRole cria uma role de apoio.
+func newRole(t *testing.T, permissions models.RolePermissions) models.Role {
 	t.Helper()
-	role, err := storage.CreateRole(context.Background(), serverID, "role_"+randHex(8), nil, permissions)
+	role, err := storage.CreateRole(context.Background(), "role_"+randHex(8), nil, permissions)
 	if err != nil {
 		t.Fatalf("falha ao criar role de apoio: %v", err)
 	}
@@ -402,10 +419,10 @@ func assignRole(t *testing.T, userID, roleID string) {
 	}
 }
 
-// newChannel cria um canal de apoio no servidor informado.
-func newChannel(t *testing.T, serverID string) models.Channel {
+// newChannel cria um canal de apoio.
+func newChannel(t *testing.T) models.Channel {
 	t.Helper()
-	channel, err := storage.CreateChannel(context.Background(), serverID, "channel_"+randHex(8), "text")
+	channel, err := storage.CreateChannel(context.Background(), "channel_"+randHex(8), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal de apoio: %v", err)
 	}
@@ -477,7 +494,7 @@ func TestPermissionAllowsRoleWithPermission(t *testing.T) {
 	ownerID := newUser(t)
 	userID := newUser(t)
 	server := newServer(t, &ownerID)
-	role := newRole(t, server.ID, models.RolePermissions{ManageServer: true})
+	role := newRole(t, models.RolePermissions{ManageServer: true})
 	assignRole(t, userID, role.ID)
 
 	c := newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil,
@@ -492,7 +509,7 @@ func TestPermissionDeniesRoleWithoutPermission(t *testing.T) {
 	ownerID := newUser(t)
 	userID := newUser(t)
 	server := newServer(t, &ownerID)
-	role := newRole(t, server.ID, models.RolePermissions{ManageChannels: true})
+	role := newRole(t, models.RolePermissions{ManageChannels: true})
 	assignRole(t, userID, role.ID)
 
 	c := newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil,
@@ -514,35 +531,6 @@ func TestPermissionDeniesUserWithoutRoles(t *testing.T) {
 	rec := doPermissionRequest(t, RequireManageServer(), c)
 	assertProblem(t, rec, http.StatusForbidden, "forbidden",
 		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
-}
-
-func TestPermissionIgnoresRolesFromOtherServers(t *testing.T) {
-	ownerA := newUser(t)
-	ownerB := newUser(t)
-	userID := newUser(t)
-	serverA := newServer(t, &ownerA)
-	serverB := newServer(t, &ownerB)
-	role := newRole(t, serverB.ID, models.RolePermissions{ManageServer: true})
-	assignRole(t, userID, role.ID)
-
-	// a role com permissão pertence ao servidor B; o alvo é o servidor A
-	c := newPermissionContext(t, http.MethodPut, "/servers/"+serverA.ID, nil,
-		[]string{"server_id"}, []string{serverA.ID}, userID)
-
-	rec := doPermissionRequest(t, RequireManageServer(), c)
-	assertProblem(t, rec, http.StatusForbidden, "forbidden",
-		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
-}
-
-func TestPermissionServerNotFound(t *testing.T) {
-	userID := newUser(t)
-
-	c := newPermissionContext(t, http.MethodPut, "/servers/"+nonexistentID, nil,
-		[]string{"server_id"}, []string{nonexistentID}, userID)
-
-	rec := doPermissionRequest(t, RequireManageServer(), c)
-	assertProblem(t, rec, http.StatusNotFound, "not-found",
-		"Recurso não encontrado", "servidor não encontrado", "")
 }
 
 // --- RequireServerOwnerOrManageServer ---
@@ -571,8 +559,8 @@ func TestServerOwnerOrManageServerAllowsOwnerWithoutRoles(t *testing.T) {
 func TestServerOwnerOrManageServerAllowsRoleWithPermission(t *testing.T) {
 	ownerID := newUser(t)
 	userID := newUser(t)
-	server := newServer(t, &ownerID)
-	role := newRole(t, server.ID, models.RolePermissions{ManageServer: true})
+	newServer(t, &ownerID)
+	role := newRole(t, models.RolePermissions{ManageServer: true})
 	assignRole(t, userID, role.ID)
 
 	c := newPermissionContext(t, http.MethodPut, "/users/"+nonexistentID+"/ban", nil,
@@ -586,8 +574,8 @@ func TestServerOwnerOrManageServerAllowsRoleWithPermission(t *testing.T) {
 func TestServerOwnerOrManageServerDeniesRoleWithoutPermission(t *testing.T) {
 	ownerID := newUser(t)
 	userID := newUser(t)
-	server := newServer(t, &ownerID)
-	role := newRole(t, server.ID, models.RolePermissions{ManageChannels: true})
+	newServer(t, &ownerID)
+	role := newRole(t, models.RolePermissions{ManageChannels: true})
 	assignRole(t, userID, role.ID)
 
 	c := newPermissionContext(t, http.MethodPut, "/users/"+nonexistentID+"/ban", nil,
@@ -609,22 +597,19 @@ func TestServerOwnerOrManageServerDeniesUserWithoutServersOrRoles(t *testing.T) 
 		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
 }
 
-func TestServerOwnerOrManageServerAllowsRoleFromAnyServer(t *testing.T) {
-	ownerA := newUser(t)
-	ownerB := newUser(t)
+func TestServerOwnerOrManageServerAllowsManageServerRole(t *testing.T) {
+	ownerID := newUser(t)
 	userID := newUser(t)
-	newServer(t, &ownerA)
-	serverB := newServer(t, &ownerB)
-	role := newRole(t, serverB.ID, models.RolePermissions{ManageServer: true})
+	newServer(t, &ownerID)
+	role := newRole(t, models.RolePermissions{ManageServer: true})
 	assignRole(t, userID, role.ID)
 
-	// operação global (sem servidor alvo): a role vale independente do
-	// servidor em que foi atribuída
+	// operação global (sem servidor alvo): a role com manage_server autoriza
 	c := newPermissionContext(t, http.MethodPut, "/users/"+nonexistentID+"/ban", nil,
 		[]string{"user_id"}, []string{nonexistentID}, userID)
 
 	if rec := doPermissionRequest(t, RequireServerOwnerOrManageServer(), c); rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200 via role de qualquer servidor, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+		t.Fatalf("esperava status 200 via role com manage_server, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -669,8 +654,8 @@ func TestSelfOrServerOwnerAllowsOwnerWithoutRoles(t *testing.T) {
 func TestSelfOrServerOwnerDeniesRoleWithoutOwnership(t *testing.T) {
 	ownerID := newUser(t)
 	userID := newUser(t)
-	server := newServer(t, &ownerID)
-	role := newRole(t, server.ID, models.RolePermissions{ManageServer: true})
+	newServer(t, &ownerID)
+	role := newRole(t, models.RolePermissions{ManageServer: true})
 	assignRole(t, userID, role.ID)
 	targetID := newUser(t)
 
@@ -694,136 +679,11 @@ func TestSelfOrServerOwnerDeniesUserWithoutServers(t *testing.T) {
 		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
 }
 
-func TestPermissionResolvesServerByChannel(t *testing.T) {
-	ownerID := newUser(t)
-	userID := newUser(t)
-	server := newServer(t, &ownerID)
-	channel := newChannel(t, server.ID)
-	role := newRole(t, server.ID, models.RolePermissions{ManageChannels: true})
-	assignRole(t, userID, role.ID)
-
-	c := newPermissionContext(t, http.MethodPut, "/channels/"+channel.ID, nil,
-		[]string{"channel_id"}, []string{channel.ID}, userID)
-
-	if rec := doPermissionRequest(t, RequireManageChannels(), c); rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200 via canal, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
-	}
-}
-
-func TestPermissionChannelNotFound(t *testing.T) {
-	userID := newUser(t)
-
-	c := newPermissionContext(t, http.MethodPut, "/channels/"+nonexistentID, nil,
-		[]string{"channel_id"}, []string{nonexistentID}, userID)
-
-	rec := doPermissionRequest(t, RequireManageChannels(), c)
-	assertProblem(t, rec, http.StatusNotFound, "not-found",
-		"Recurso não encontrado", "canal não encontrado", "")
-}
-
-func TestPermissionResolvesServerByRole(t *testing.T) {
-	ownerID := newUser(t)
-	userID := newUser(t)
-	server := newServer(t, &ownerID)
-	targetRole := newRole(t, server.ID, models.RolePermissions{})
-	role := newRole(t, server.ID, models.RolePermissions{ManageRoles: true})
-	assignRole(t, userID, role.ID)
-
-	c := newPermissionContext(t, http.MethodDelete, "/roles/"+targetRole.ID, nil,
-		[]string{"role_id"}, []string{targetRole.ID}, userID)
-
-	if rec := doPermissionRequest(t, RequireManageRoles(), c); rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200 via role, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
-	}
-}
-
-func TestPermissionRoleNotFound(t *testing.T) {
-	userID := newUser(t)
-
-	c := newPermissionContext(t, http.MethodDelete, "/roles/"+nonexistentID, nil,
-		[]string{"role_id"}, []string{nonexistentID}, userID)
-
-	rec := doPermissionRequest(t, RequireManageRoles(), c)
-	assertProblem(t, rec, http.StatusNotFound, "not-found",
-		"Recurso não encontrado", "role não encontrada", "")
-}
-
-func TestPermissionResolvesServerFromBody(t *testing.T) {
-	ownerID := newUser(t)
-	userID := newUser(t)
-	server := newServer(t, &ownerID)
-	role := newRole(t, server.ID, models.RolePermissions{ManageChannels: true})
-	assignRole(t, userID, role.ID)
-
-	body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": "geral"})
-	c := newPermissionContext(t, http.MethodPost, "/channels", body, nil, nil, userID)
-
-	if rec := doPermissionRequest(t, RequireManageChannels(), c); rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200 via corpo, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
-	}
-}
-
-func TestPermissionResolvesServerFromBodyRoleID(t *testing.T) {
-	ownerID := newUser(t)
-	userID := newUser(t)
-	server := newServer(t, &ownerID)
-	targetRole := newRole(t, server.ID, models.RolePermissions{})
-	role := newRole(t, server.ID, models.RolePermissions{ManageRoles: true})
-	assignRole(t, userID, role.ID)
-
-	body, _ := json.Marshal(map[string]string{"role_id": targetRole.ID})
-	c := newPermissionContext(t, http.MethodPost, "/users/"+userID+"/roles", body, nil, nil, userID)
-
-	if rec := doPermissionRequest(t, RequireManageRoles(), c); rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200 via role_id no corpo, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
-	}
-}
-
-func TestPermissionServerIDParamTakesPrecedenceOverBody(t *testing.T) {
-	ownerA := newUser(t)
-	ownerB := newUser(t)
-	userID := newUser(t)
-	serverA := newServer(t, &ownerA)
-	serverB := newServer(t, &ownerB)
-	role := newRole(t, serverB.ID, models.RolePermissions{ManageChannels: true})
-	assignRole(t, userID, role.ID)
-
-	// o corpo aponta para o servidor B (permitido), mas o parâmetro aponta para o A
-	body, _ := json.Marshal(map[string]string{"server_id": serverB.ID, "name": "geral"})
-	c := newPermissionContext(t, http.MethodPost, "/channels", body,
-		[]string{"server_id"}, []string{serverA.ID}, userID)
-
-	rec := doPermissionRequest(t, RequireManageChannels(), c)
-	assertProblem(t, rec, http.StatusForbidden, "forbidden",
-		"Acesso negado", "usuário não possui a permissão necessária para esta operação", "")
-}
-
-func TestPermissionBodyWithoutServerOrRole(t *testing.T) {
-	userID := newUser(t)
-
-	body, _ := json.Marshal(map[string]string{"name": "geral"})
-	c := newPermissionContext(t, http.MethodPost, "/channels", body, nil, nil, userID)
-
-	rec := doPermissionRequest(t, RequireManageChannels(), c)
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param",
-		"Parâmetro inválido", "não foi possível determinar o servidor alvo da operação", "")
-}
-
-func TestPermissionInvalidJSONBody(t *testing.T) {
-	userID := newUser(t)
-
-	c := newPermissionContext(t, http.MethodPost, "/channels", []byte("não é json"), nil, nil, userID)
-
-	rec := doPermissionRequest(t, RequireManageChannels(), c)
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param",
-		"Parâmetro inválido", "não foi possível determinar o servidor alvo da operação", "")
-}
-
 func TestPermissionHelpersMapToCorrectPermission(t *testing.T) {
 	ownerID := newUser(t)
 	userID := newUser(t)
 	server := newServer(t, &ownerID)
-	role := newRole(t, server.ID, models.RolePermissions{ManageChannels: true})
+	role := newRole(t, models.RolePermissions{ManageChannels: true})
 	assignRole(t, userID, role.ID)
 
 	names := []string{"server_id"}
@@ -841,35 +701,6 @@ func TestPermissionHelpersMapToCorrectPermission(t *testing.T) {
 		newPermissionContext(t, http.MethodPost, "/roles", nil, names, values, userID)),
 		http.StatusForbidden, "forbidden", "Acesso negado",
 		"usuário não possui a permissão necessária para esta operação", "")
-}
-
-func TestPermissionRestoresBodyForHandler(t *testing.T) {
-	ownerID := newUser(t)
-	userID := newUser(t)
-	server := newServer(t, &ownerID)
-	role := newRole(t, server.ID, models.RolePermissions{ManageChannels: true})
-	assignRole(t, userID, role.ID)
-
-	body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": "geral"})
-	c := newPermissionContext(t, http.MethodPost, "/channels", body, nil, nil, userID)
-
-	handler := RequireManageChannels()(func(ctx echo.Context) error {
-		data, err := io.ReadAll(ctx.Request().Body)
-		if err != nil {
-			t.Fatalf("falha ao ler o corpo no handler: %v", err)
-		}
-		if !bytes.Equal(data, body) {
-			t.Fatalf("corpo restaurado difere do original: %s", data)
-		}
-		return ctx.String(http.StatusOK, "ok")
-	})
-
-	if err := handler(c); err != nil {
-		t.Fatalf("handler retornou erro: %v", err)
-	}
-	if rec := recorder(c); rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
-	}
 }
 
 // --- CORS ---

@@ -351,7 +351,7 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		{http.MethodPut, "/users/" + userID + "/ban"},
 		{http.MethodPost, "/users/" + userID + "/reset"},
 		{http.MethodPost, "/servers"},
-		{http.MethodPut, "/servers/00000000-0000-4000-8000-000000000000"},
+		{http.MethodPut, "/server"},
 		{http.MethodGet, "/channels"},
 		{http.MethodPost, "/channels"},
 		{http.MethodPut, "/channels/00000000-0000-4000-8000-000000000000"},
@@ -370,8 +370,8 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		{http.MethodGet, "/emojis"},
 		{http.MethodPost, "/emojis"},
 		{http.MethodDelete, "/emojis/00000000-0000-4000-8000-000000000000"},
-		{http.MethodGet, "/servers/00000000-0000-4000-8000-000000000000/roles"},
-		{http.MethodPost, "/servers/00000000-0000-4000-8000-000000000000/roles"},
+		{http.MethodGet, "/roles"},
+		{http.MethodPost, "/roles"},
 		{http.MethodPut, "/roles/00000000-0000-4000-8000-000000000000"},
 		{http.MethodDelete, "/roles/00000000-0000-4000-8000-000000000000"},
 		{http.MethodPost, "/users/" + userID + "/roles"},
@@ -716,6 +716,9 @@ func newBanBody(targetID string, banState bool) []byte {
 func ownerTokenFor(t *testing.T, e *echo.Echo) (string, string) {
 	t.Helper()
 	userID, token := registerAndLogin(t, e)
+	if err := cleanServers(context.Background()); err != nil {
+		t.Fatalf("falha ao limpar tabelas de servidor: %v", err)
+	}
 	if _, err := storage.CreateServer(context.Background(), "srv_"+randHex(4), &userID); err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
@@ -801,17 +804,9 @@ func TestBanRouteWithManageServerRole(t *testing.T) {
 	targetID, _ := registerAndLogin(t, e)
 	cleanupBan(t, targetID)
 
-	server, err := storage.CreateServer(context.Background(), "srv_"+randHex(4), &ownerID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(context.Background(), server.ID, "role_"+randHex(8), nil, models.RolePermissions{ManageServer: true})
-	if err != nil {
-		t.Fatalf("falha ao criar role: %v", err)
-	}
-	if _, err := storage.AssignUserRole(context.Background(), actorID, role.ID); err != nil {
-		t.Fatalf("falha ao atribuir role: %v", err)
-	}
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{ManageServer: true})
+	assignRoleToUser(t, actorID, role.ID)
 
 	rec := do(t, e, http.MethodPut, "/users/"+targetID+"/ban", newBanBody(targetID, true), authCookie(actorToken))
 
@@ -1138,8 +1133,8 @@ func TestWrongMethodReturns405(t *testing.T) {
 		{http.MethodPost, "/users"},
 		{http.MethodGet, "/users/" + userID + "/password"},
 		{http.MethodDelete, "/servers"},
-		{http.MethodDelete, "/servers/00000000-0000-4000-8000-000000000000"},
-		{http.MethodPost, "/servers/00000000-0000-4000-8000-000000000000"},
+		{http.MethodDelete, "/server"},
+		{http.MethodPost, "/server"},
 		{http.MethodDelete, "/channels"},
 		{http.MethodGet, "/channels/00000000-0000-4000-8000-000000000000"},
 		{http.MethodPost, "/channels/00000000-0000-4000-8000-000000000000"},
@@ -1148,7 +1143,7 @@ func TestWrongMethodReturns405(t *testing.T) {
 		{http.MethodGet, "/messages"},
 		{http.MethodGet, "/messages/00000000-0000-4000-8000-000000000000"},
 		{http.MethodDelete, "/messages"},
-		{http.MethodDelete, "/servers/00000000-0000-4000-8000-000000000000/roles"},
+		{http.MethodDelete, "/roles"},
 		{http.MethodGet, "/roles/00000000-0000-4000-8000-000000000000"},
 		{http.MethodDelete, "/users/" + userID + "/roles"},
 		{http.MethodPut, "/users/" + userID + "/roles/00000000-0000-4000-8000-000000000000"},
@@ -1178,15 +1173,13 @@ func TestUnknownRouteReturns404(t *testing.T) {
 
 // TestListServersRouteWithAuth garante que GET /servers responde a listagem
 // de servidores para o usuário autenticado pelo cookie.
-func TestListServersRouteWithAuth(t *testing.T) {
+// TestGetServersRouteWithAuth garante que GET /servers responde o único
+// servidor do backend para o usuário autenticado pelo cookie.
+func TestGetServersRouteWithAuth(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 
-	serverName := "srv_" + randHex(4)
-	server, err := storage.CreateServer(context.Background(), serverName, &userID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	server := createServerFor(t, userID)
 
 	rec := do(t, e, http.MethodGet, "/servers", nil, authCookie(token))
 
@@ -1194,63 +1187,45 @@ func TestListServersRouteWithAuth(t *testing.T) {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Servers []struct {
-			ID            string  `json:"id"`
-			Name          string  `json:"name"`
-			OwnerID       *string `json:"owner_id"`
-			OwnerUsername *string `json:"owner_username"`
-			ChannelCount  int     `json:"channel_count"`
-			MemberCount   int     `json:"member_count"`
-		} `json:"servers"`
+		ID            string  `json:"id"`
+		Name          string  `json:"name"`
+		OwnerID       *string `json:"owner_id"`
+		OwnerUsername *string `json:"owner_username"`
+		ChannelCount  int     `json:"channel_count"`
+		MemberCount   int     `json:"member_count"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if resp.Servers == nil {
-		t.Fatal("esperava servers como lista, obtive null")
+	if resp.ID != server.ID {
+		t.Errorf("esperava id %q, obtive %q", server.ID, resp.ID)
 	}
-
-	var found bool
-	for _, s := range resp.Servers {
-		if s.ID != server.ID {
-			continue
-		}
-		found = true
-		if s.Name != serverName {
-			t.Errorf("esperava name %q, obtive %q", serverName, s.Name)
-		}
-		if s.OwnerID == nil || *s.OwnerID != userID {
-			t.Errorf("esperava owner_id %q, obtive %v", userID, s.OwnerID)
-		}
-		if s.OwnerUsername == nil {
-			t.Error("esperava owner_username preenchido")
-		}
-		if s.ChannelCount != 0 {
-			t.Errorf("esperava channel_count 0, obtive %d", s.ChannelCount)
-		}
-		if s.MemberCount < 1 {
-			t.Errorf("esperava member_count >= 1, obtive %d", s.MemberCount)
-		}
-		break
+	if resp.Name != server.Name {
+		t.Errorf("esperava name %q, obtive %q", server.Name, resp.Name)
 	}
-	if !found {
-		t.Errorf("servidor %s não apareceu na listagem", server.ID)
+	if resp.OwnerID == nil || *resp.OwnerID != userID {
+		t.Errorf("esperava owner_id %q, obtive %v", userID, resp.OwnerID)
+	}
+	if resp.OwnerUsername == nil {
+		t.Error("esperava owner_username preenchido")
+	}
+	if resp.ChannelCount != 0 {
+		t.Errorf("esperava channel_count 0, obtive %d", resp.ChannelCount)
+	}
+	if resp.MemberCount < 1 {
+		t.Errorf("esperava member_count >= 1, obtive %d", resp.MemberCount)
 	}
 }
 
-// TestGetServerRouteWithAuth garante que GET /servers/:server_id responde o
-// detalhe do servidor para o usuário autenticado pelo cookie.
+// TestGetServerRouteWithAuth garante que GET /server responde o detalhe do
+// único servidor do backend para o usuário autenticado pelo cookie.
 func TestGetServerRouteWithAuth(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 
-	serverName := "srv_" + randHex(4)
-	server, err := storage.CreateServer(context.Background(), serverName, &userID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	server := createServerFor(t, userID)
 
-	rec := do(t, e, http.MethodGet, "/servers/"+server.ID, nil, authCookie(token))
+	rec := do(t, e, http.MethodGet, "/server", nil, authCookie(token))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
@@ -1269,8 +1244,8 @@ func TestGetServerRouteWithAuth(t *testing.T) {
 	if resp.ID != server.ID {
 		t.Errorf("esperava id %q, obtive %q", server.ID, resp.ID)
 	}
-	if resp.Name != serverName {
-		t.Errorf("esperava name %q, obtive %q", serverName, resp.Name)
+	if resp.Name != server.Name {
+		t.Errorf("esperava name %q, obtive %q", server.Name, resp.Name)
 	}
 	if resp.OwnerID == nil || *resp.OwnerID != userID {
 		t.Errorf("esperava owner_id %q, obtive %v", userID, resp.OwnerID)
@@ -1286,32 +1261,29 @@ func TestGetServerRouteWithAuth(t *testing.T) {
 	}
 }
 
-// TestGetServerRouteNotFound garante que GET /servers/:server_id responde
-// 404 para servidor inexistente.
+// TestGetServerRouteNotFound garante que GET /server responde 404 quando o
+// backend ainda não tem servidor.
 func TestGetServerRouteNotFound(t *testing.T) {
 	e := newApp()
 	_, token := registerAndLogin(t, e)
+	removeAllServersTest(t)
 
-	rec := do(t, e, http.MethodGet, "/servers/00000000-0000-4000-8000-000000000000", nil, authCookie(token))
+	rec := do(t, e, http.MethodGet, "/server", nil, authCookie(token))
 
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
 }
 
-// TestUpdateServerRouteWithAuth garante que PUT /servers/:server_id atualiza
-// o servidor do usuário autenticado pelo cookie.
+// TestUpdateServerRouteWithAuth garante que PUT /server atualiza o servidor
+// do usuário autenticado pelo cookie.
 func TestUpdateServerRouteWithAuth(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 
-	serverName := "srv_" + randHex(4)
-	server, err := storage.CreateServer(context.Background(), serverName, &userID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	server := createServerFor(t, userID)
 
 	newName := "srv_" + randHex(4)
 	body, _ := json.Marshal(map[string]string{"name": newName})
-	rec := do(t, e, http.MethodPut, "/servers/"+server.ID, body, authCookie(token))
+	rec := do(t, e, http.MethodPut, "/server", body, authCookie(token))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
@@ -1330,29 +1302,27 @@ func TestUpdateServerRouteWithAuth(t *testing.T) {
 		t.Errorf("esperava name %q, obtive %q", newName, resp.Name)
 	}
 
-	stored, err := storage.GetServerByID(context.Background(), server.ID)
+	stored, err := storage.GetServer(context.Background())
 	if err != nil {
-		t.Fatalf("GetServerByID retornou erro: %v", err)
+		t.Fatalf("GetServer retornou erro: %v", err)
 	}
 	if stored.Name != newName {
 		t.Errorf("esperava name %q persistido, obtive %q", newName, stored.Name)
 	}
 }
 
-// TestUpdateServerRouteOtherUserForbidden garante que a atualização de um
-// servidor de outro usuário é negada com 403.
+// TestUpdateServerRouteOtherUserForbidden garante que a atualização do
+// servidor por um usuário que não é dono nem possui a role manage_server é
+// negada com 403.
 func TestUpdateServerRouteOtherUserForbidden(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	_, token := registerAndLogin(t, e)
 
-	server, err := storage.CreateServer(context.Background(), "srv_"+randHex(4), &ownerID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	createServerFor(t, ownerID)
 
 	body, _ := json.Marshal(map[string]string{"name": "srv_" + randHex(4)})
-	rec := do(t, e, http.MethodPut, "/servers/"+server.ID, body, authCookie(token))
+	rec := do(t, e, http.MethodPut, "/server", body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado", "usuário não possui a permissão necessária para esta operação")
 }
@@ -1392,9 +1362,9 @@ func TestCreateServerRouteWithAuth(t *testing.T) {
 		t.Errorf("esperava owner_id %s, obtive %v", userID, resp.OwnerID)
 	}
 
-	stored, err := storage.GetServerByID(context.Background(), resp.ID)
+	stored, err := storage.GetServer(context.Background())
 	if err != nil {
-		t.Fatalf("GetServerByID retornou erro: %v", err)
+		t.Fatalf("GetServer retornou erro: %v", err)
 	}
 	if stored.Name != serverName {
 		t.Errorf("esperava name %q persistido, obtive %q", serverName, stored.Name)
@@ -1402,6 +1372,20 @@ func TestCreateServerRouteWithAuth(t *testing.T) {
 	if stored.OwnerID == nil || *stored.OwnerID != userID {
 		t.Errorf("esperava owner_id %s persistido, obtive %v", userID, stored.OwnerID)
 	}
+}
+
+// TestCreateServerRouteAlreadyExists garante que POST /servers responde 409
+// quando o backend já possui o servidor único.
+func TestCreateServerRouteAlreadyExists(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+
+	body, _ := json.Marshal(map[string]any{"name": "srv_" + randHex(4), "public": true})
+	rec := do(t, e, http.MethodPost, "/servers", body, authCookie(token))
+
+	assertProblem(t, rec, http.StatusConflict, "server-already-exists", "Ação Proibida",
+		"O servidor já foi criado, não há como criar mais de 1 servidor")
 }
 
 // TestCreateServerRouteUnauthenticated garante que POST /servers exige
@@ -1431,9 +1415,13 @@ func TestCreateServerRouteInvalidInput(t *testing.T) {
 
 // --- helpers de setup para canais e roles ---
 
-// createServerFor cria um servidor para o usuário e retorna o registro criado.
+// createServerFor cria o servidor do backend para o usuário e retorna o
+// registro criado (limpa o estado anterior, pois existe 1 servidor por backend).
 func createServerFor(t *testing.T, userID string) models.Server {
 	t.Helper()
+	if err := cleanServers(context.Background()); err != nil {
+		t.Fatalf("falha ao limpar tabelas de servidor: %v", err)
+	}
 	server, err := storage.CreateServer(context.Background(), "srv_"+randHex(4), &userID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
@@ -1441,20 +1429,20 @@ func createServerFor(t *testing.T, userID string) models.Server {
 	return server
 }
 
-// createChannelFor cria um canal text em um servidor e retorna o registro criado.
-func createChannelFor(t *testing.T, serverID, name string) models.Channel {
+// createChannelFor cria um canal text e retorna o registro criado.
+func createChannelFor(t *testing.T, name string) models.Channel {
 	t.Helper()
-	channel, err := storage.CreateChannel(context.Background(), serverID, name, "text")
+	channel, err := storage.CreateChannel(context.Background(), name, "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 	return channel
 }
 
-// createRoleFor cria uma role em um servidor e retorna o registro criado.
-func createRoleFor(t *testing.T, serverID string, permissions models.RolePermissions) models.Role {
+// createRoleFor cria uma role e retorna o registro criado.
+func createRoleFor(t *testing.T, permissions models.RolePermissions) models.Role {
 	t.Helper()
-	role, err := storage.CreateRole(context.Background(), serverID, "role_"+randHex(8), nil, permissions)
+	role, err := storage.CreateRole(context.Background(), "role_"+randHex(8), nil, permissions)
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -1476,9 +1464,9 @@ func assignRoleToUser(t *testing.T, userID, roleID string) {
 func TestListChannelsRouteWithAuth(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
+	createServerFor(t, userID)
 	channelName := "chn_" + randHex(4)
-	channel := createChannelFor(t, server.ID, channelName)
+	channel := createChannelFor(t, channelName)
 
 	rec := do(t, e, http.MethodGet, "/channels", nil, authCookie(token))
 
@@ -1505,9 +1493,6 @@ func TestListChannelsRouteWithAuth(t *testing.T) {
 	if found == nil {
 		t.Fatalf("canal %s não apareceu na listagem", channel.ID)
 	}
-	if found.ServerID != server.ID {
-		t.Errorf("esperava server_id %q, obtive %q", server.ID, found.ServerID)
-	}
 	if found.Name != channelName {
 		t.Errorf("esperava name %q, obtive %q", channelName, found.Name)
 	}
@@ -1522,53 +1507,15 @@ func TestListChannelsRouteWithAuth(t *testing.T) {
 	}
 }
 
-// TestListChannelsRouteFilterByServer garante que GET /channels?server_id
-// filtra os canais por servidor.
-func TestListChannelsRouteFilterByServer(t *testing.T) {
-	e := newApp()
-	userID, token := registerAndLogin(t, e)
-	serverA := createServerFor(t, userID)
-	serverB := createServerFor(t, userID)
-	channel := createChannelFor(t, serverA.ID, "chn_"+randHex(4))
-
-	type channelListResponse struct {
-		Channels []models.ChannelSummary `json:"channels"`
-	}
-
-	rec := do(t, e, http.MethodGet, "/channels?server_id="+serverA.ID, nil, authCookie(token))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
-	}
-	var respA channelListResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &respA); err != nil {
-		t.Fatalf("falha ao decodificar resposta: %v", err)
-	}
-	if len(respA.Channels) != 1 || respA.Channels[0].ID != channel.ID {
-		t.Fatalf("esperava apenas o canal do servidor A, obtive %d canais", len(respA.Channels))
-	}
-
-	rec = do(t, e, http.MethodGet, "/channels?server_id="+serverB.ID, nil, authCookie(token))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
-	}
-	var respB channelListResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &respB); err != nil {
-		t.Fatalf("falha ao decodificar resposta: %v", err)
-	}
-	if len(respB.Channels) != 0 {
-		t.Errorf("esperava lista vazia para o servidor B, obtive %d canais", len(respB.Channels))
-	}
-}
-
 // TestCreateChannelRouteOwner garante que o dono do servidor cria um canal
 // via POST /channels e que o canal é persistido.
 func TestCreateChannelRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
+	createServerFor(t, userID)
 	channelName := "chn_" + randHex(4)
 
-	body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": channelName})
+	body, _ := json.Marshal(map[string]string{"name": channelName})
 	rec := do(t, e, http.MethodPost, "/channels", body, authCookie(token))
 
 	if rec.Code != http.StatusCreated {
@@ -1578,7 +1525,7 @@ func TestCreateChannelRouteOwner(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if resp.ID == "" || resp.ServerID != server.ID || resp.Name != channelName {
+	if resp.ID == "" || resp.Name != channelName {
 		t.Errorf("resposta inesperada: %+v", resp)
 	}
 	if resp.Type != "text" {
@@ -1592,7 +1539,7 @@ func TestCreateChannelRouteOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetChannelByID retornou erro: %v", err)
 	}
-	if stored.Name != channelName || stored.ServerID != server.ID {
+	if stored.Name != channelName {
 		t.Errorf("persistência inesperada: %+v", stored)
 	}
 }
@@ -1603,9 +1550,9 @@ func TestCreateChannelRouteForbiddenWithoutPermission(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	_, actorToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
+	createServerFor(t, ownerID)
 
-	body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": "chn_" + randHex(4)})
+	body, _ := json.Marshal(map[string]string{"name": "chn_" + randHex(4)})
 	rec := do(t, e, http.MethodPost, "/channels", body, authCookie(actorToken))
 
 	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
@@ -1613,16 +1560,16 @@ func TestCreateChannelRouteForbiddenWithoutPermission(t *testing.T) {
 }
 
 // TestCreateChannelRouteWithManageChannelsRole garante que um usuário com a
-// permissão manage_channels no servidor cria canal sem ser dono.
+// permissão manage_channels cria canal sem ser dono.
 func TestCreateChannelRouteWithManageChannelsRole(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	actorID, actorToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{ManageChannels: true})
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{ManageChannels: true})
 	assignRoleToUser(t, actorID, role.ID)
 
-	body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": "chn_" + randHex(4)})
+	body, _ := json.Marshal(map[string]string{"name": "chn_" + randHex(4)})
 	rec := do(t, e, http.MethodPost, "/channels", body, authCookie(actorToken))
 
 	if rec.Code != http.StatusCreated {
@@ -1630,53 +1577,19 @@ func TestCreateChannelRouteWithManageChannelsRole(t *testing.T) {
 	}
 }
 
-// TestCreateChannelRouteRoleOnOtherServerForbidden garante que a permissão
-// manage_channels de outro servidor não autoriza a criação neste servidor.
-func TestCreateChannelRouteRoleOnOtherServerForbidden(t *testing.T) {
-	e := newApp()
-	ownerA, _ := registerAndLogin(t, e)
-	ownerB, _ := registerAndLogin(t, e)
-	actorID, actorToken := registerAndLogin(t, e)
-	serverA := createServerFor(t, ownerA)
-	serverB := createServerFor(t, ownerB)
-	role := createRoleFor(t, serverB.ID, models.RolePermissions{ManageChannels: true})
-	assignRoleToUser(t, actorID, role.ID)
-
-	body, _ := json.Marshal(map[string]string{"server_id": serverA.ID, "name": "chn_" + randHex(4)})
-	rec := do(t, e, http.MethodPost, "/channels", body, authCookie(actorToken))
-
-	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
-		"usuário não possui a permissão necessária para esta operação")
-}
-
 // TestCreateChannelRouteInvalidInput garante que POST /channels responde 400
 // para nome ausente ou acima de 32 caracteres.
 func TestCreateChannelRouteInvalidInput(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
+	createServerFor(t, userID)
 
 	for _, name := range []string{"", strings.Repeat("c", 33)} {
-		body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": name})
+		body, _ := json.Marshal(map[string]string{"name": name})
 		rec := do(t, e, http.MethodPost, "/channels", body, authCookie(token))
 		assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-			"server_id e name são obrigatórios; name deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
+			"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
 	}
-}
-
-// TestCreateChannelRouteServerNotFound garante que POST /channels responde
-// 404 para servidor inexistente.
-func TestCreateChannelRouteServerNotFound(t *testing.T) {
-	e := newApp()
-	_, token := registerAndLogin(t, e)
-
-	body, _ := json.Marshal(map[string]string{
-		"server_id": "00000000-0000-4000-8000-000000000000",
-		"name":      "chn_" + randHex(4),
-	})
-	rec := do(t, e, http.MethodPost, "/channels", body, authCookie(token))
-
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
 }
 
 // TestCreateChannelRouteNameTaken garante que POST /channels responde 409
@@ -1684,11 +1597,11 @@ func TestCreateChannelRouteServerNotFound(t *testing.T) {
 func TestCreateChannelRouteNameTaken(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
+	createServerFor(t, userID)
 	channelName := "chn_" + randHex(4)
-	createChannelFor(t, server.ID, channelName)
+	createChannelFor(t, channelName)
 
-	body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": channelName})
+	body, _ := json.Marshal(map[string]string{"name": channelName})
 	rec := do(t, e, http.MethodPost, "/channels", body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusConflict, "channel-name-taken", "Nome de canal já existe",
@@ -1700,8 +1613,8 @@ func TestCreateChannelRouteNameTaken(t *testing.T) {
 func TestUpdateChannelRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	newName := "chn_" + randHex(4)
 
 	body, _ := json.Marshal(map[string]string{"name": newName})
@@ -1733,8 +1646,8 @@ func TestUpdateChannelRouteForbiddenWithoutPermission(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	_, actorToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 
 	body, _ := json.Marshal(map[string]string{"name": "chn_" + randHex(4)})
 	rec := do(t, e, http.MethodPut, "/channels/"+channel.ID, body, authCookie(actorToken))
@@ -1748,8 +1661,8 @@ func TestUpdateChannelRouteForbiddenWithoutPermission(t *testing.T) {
 func TestUpdateChannelRouteInvalidInput(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 
 	body, _ := json.Marshal(map[string]string{"name": ""})
 	rec := do(t, e, http.MethodPut, "/channels/"+channel.ID, body, authCookie(token))
@@ -1762,7 +1675,8 @@ func TestUpdateChannelRouteInvalidInput(t *testing.T) {
 // responde 404 para canal inexistente.
 func TestUpdateChannelRouteNotFound(t *testing.T) {
 	e := newApp()
-	_, token := registerAndLogin(t, e)
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
 
 	body, _ := json.Marshal(map[string]string{"name": "chn_" + randHex(4)})
 	rec := do(t, e, http.MethodPut, "/channels/00000000-0000-4000-8000-000000000000", body, authCookie(token))
@@ -1775,8 +1689,8 @@ func TestUpdateChannelRouteNotFound(t *testing.T) {
 func TestDeleteChannelRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 
 	rec := do(t, e, http.MethodDelete, "/channels/"+channel.ID, nil, authCookie(token))
 
@@ -1793,7 +1707,8 @@ func TestDeleteChannelRouteOwner(t *testing.T) {
 // responde 404 para canal inexistente.
 func TestDeleteChannelRouteNotFound(t *testing.T) {
 	e := newApp()
-	_, token := registerAndLogin(t, e)
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
 
 	rec := do(t, e, http.MethodDelete, "/channels/00000000-0000-4000-8000-000000000000", nil, authCookie(token))
 
@@ -1806,9 +1721,9 @@ func TestDeleteChannelRouteNotFound(t *testing.T) {
 func TestGetChannelPermissionsRouteWithAuth(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+	role := createRoleFor(t, models.RolePermissions{})
 
 	permission := models.ChannelPermission{ReadChannel: true, SendMessages: true}
 	if _, err := storage.UpdateChannelPermissions(context.Background(), channel.ID, role.ID, permission); err != nil {
@@ -1859,9 +1774,9 @@ func TestGetChannelPermissionsRouteNotFound(t *testing.T) {
 func TestUpdateChannelPermissionsRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+	role := createRoleFor(t, models.RolePermissions{})
 
 	permission := models.ChannelPermission{ReadChannel: true, DeleteMessages: true}
 	body, _ := json.Marshal(map[string]models.ChannelPermission{"permissions": permission})
@@ -1891,30 +1806,13 @@ func TestUpdateChannelPermissionsRouteOwner(t *testing.T) {
 	}
 }
 
-// TestUpdateChannelPermissionsRouteRoleFromOtherServer garante que uma role
-// de outro servidor é tratada como inexistente para o canal (404).
-func TestUpdateChannelPermissionsRouteRoleFromOtherServer(t *testing.T) {
-	e := newApp()
-	userID, token := registerAndLogin(t, e)
-	serverA := createServerFor(t, userID)
-	serverB := createServerFor(t, userID)
-	channel := createChannelFor(t, serverA.ID, "chn_"+randHex(4))
-	role := createRoleFor(t, serverB.ID, models.RolePermissions{})
-
-	body, _ := json.Marshal(map[string]models.ChannelPermission{
-		"permissions": {ReadChannel: true},
-	})
-	rec := do(t, e, http.MethodPut, "/channels/"+channel.ID+"/permissions/"+role.ID, body, authCookie(token))
-
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "role não encontrada")
-}
-
 // TestUpdateChannelPermissionsRouteNotFound garante que
 // PUT /channels/:channel_id/permissions/:role_id responde 404 para canal
 // inexistente.
 func TestUpdateChannelPermissionsRouteNotFound(t *testing.T) {
 	e := newApp()
-	_, token := registerAndLogin(t, e)
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
 
 	body, _ := json.Marshal(map[string]models.ChannelPermission{
 		"permissions": {ReadChannel: true},
@@ -1934,10 +1832,10 @@ func TestUpdateChannelPermissionsRouteNotFound(t *testing.T) {
 func TestChangeChannelPositionRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	c1 := createChannelFor(t, server.ID, "chn_"+randHex(4))
-	c2 := createChannelFor(t, server.ID, "chn_"+randHex(4))
-	c3 := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	c1 := createChannelFor(t, "chn_"+randHex(4))
+	c2 := createChannelFor(t, "chn_"+randHex(4))
+	c3 := createChannelFor(t, "chn_"+randHex(4))
 
 	body, _ := json.Marshal(map[string]int{"old_position": 1, "new_position": 3})
 	rec := do(t, e, http.MethodPut, "/channels/"+c1.ID+"/change_position", body, authCookie(token))
@@ -1953,7 +1851,7 @@ func TestChangeChannelPositionRouteOwner(t *testing.T) {
 		t.Errorf("esperava canal %s na posição 3, obtive %s na posição %d", c1.ID, summary.ID, summary.Position)
 	}
 
-	channels, err := storage.ListChannelsByServer(context.Background(), server.ID)
+	channels, err := storage.ListChannels(context.Background())
 	if err != nil {
 		t.Fatalf("ListChannelsByServer retornou erro: %v", err)
 	}
@@ -1971,8 +1869,8 @@ func TestChangeChannelPositionRouteForbiddenWithoutPermission(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	_, actorToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 
 	body, _ := json.Marshal(map[string]int{"old_position": 1, "new_position": 1})
 	rec := do(t, e, http.MethodPut, "/channels/"+channel.ID+"/change_position", body, authCookie(actorToken))
@@ -1987,10 +1885,10 @@ func TestChangeChannelPositionRouteWithManageChannelsRole(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	actorID, actorToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	createChannelFor(t, server.ID, "chn_"+randHex(4))
-	c2 := createChannelFor(t, server.ID, "chn_"+randHex(4))
-	role := createRoleFor(t, server.ID, models.RolePermissions{ManageChannels: true})
+	createServerFor(t, ownerID)
+	createChannelFor(t, "chn_"+randHex(4))
+	c2 := createChannelFor(t, "chn_"+randHex(4))
+	role := createRoleFor(t, models.RolePermissions{ManageChannels: true})
 	assignRoleToUser(t, actorID, role.ID)
 
 	body, _ := json.Marshal(map[string]int{"old_position": 2, "new_position": 1})
@@ -2008,38 +1906,19 @@ func TestChangeChannelPositionRouteWithManageChannelsRole(t *testing.T) {
 	}
 }
 
-// TestChangeChannelPositionRouteRoleOnOtherServerForbidden garante que uma
-// role com manage_channels em outro servidor não autoriza o servidor do canal.
-func TestChangeChannelPositionRouteRoleOnOtherServerForbidden(t *testing.T) {
-	e := newApp()
-	ownerID, _ := registerAndLogin(t, e)
-	actorID, actorToken := registerAndLogin(t, e)
-	serverA := createServerFor(t, ownerID)
-	serverB := createServerFor(t, ownerID)
-	channel := createChannelFor(t, serverA.ID, "chn_"+randHex(4))
-	role := createRoleFor(t, serverB.ID, models.RolePermissions{ManageChannels: true})
-	assignRoleToUser(t, actorID, role.ID)
-
-	body, _ := json.Marshal(map[string]int{"old_position": 1, "new_position": 1})
-	rec := do(t, e, http.MethodPut, "/channels/"+channel.ID+"/change_position", body, authCookie(actorToken))
-
-	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
-		"usuário não possui a permissão necessária para esta operação")
-}
-
 // TestChangeChannelPositionRouteInvalidInput garante que posições inválidas
 // respondem 400.
 func TestChangeChannelPositionRouteInvalidInput(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 
 	body, _ := json.Marshal(map[string]int{"old_position": 1, "new_position": 2})
 	rec := do(t, e, http.MethodPut, "/channels/"+channel.ID+"/change_position", body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"old_position e new_position devem ser posições válidas (1 até o número de canais do servidor)")
+		"old_position e new_position devem ser posições válidas (1 até o número de canais)")
 }
 
 // TestChangeChannelPositionRouteNotFound garante que
@@ -2047,7 +1926,8 @@ func TestChangeChannelPositionRouteInvalidInput(t *testing.T) {
 // inexistente.
 func TestChangeChannelPositionRouteNotFound(t *testing.T) {
 	e := newApp()
-	_, token := registerAndLogin(t, e)
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
 
 	body, _ := json.Marshal(map[string]int{"old_position": 1, "new_position": 1})
 	rec := do(t, e, http.MethodPut, "/channels/00000000-0000-4000-8000-000000000000/change_position", body, authCookie(token))
@@ -2060,9 +1940,9 @@ func TestChangeChannelPositionRouteNotFound(t *testing.T) {
 func TestChangeChannelPositionRouteConflict(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	c1 := createChannelFor(t, server.ID, "chn_"+randHex(4))
-	createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	c1 := createChannelFor(t, "chn_"+randHex(4))
+	createChannelFor(t, "chn_"+randHex(4))
 
 	body, _ := json.Marshal(map[string]int{"old_position": 2, "new_position": 1})
 	rec := do(t, e, http.MethodPut, "/channels/"+c1.ID+"/change_position", body, authCookie(token))
@@ -2073,16 +1953,16 @@ func TestChangeChannelPositionRouteConflict(t *testing.T) {
 
 // --- rotas de roles (tarefas 6.1 a 6.4) ---
 
-// TestListRolesRouteWithAuth garante que GET /servers/:server_id/roles
-// responde as roles do servidor para o usuário autenticado.
+// TestListRolesRouteWithAuth garante que GET /roles responde as roles do
+// backend para o usuário autenticado.
 func TestListRolesRouteWithAuth(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	roleA := createRoleFor(t, server.ID, models.RolePermissions{ManageChannels: true})
-	roleB := createRoleFor(t, server.ID, models.RolePermissions{ManageRoles: true})
+	createServerFor(t, userID)
+	roleA := createRoleFor(t, models.RolePermissions{ManageChannels: true})
+	roleB := createRoleFor(t, models.RolePermissions{ManageRoles: true})
 
-	rec := do(t, e, http.MethodGet, "/servers/"+server.ID+"/roles", nil, authCookie(token))
+	rec := do(t, e, http.MethodGet, "/roles", nil, authCookie(token))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
@@ -2113,32 +1993,18 @@ func TestListRolesRouteWithAuth(t *testing.T) {
 			t.Errorf("role %s não apareceu na listagem", want.id)
 			continue
 		}
-		if got.ServerID != server.ID {
-			t.Errorf("esperava server_id %q, obtive %q", server.ID, got.ServerID)
-		}
 		if got.Permissions != want.permissions {
 			t.Errorf("esperava permissions %+v, obtive %+v", want.permissions, got.Permissions)
 		}
 	}
 }
 
-// TestListRolesRouteServerNotFound garante que GET /servers/:server_id/roles
-// responde 404 para servidor inexistente.
-func TestListRolesRouteServerNotFound(t *testing.T) {
-	e := newApp()
-	_, token := registerAndLogin(t, e)
-
-	rec := do(t, e, http.MethodGet, "/servers/00000000-0000-4000-8000-000000000000/roles", nil, authCookie(token))
-
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
-}
-
 // TestCreateRoleRouteOwner garante que o dono do servidor cria uma role via
-// POST /servers/:server_id/roles e que a role é persistida.
+// POST /roles e que a role é persistida.
 func TestCreateRoleRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
+	createServerFor(t, userID)
 	roleName := "role_" + randHex(8)
 	color := "#ff0000"
 	permissions := models.RolePermissions{ManageChannels: true}
@@ -2148,7 +2014,7 @@ func TestCreateRoleRouteOwner(t *testing.T) {
 		"color":       color,
 		"permissions": permissions,
 	})
-	rec := do(t, e, http.MethodPost, "/servers/"+server.ID+"/roles", body, authCookie(token))
+	rec := do(t, e, http.MethodPost, "/roles", body, authCookie(token))
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
@@ -2157,7 +2023,7 @@ func TestCreateRoleRouteOwner(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if resp.ID == "" || resp.ServerID != server.ID || resp.Name != roleName {
+	if resp.ID == "" || resp.Name != roleName {
 		t.Errorf("resposta inesperada: %+v", resp)
 	}
 	if resp.Color == nil || *resp.Color != color {
@@ -2182,10 +2048,10 @@ func TestCreateRoleRouteForbiddenWithoutPermission(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	_, actorToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
+	createServerFor(t, ownerID)
 
 	body, _ := json.Marshal(map[string]string{"name": "role_" + randHex(8)})
-	rec := do(t, e, http.MethodPost, "/servers/"+server.ID+"/roles", body, authCookie(actorToken))
+	rec := do(t, e, http.MethodPost, "/roles", body, authCookie(actorToken))
 
 	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
 		"usuário não possui a permissão necessária para esta operação")
@@ -2197,43 +2063,24 @@ func TestCreateRoleRouteWithManageRolesRole(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	actorID, actorToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{ManageRoles: true})
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{ManageRoles: true})
 	assignRoleToUser(t, actorID, role.ID)
 
 	body, _ := json.Marshal(map[string]string{"name": "role_" + randHex(8)})
-	rec := do(t, e, http.MethodPost, "/servers/"+server.ID+"/roles", body, authCookie(actorToken))
+	rec := do(t, e, http.MethodPost, "/roles", body, authCookie(actorToken))
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
 
-// TestCreateRoleRouteRoleOnOtherServerForbidden garante que a permissão
-// manage_roles de outro servidor não autoriza a criação neste servidor.
-func TestCreateRoleRouteRoleOnOtherServerForbidden(t *testing.T) {
-	e := newApp()
-	ownerA, _ := registerAndLogin(t, e)
-	ownerB, _ := registerAndLogin(t, e)
-	actorID, actorToken := registerAndLogin(t, e)
-	serverA := createServerFor(t, ownerA)
-	serverB := createServerFor(t, ownerB)
-	role := createRoleFor(t, serverB.ID, models.RolePermissions{ManageRoles: true})
-	assignRoleToUser(t, actorID, role.ID)
-
-	body, _ := json.Marshal(map[string]string{"name": "role_" + randHex(8)})
-	rec := do(t, e, http.MethodPost, "/servers/"+serverA.ID+"/roles", body, authCookie(actorToken))
-
-	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
-		"usuário não possui a permissão necessária para esta operação")
-}
-
-// TestCreateRoleRouteInvalidInput garante que POST /servers/:server_id/roles
-// responde 400 para cor inválida ou nome ausente.
+// TestCreateRoleRouteInvalidInput garante que POST /roles responde 400 para
+// cor inválida ou nome ausente.
 func TestCreateRoleRouteInvalidInput(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
+	createServerFor(t, userID)
 
 	cases := []map[string]any{
 		{"name": "role_" + randHex(8), "color": "vermelho"},
@@ -2241,38 +2088,26 @@ func TestCreateRoleRouteInvalidInput(t *testing.T) {
 	}
 	for _, raw := range cases {
 		body, _ := json.Marshal(raw)
-		rec := do(t, e, http.MethodPost, "/servers/"+server.ID+"/roles", body, authCookie(token))
+		rec := do(t, e, http.MethodPost, "/roles", body, authCookie(token))
 		assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
 			"name é obrigatório e deve ter no máximo 32 caracteres; color deve ser hexadecimal #RRGGBB")
 	}
 }
 
-// TestCreateRoleRouteServerNotFound garante que POST /servers/:server_id/roles
-// responde 404 para servidor inexistente.
-func TestCreateRoleRouteServerNotFound(t *testing.T) {
-	e := newApp()
-	_, token := registerAndLogin(t, e)
-
-	body, _ := json.Marshal(map[string]string{"name": "role_" + randHex(8)})
-	rec := do(t, e, http.MethodPost, "/servers/00000000-0000-4000-8000-000000000000/roles", body, authCookie(token))
-
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
-}
-
-// TestCreateRoleRouteNameTaken garante que POST /servers/:server_id/roles
-// responde 409 quando o nome da role já existe no servidor.
+// TestCreateRoleRouteNameTaken garante que POST /roles responde 409 quando o
+// nome da role já existe.
 func TestCreateRoleRouteNameTaken(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
+	createServerFor(t, userID)
 	roleName := "role_" + randHex(8)
 
 	body, _ := json.Marshal(map[string]string{"name": roleName})
-	do(t, e, http.MethodPost, "/servers/"+server.ID+"/roles", body, authCookie(token))
-	rec := do(t, e, http.MethodPost, "/servers/"+server.ID+"/roles", body, authCookie(token))
+	do(t, e, http.MethodPost, "/roles", body, authCookie(token))
+	rec := do(t, e, http.MethodPost, "/roles", body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusConflict, "role-name-taken", "Nome de role já existe",
-		"o nome informado já está em uso no servidor")
+		"o nome informado já está em uso")
 }
 
 // TestUpdateRoleRouteOwner garante que o dono do servidor atualiza a role via
@@ -2280,8 +2115,8 @@ func TestCreateRoleRouteNameTaken(t *testing.T) {
 func TestUpdateRoleRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, userID)
+	role := createRoleFor(t, models.RolePermissions{})
 	newName := "role_" + randHex(8)
 	color := "#00ff00"
 	permissions := models.RolePermissions{ManageRoles: true}
@@ -2322,8 +2157,8 @@ func TestUpdateRoleRouteForbiddenWithoutPermission(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	_, actorToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{})
 
 	body, _ := json.Marshal(map[string]string{"name": "role_" + randHex(8)})
 	rec := do(t, e, http.MethodPut, "/roles/"+role.ID, body, authCookie(actorToken))
@@ -2337,8 +2172,8 @@ func TestUpdateRoleRouteForbiddenWithoutPermission(t *testing.T) {
 func TestUpdateRoleRouteInvalidInput(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, userID)
+	role := createRoleFor(t, models.RolePermissions{})
 
 	body, _ := json.Marshal(map[string]any{"name": "role_" + randHex(8), "color": "azul"})
 	rec := do(t, e, http.MethodPut, "/roles/"+role.ID, body, authCookie(token))
@@ -2351,7 +2186,8 @@ func TestUpdateRoleRouteInvalidInput(t *testing.T) {
 // para role inexistente.
 func TestUpdateRoleRouteNotFound(t *testing.T) {
 	e := newApp()
-	_, token := registerAndLogin(t, e)
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
 
 	body, _ := json.Marshal(map[string]string{"name": "role_" + randHex(8)})
 	rec := do(t, e, http.MethodPut, "/roles/00000000-0000-4000-8000-000000000000", body, authCookie(token))
@@ -2364,8 +2200,8 @@ func TestUpdateRoleRouteNotFound(t *testing.T) {
 func TestDeleteRoleRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, userID)
+	role := createRoleFor(t, models.RolePermissions{})
 
 	rec := do(t, e, http.MethodDelete, "/roles/"+role.ID, nil, authCookie(token))
 
@@ -2382,7 +2218,8 @@ func TestDeleteRoleRouteOwner(t *testing.T) {
 // 404 para role inexistente.
 func TestDeleteRoleRouteNotFound(t *testing.T) {
 	e := newApp()
-	_, token := registerAndLogin(t, e)
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
 
 	rec := do(t, e, http.MethodDelete, "/roles/00000000-0000-4000-8000-000000000000", nil, authCookie(token))
 
@@ -2397,8 +2234,8 @@ func TestAssignUserRoleRouteOwner(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
 	targetID, _ := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{ManageChannels: true})
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{ManageChannels: true})
 
 	body, _ := json.Marshal(map[string]string{"role_id": role.ID})
 	rec := do(t, e, http.MethodPost, "/users/"+targetID+"/roles", body, authCookie(ownerToken))
@@ -2430,8 +2267,8 @@ func TestAssignUserRoleRouteForbiddenWithoutPermission(t *testing.T) {
 	ownerID, _ := registerAndLogin(t, e)
 	_, actorToken := registerAndLogin(t, e)
 	targetID, _ := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{})
 
 	body, _ := json.Marshal(map[string]string{"role_id": role.ID})
 	rec := do(t, e, http.MethodPost, "/users/"+targetID+"/roles", body, authCookie(actorToken))
@@ -2440,17 +2277,18 @@ func TestAssignUserRoleRouteForbiddenWithoutPermission(t *testing.T) {
 		"usuário não possui a permissão necessária para esta operação")
 }
 
-// TestAssignUserRoleRouteMissingRoleID garante que o middleware responde 400
-// quando o corpo não permite determinar o servidor alvo da operação.
+// TestAssignUserRoleRouteMissingRoleID garante que POST /users/:user_id/roles
+// responde 400 quando o corpo não informa role_id.
 func TestAssignUserRoleRouteMissingRoleID(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
 
 	body, _ := json.Marshal(map[string]string{})
 	rec := do(t, e, http.MethodPost, "/users/"+userID+"/roles", body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"não foi possível determinar o servidor alvo da operação")
+		"role_id é obrigatório")
 }
 
 // TestAssignUserRoleRouteUserNotFound garante que POST /users/:user_id/roles
@@ -2458,8 +2296,8 @@ func TestAssignUserRoleRouteMissingRoleID(t *testing.T) {
 func TestAssignUserRoleRouteUserNotFound(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{})
 
 	body, _ := json.Marshal(map[string]string{"role_id": role.ID})
 	rec := do(t, e, http.MethodPost, "/users/00000000-0000-4000-8000-000000000000/roles", body, authCookie(ownerToken))
@@ -2473,8 +2311,8 @@ func TestRemoveUserRoleRouteOwner(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
 	targetID, _ := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{})
 	assignRoleToUser(t, targetID, role.ID)
 
 	rec := do(t, e, http.MethodDelete, "/users/"+targetID+"/roles/"+role.ID, nil, authCookie(ownerToken))
@@ -2495,8 +2333,8 @@ func TestRemoveUserRoleRouteForbiddenWithoutPermission(t *testing.T) {
 	ownerID, _ := registerAndLogin(t, e)
 	_, actorToken := registerAndLogin(t, e)
 	targetID, _ := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{})
 	assignRoleToUser(t, targetID, role.ID)
 
 	rec := do(t, e, http.MethodDelete, "/users/"+targetID+"/roles/"+role.ID, nil, authCookie(actorToken))
@@ -2512,8 +2350,8 @@ func TestRemoveUserRoleRouteNotAssigned(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
 	targetID, _ := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{})
 
 	rec := do(t, e, http.MethodDelete, "/users/"+targetID+"/roles/"+role.ID, nil, authCookie(ownerToken))
 
@@ -2526,8 +2364,8 @@ func TestRemoveUserRoleRouteNotAssigned(t *testing.T) {
 func TestRemoveUserRoleRouteUserNotFound(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{})
 
 	rec := do(t, e, http.MethodDelete, "/users/00000000-0000-4000-8000-000000000000/roles/"+role.ID, nil, authCookie(ownerToken))
 
@@ -2541,8 +2379,8 @@ func TestRemoveUserRoleRouteUserNotFound(t *testing.T) {
 func TestListMessagesRouteWithAuth(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 
 	rec := do(t, e, http.MethodGet, "/channels/"+channel.ID+"/messages", nil, authCookie(token))
 
@@ -2569,8 +2407,8 @@ func TestListMessagesRouteWithAuth(t *testing.T) {
 func TestListMessagesRouteSuccess(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	first, err := storage.CreateMessage(context.Background(), channel.ID, userID, "primeira", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar primeira mensagem: %v", err)
@@ -2603,8 +2441,8 @@ func TestListMessagesRouteSuccess(t *testing.T) {
 func TestCreateMessageRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 
 	rec := doMultipart(t, e, http.MethodPost, "/messages",
 		map[string]string{"channel_id": channel.ID, "content": "olá mundo"}, nil, authCookie(token))
@@ -2646,8 +2484,8 @@ func TestCreateMessageRouteOwner(t *testing.T) {
 func TestCreateMessageRouteWithAttachment(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	// PNG mínimo válido (magic number + bytes adicionais)
 	png := append([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, []byte("conteudo-teste")...)
 
@@ -2691,9 +2529,9 @@ func TestCreateMessageRouteForbiddenWithoutPermission(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	actorID, actorToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+	role := createRoleFor(t, models.RolePermissions{})
 	if _, err := storage.UpdateChannelPermissions(context.Background(), channel.ID, role.ID, models.ChannelPermission{}); err != nil {
 		t.Fatalf("falha ao definir permissões do canal: %v", err)
 	}
@@ -2711,8 +2549,8 @@ func TestCreateMessageRouteForbiddenWithoutPermission(t *testing.T) {
 func TestCreateMessageRouteContentTooLong(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 
 	rec := doMultipart(t, e, http.MethodPost, "/messages",
 		map[string]string{"channel_id": channel.ID, "content": strings.Repeat("a", 8193)}, nil, authCookie(token))
@@ -2726,8 +2564,8 @@ func TestCreateMessageRouteContentTooLong(t *testing.T) {
 func TestUpdateMessageRouteAuthor(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	message, err := storage.CreateMessage(context.Background(), channel.ID, userID, "original", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
@@ -2760,8 +2598,8 @@ func TestUpdateMessageRouteForbiddenOtherUser(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	_, actorToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	message, err := storage.CreateMessage(context.Background(), channel.ID, ownerID, "x", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
@@ -2791,8 +2629,8 @@ func TestUpdateMessageRouteNotFound(t *testing.T) {
 func TestDeleteMessageRouteAuthor(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	message, err := storage.CreateMessage(context.Background(), channel.ID, userID, "a excluir", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
@@ -2814,8 +2652,8 @@ func TestDeleteMessageRouteForbiddenOtherUser(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	_, strangerToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	message, err := storage.CreateMessage(context.Background(), channel.ID, ownerID, "x", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
@@ -2833,13 +2671,13 @@ func TestDeleteMessageRouteWithDeleteMessagesRole(t *testing.T) {
 	e := newApp()
 	ownerID, _ := registerAndLogin(t, e)
 	actorID, actorToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	message, err := storage.CreateMessage(context.Background(), channel.ID, ownerID, "x", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
-	role := createRoleFor(t, server.ID, models.RolePermissions{})
+	role := createRoleFor(t, models.RolePermissions{})
 	if _, err := storage.UpdateChannelPermissions(context.Background(), channel.ID, role.ID, models.ChannelPermission{DeleteMessages: true}); err != nil {
 		t.Fatalf("falha ao definir permissões do canal: %v", err)
 	}
@@ -2861,8 +2699,8 @@ func TestDeleteMessageRouteOwnerDeletesOtherMessage(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
 	otherID, _ := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	message, err := storage.CreateMessage(context.Background(), channel.ID, otherID, "x", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
@@ -2916,9 +2754,9 @@ func newMessageWithAttachmentRoute(t *testing.T, e *echo.Echo, channelID, token 
 
 // closeChannelRoute define uma role com read_channel no canal, fechando a
 // leitura para quem não tiver a role (o dono do servidor continua lendo).
-func closeChannelRoute(t *testing.T, e *echo.Echo, serverID, channelID, token string) models.Role {
+func closeChannelRoute(t *testing.T, e *echo.Echo, channelID, token string) models.Role {
 	t.Helper()
-	role := createRoleFor(t, serverID, models.RolePermissions{})
+	role := createRoleFor(t, models.RolePermissions{})
 	body, _ := json.Marshal(map[string]models.ChannelPermission{
 		"permissions": {ReadChannel: true},
 	})
@@ -2936,8 +2774,8 @@ func closeChannelRoute(t *testing.T, e *echo.Echo, serverID, channelID, token st
 func TestDownloadAttachmentRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	attachment := newMessageWithAttachmentRoute(t, e, channel.ID, token)
 
 	rec := do(t, e, http.MethodGet, "/attachments/"+attachment.ID, nil, authCookie(token))
@@ -2969,9 +2807,9 @@ func TestDownloadAttachmentRouteReaderRole(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
 	readerID, readerToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
-	role := closeChannelRoute(t, e, server.ID, channel.ID, ownerToken)
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+	role := closeChannelRoute(t, e, channel.ID, ownerToken)
 	assignRoleToUser(t, readerID, role.ID)
 	attachment := newMessageWithAttachmentRoute(t, e, channel.ID, ownerToken)
 
@@ -2996,9 +2834,9 @@ func TestDownloadAttachmentRouteForbiddenWithoutPermission(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
 	_, strangerToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
-	closeChannelRoute(t, e, server.ID, channel.ID, ownerToken)
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+	closeChannelRoute(t, e, channel.ID, ownerToken)
 	attachment := newMessageWithAttachmentRoute(t, e, channel.ID, ownerToken)
 
 	rec := do(t, e, http.MethodGet, "/attachments/"+attachment.ID, nil, authCookie(strangerToken))
@@ -3027,8 +2865,8 @@ func TestDownloadAttachmentRouteNotFound(t *testing.T) {
 func TestDownloadAttachmentRouteMissingBlob(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	attachment := newMessageWithAttachmentRoute(t, e, channel.ID, token)
 
 	if err := os.Remove(mediaPathFor(attachment.MediaShaHash)); err != nil {
@@ -3071,8 +2909,8 @@ func newMessageWithRealImageRoute(t *testing.T, e *echo.Echo, channelID, token s
 func TestDownloadAttachmentThumbnailRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	attachment := newMessageWithRealImageRoute(t, e, channel.ID, token, pngAvatarBytes(64, 32))
 
 	thumb, err := storage.GetThumbnailByAttachmentID(context.Background(), attachment.ID, "preview")
@@ -3127,9 +2965,9 @@ func TestDownloadAttachmentThumbnailRouteForbidden(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
 	_, strangerToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
-	closeChannelRoute(t, e, server.ID, channel.ID, ownerToken)
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+	closeChannelRoute(t, e, channel.ID, ownerToken)
 	attachment := newMessageWithRealImageRoute(t, e, channel.ID, ownerToken, pngAvatarBytes(64, 32))
 
 	rec := do(t, e, http.MethodGet, "/attachments/"+attachment.ID+"/thumbnail", nil, authCookie(strangerToken))
@@ -3143,8 +2981,8 @@ func TestDownloadAttachmentThumbnailRouteForbidden(t *testing.T) {
 func TestDownloadAttachmentThumbnailRouteNotFound(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 
 	rec := do(t, e, http.MethodGet, "/attachments/00000000-0000-4000-8000-000000000000/thumbnail", nil, authCookie(token))
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "thumbnail não encontrada")
@@ -3197,8 +3035,8 @@ func newPreviewWithImageRoute(t *testing.T, e *echo.Echo, channelID, token strin
 func TestGetLinkPreviewRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	preview := newPreviewWithImageRoute(t, e, channel.ID, token)
 
 	rec := do(t, e, http.MethodGet, "/link-previews/"+preview.ID, nil, authCookie(token))
@@ -3259,8 +3097,8 @@ func TestGetLinkPreviewRouteNotFound(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
 	_, strangerToken := registerAndLogin(t, e)
-	server := createServerFor(t, ownerID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	preview := newPreviewWithImageRoute(t, e, channel.ID, ownerToken)
 
 	rec := do(t, e, http.MethodGet, "/link-previews/00000000-0000-4000-8000-000000000000", nil, authCookie(ownerToken))
@@ -3312,7 +3150,7 @@ func TestGetLinkPreviewRouteNotFound(t *testing.T) {
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "preview não encontrado")
 
 	// canal fechado: estranho sem acesso → 404 (não 403, não vaza existência)
-	closeChannelRoute(t, e, server.ID, channel.ID, ownerToken)
+	closeChannelRoute(t, e, channel.ID, ownerToken)
 	rec = do(t, e, http.MethodGet, "/link-previews/"+preview.ID, nil, authCookie(strangerToken))
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "preview não encontrado")
 
@@ -3327,11 +3165,10 @@ func TestGetLinkPreviewRouteNotFound(t *testing.T) {
 
 // newEmojiRoute cria um emoji via POST /emojis usando o cookie do usuário e
 // retorna o registro criado.
-func newEmojiRoute(t *testing.T, e *echo.Echo, serverID, token string) models.Emoji {
+func newEmojiRoute(t *testing.T, e *echo.Echo, token string) models.Emoji {
 	t.Helper()
 
 	body, _ := json.Marshal(map[string]string{
-		"server_id":  serverID,
 		"name":       "emoji_" + randHex(8),
 		"format":     "PNG",
 		"image_blob": base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)),
@@ -3351,10 +3188,10 @@ func newEmojiRoute(t *testing.T, e *echo.Echo, serverID, token string) models.Em
 func TestListEmojisRoute(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	emoji := newEmojiRoute(t, e, server.ID, token)
+	createServerFor(t, userID)
+	emoji := newEmojiRoute(t, e, token)
 
-	rec := do(t, e, http.MethodGet, "/emojis?server_id="+server.ID, nil, authCookie(token))
+	rec := do(t, e, http.MethodGet, "/emojis", nil, authCookie(token))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
@@ -3373,26 +3210,22 @@ func TestListEmojisRoute(t *testing.T) {
 func TestCreateEmojiRouteManageServerRole(t *testing.T) {
 	e := newApp()
 	userID, _ := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
+	createServerFor(t, userID)
 	modUserID, modToken := registerAndLogin(t, e)
 
-	role := createRoleFor(t, server.ID, models.RolePermissions{ManageServer: true})
+	role := createRoleFor(t, models.RolePermissions{ManageServer: true})
 	assignRoleToUser(t, modUserID, role.ID)
 
-	emoji := newEmojiRoute(t, e, server.ID, modToken)
-	if emoji.ServerID != server.ID {
-		t.Errorf("esperava server_id %s, obtive %s", server.ID, emoji.ServerID)
-	}
+	newEmojiRoute(t, e, modToken)
 }
 
 func TestCreateEmojiRouteForbiddenWithoutPermission(t *testing.T) {
 	e := newApp()
 	userID, _ := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
+	createServerFor(t, userID)
 	_, strangerToken := registerAndLogin(t, e)
 
 	body, _ := json.Marshal(map[string]string{
-		"server_id":  server.ID,
 		"name":       "emoji_" + randHex(8),
 		"format":     "PNG",
 		"image_blob": base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)),
@@ -3406,11 +3239,11 @@ func TestCreateEmojiRouteForbiddenWithoutPermission(t *testing.T) {
 func TestDeleteEmojiRouteAuthor(t *testing.T) {
 	e := newApp()
 	userID, _ := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
+	createServerFor(t, userID)
 	authorID, authorToken := registerAndLogin(t, e)
 
 	// emoji criado pelo autor (não dono do servidor)
-	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &authorID)
+	emoji, err := storage.CreateEmoji(testCtx(), "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &authorID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -3427,12 +3260,12 @@ func TestDeleteEmojiRouteAuthor(t *testing.T) {
 func TestDeleteEmojiRouteManageServerRole(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
+	createServerFor(t, userID)
 	modUserID, modToken := registerAndLogin(t, e)
 
-	role := createRoleFor(t, server.ID, models.RolePermissions{ManageServer: true})
+	role := createRoleFor(t, models.RolePermissions{ManageServer: true})
 	assignRoleToUser(t, modUserID, role.ID)
-	emoji := newEmojiRoute(t, e, server.ID, token)
+	emoji := newEmojiRoute(t, e, token)
 
 	rec := do(t, e, http.MethodDelete, "/emojis/"+emoji.ID, nil, authCookie(modToken))
 	if rec.Code != http.StatusNoContent {
@@ -3447,8 +3280,8 @@ func TestDeleteEmojiRouteForbiddenWithoutPermission(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 	_, strangerToken := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	emoji := newEmojiRoute(t, e, server.ID, token)
+	createServerFor(t, userID)
+	emoji := newEmojiRoute(t, e, token)
 
 	rec := do(t, e, http.MethodDelete, "/emojis/"+emoji.ID, nil, authCookie(strangerToken))
 
@@ -3472,8 +3305,8 @@ func TestDeleteEmojiRouteNotFound(t *testing.T) {
 func TestSearchRouteWithAuth(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	unique := "w" + randHex(8)
 	msg, err := storage.CreateMessage(context.Background(), channel.ID, userID, "mensagem "+unique, nil)
 	if err != nil {
@@ -3494,7 +3327,7 @@ func TestSearchRouteWithAuth(t *testing.T) {
 		t.Fatalf("esperava 1 resultado, obtive %d", len(resp.Results))
 	}
 	r := resp.Results[0]
-	if r.Type != "message" || r.ID != msg.ID || r.ChannelID != channel.ID || r.ServerID != server.ID {
+	if r.Type != "message" || r.ID != msg.ID || r.ChannelID != channel.ID {
 		t.Errorf("resultado inesperado: %+v", r)
 	}
 	if r.AuthorID == nil || *r.AuthorID != userID {
@@ -3559,12 +3392,24 @@ func TestMain(m *testing.M) {
 	os.Exit(runHandlersTests(m))
 }
 
-// exclui servidores nos testes para manter a regra de negócio de 1 servidor por backend
+// exclui todo o estado de servidores/canais/roles/emojis nos testes para
+// manter a regra de negócio de 1 servidor por backend (a ordem segue as FKs;
+// usuários, user_settings e media não são removidos)
 func cleanServers(ctx context.Context) error {
-	_, err := storage.GetDB().ExecContext(ctx, "DELETE FROM servers")
-
-	if err != nil {
-		return err
+	for _, table := range []string{
+		"user_roles",
+		"roles",
+		"attachment_thumbnails",
+		"attachments",
+		"messages",
+		"user_channel_state",
+		"channels",
+		"emojis",
+		"servers",
+	} {
+		if _, err := storage.GetDB().ExecContext(ctx, "DELETE FROM "+table); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -5861,37 +5706,20 @@ func TestChangePasswordHandlerForbiddenOtherUser(t *testing.T) {
 		"não é possível alterar a senha de outro usuário")
 }
 
-// --- ListServersHandler (tarefa 5.2) ---
+// --- GetServerHandler (GET /servers e GET /server)
 
-func TestListServersHandlerEmpty(t *testing.T) {
+func TestGetServersHandlerNotFound(t *testing.T) {
 	cleanServers(testCtx())
 	c := newContext(t, http.MethodGet, "/servers", nil, "")
 	rec := recorder(c)
 
-	if err := ListServersHandler(testBaseURL, c); err != nil {
-		t.Fatalf("ListServersHandler retornou erro: %v", err)
+	if err := GetServerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("GetServerHandler retornou erro: %v", err)
 	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
-	}
-
-	var resp struct {
-		Servers []struct {
-			ID string `json:"id"`
-		} `json:"servers"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("falha ao decodificar resposta: %v", err)
-	}
-	if resp.Servers == nil {
-		t.Fatal("esperava servers como lista vazia, obtive null")
-	}
-	if len(resp.Servers) != 0 {
-		t.Errorf("esperava lista de servidores vazia, obtive %d", len(resp.Servers))
-	}
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
 }
 
-func TestListServersHandlerSuccess(t *testing.T) {
+func TestGetServersHandlerSuccess(t *testing.T) {
 	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
@@ -5902,85 +5730,71 @@ func TestListServersHandlerSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	if _, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text"); err != nil {
+	if _, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text"); err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
 	c := newContext(t, http.MethodGet, "/servers", nil, "")
 	rec := recorder(c)
 
-	if err := ListServersHandler(testBaseURL, c); err != nil {
-		t.Fatalf("ListServersHandler retornou erro: %v", err)
+	if err := GetServerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("GetServerHandler retornou erro: %v", err)
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 
 	var resp struct {
-		Servers []struct {
-			ID            string    `json:"id"`
-			Name          string    `json:"name"`
-			IconBlob      []byte    `json:"icon_blob"`
-			IconFormat    string    `json:"icon_format"`
-			OwnerID       *string   `json:"owner_id"`
-			OwnerUsername *string   `json:"owner_username"`
-			CreatedAt     time.Time `json:"created_at"`
-			ChannelCount  int       `json:"channel_count"`
-			MemberCount   int       `json:"member_count"`
-		} `json:"servers"`
+		ID            string    `json:"id"`
+		Name          string    `json:"name"`
+		IconBlob      []byte    `json:"icon_blob"`
+		IconFormat    string    `json:"icon_format"`
+		OwnerID       *string   `json:"owner_id"`
+		OwnerUsername *string   `json:"owner_username"`
+		CreatedAt     time.Time `json:"created_at"`
+		RoleCount     int       `json:"role_count"`
+		ChannelCount  int       `json:"channel_count"`
+		MemberCount   int       `json:"member_count"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if len(resp.Servers) != 1 {
-		t.Fatalf("esperava 1 servidor na listagem, obtive %d", len(resp.Servers))
+	if resp.ID != server.ID {
+		t.Errorf("esperava id %s, obtive %s", server.ID, resp.ID)
 	}
-	item := resp.Servers[0]
-	if item.ID != server.ID {
-		t.Errorf("esperava id %s, obtive %s", server.ID, item.ID)
+	if resp.Name != serverName {
+		t.Errorf("esperava name %q, obtive %q", serverName, resp.Name)
 	}
-	if item.Name != serverName {
-		t.Errorf("esperava name %q, obtive %q", serverName, item.Name)
+	if len(resp.IconBlob) != 0 {
+		t.Errorf("esperava icon_blob vazio, obtive %v", resp.IconBlob)
 	}
-	if len(item.IconBlob) != 0 {
-		t.Errorf("esperava icon_blob vazio, obtive %v", item.IconBlob)
+	if resp.IconFormat != "" {
+		t.Errorf("esperava icon_format vazio, obtive %q", resp.IconFormat)
 	}
-	if item.IconFormat != "" {
-		t.Errorf("esperava icon_format vazio, obtive %q", item.IconFormat)
+	if resp.OwnerID == nil || *resp.OwnerID != owner.ID {
+		t.Errorf("esperava owner_id %s, obtive %v", owner.ID, resp.OwnerID)
 	}
-	if item.OwnerID == nil || *item.OwnerID != owner.ID {
-		t.Errorf("esperava owner_id %s, obtive %v", owner.ID, item.OwnerID)
+	if resp.OwnerUsername == nil || *resp.OwnerUsername != owner.Username {
+		t.Errorf("esperava owner_username %q, obtive %v", owner.Username, resp.OwnerUsername)
 	}
-	if item.OwnerUsername == nil || *item.OwnerUsername != owner.Username {
-		t.Errorf("esperava owner_username %q, obtive %v", owner.Username, item.OwnerUsername)
-	}
-	if item.CreatedAt.IsZero() {
+	if resp.CreatedAt.IsZero() {
 		t.Error("esperava created_at preenchido")
 	}
-	if item.ChannelCount != 1 {
-		t.Errorf("esperava channel_count 1, obtive %d", item.ChannelCount)
+	if resp.RoleCount != 0 {
+		t.Errorf("esperava role_count 0, obtive %d", resp.RoleCount)
 	}
-	if item.MemberCount < 1 {
-		t.Errorf("esperava member_count >= 1, obtive %d", item.MemberCount)
+	if resp.ChannelCount != 1 {
+		t.Errorf("esperava channel_count 1, obtive %d", resp.ChannelCount)
 	}
-
-	// a listagem não inclui role_count (presente apenas no detalhe)
-	var rawResp struct {
-		Servers []map[string]json.RawMessage `json:"servers"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &rawResp); err != nil {
-		t.Fatalf("falha ao decodificar resposta: %v", err)
-	}
-	for _, rawItem := range rawResp.Servers {
-		if _, ok := rawItem["role_count"]; ok {
-			t.Error("a listagem não deve incluir role_count")
-		}
+	if resp.MemberCount < 1 {
+		t.Errorf("esperava member_count >= 1, obtive %d", resp.MemberCount)
 	}
 }
 
 // --- GetServerHandler
 
 func TestGetServerHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
@@ -5989,16 +5803,14 @@ func TestGetServerHandlerSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	if _, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text"); err != nil {
+	if _, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text"); err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
-	if _, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{}); err != nil {
+	if _, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{}); err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
-	c := newContext(t, http.MethodGet, "/servers/"+server.ID, nil, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
+	c := newContext(t, http.MethodGet, "/server", nil, "")
 	rec := recorder(c)
 
 	if err := GetServerHandler(testBaseURL, c); err != nil {
@@ -6056,10 +5868,8 @@ func TestGetServerHandlerSuccess(t *testing.T) {
 }
 
 func TestGetServerHandlerNotFound(t *testing.T) {
-	serverID := randUUID()
-	c := newContext(t, http.MethodGet, "/servers/"+serverID, nil, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(serverID)
+	cleanServers(testCtx())
+	c := newContext(t, http.MethodGet, "/server", nil, "")
 	rec := recorder(c)
 
 	if err := GetServerHandler(testBaseURL, c); err != nil {
@@ -6068,21 +5878,10 @@ func TestGetServerHandlerNotFound(t *testing.T) {
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
 }
 
-func TestGetServerHandlerMissingParam(t *testing.T) {
-	c := newContext(t, http.MethodGet, "/servers/", nil, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues("")
-	rec := recorder(c)
-
-	if err := GetServerHandler(testBaseURL, c); err != nil {
-		t.Fatalf("GetServerHandler retornou erro: %v", err)
-	}
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "server_id ausente")
-}
-
 // --- UpdateServerHandler ---
 
 func TestUpdateServerHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
@@ -6091,23 +5890,15 @@ func TestUpdateServerHandlerSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	// segundo servidor para garantir que o campo "id" do corpo é ignorado
-	other, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar segundo servidor: %v", err)
-	}
 
 	newName := "srv_" + randHex(4)
 	body, _ := json.Marshal(map[string]string{
-		"id":          other.ID,
 		"name":        newName,
 		"icon_blob":   base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)),
 		"icon_format": "png",
 	})
-	c := newContext(t, http.MethodPut, "/servers/"+server.ID, body, "")
+	c := newContext(t, http.MethodPut, "/server", body, "")
 	c.Set(middleware.UserIDContextKey, owner.ID)
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
 	rec := recorder(c)
 
 	if err := UpdateServerHandler(testBaseURL, c); err != nil {
@@ -6164,10 +5955,10 @@ func TestUpdateServerHandlerSuccess(t *testing.T) {
 		t.Errorf("esperava member_count >= 1, obtive %d", resp.MemberCount)
 	}
 
-	// a atualização deve ter sido persistida no servidor da URL
-	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	// a atualização deve ter sido persistida
+	stored, err := storage.GetServer(testCtx())
 	if err != nil {
-		t.Fatalf("GetServerByID retornou erro: %v", err)
+		t.Fatalf("GetServer retornou erro: %v", err)
 	}
 	if stored.Name != newName {
 		t.Errorf("esperava name %q persistido, obtive %q", newName, stored.Name)
@@ -6175,7 +5966,7 @@ func TestUpdateServerHandlerSuccess(t *testing.T) {
 	if stored.IconMedia == nil {
 		t.Fatal("esperava icon_media persistida")
 	}
-	summary, err := services.GetServer(testCtx(), server.ID)
+	summary, err := services.GetServer(testCtx())
 	if err != nil {
 		t.Fatalf("GetServer retornou erro: %v", err)
 	}
@@ -6185,31 +5976,17 @@ func TestUpdateServerHandlerSuccess(t *testing.T) {
 	if summary.IconFormat != "PNG" {
 		t.Errorf("esperava icon_format %q persistido, obtive %q", "PNG", summary.IconFormat)
 	}
-
-	// o "id" do corpo é ignorado: o outro servidor não deve ter mudado
-	storedOther, err := storage.GetServerByID(testCtx(), other.ID)
-	if err != nil {
-		t.Fatalf("GetServerByID retornou erro: %v", err)
-	}
-	if storedOther.Name != other.Name {
-		t.Errorf("o servidor do id do corpo não deveria ter mudado: esperado %q, obtive %q", other.Name, storedOther.Name)
-	}
-	if storedOther.IconMedia != nil {
-		t.Error("o servidor do id do corpo não deveria ter ícone")
-	}
 }
 
 func TestUpdateServerHandlerNotFound(t *testing.T) {
+	cleanServers(testCtx())
 	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	serverID := randUUID()
 	body, _ := json.Marshal(map[string]string{"name": "srv_" + randHex(4)})
-	c := newContext(t, http.MethodPut, "/servers/"+serverID, body, "")
+	c := newContext(t, http.MethodPut, "/server", body, "")
 	c.Set(middleware.UserIDContextKey, user.ID)
-	c.SetParamNames("server_id")
-	c.SetParamValues(serverID)
 	rec := recorder(c)
 
 	if err := UpdateServerHandler(testBaseURL, c); err != nil {
@@ -6218,49 +5995,16 @@ func TestUpdateServerHandlerNotFound(t *testing.T) {
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
 }
 
-func TestUpdateServerHandlerMissingUser(t *testing.T) {
-	body, _ := json.Marshal(map[string]string{"name": "srv_" + randHex(4)})
-	c := newContext(t, http.MethodPut, "/servers/"+randUUID(), body, "")
-	rec := recorder(c)
-
-	if err := UpdateServerHandler(testBaseURL, c); err != nil {
-		t.Fatalf("UpdateServerHandler retornou erro: %v", err)
-	}
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "server_id ausente")
-}
-
-func TestUpdateServerHandlerMissingParam(t *testing.T) {
-	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
-	if err != nil {
-		t.Fatalf("falha ao criar usuário: %v", err)
-	}
-	body, _ := json.Marshal(map[string]string{"name": "srv_" + randHex(4)})
-	c := newContext(t, http.MethodPut, "/servers/", body, "")
-	c.Set(middleware.UserIDContextKey, user.ID)
-	c.SetParamNames("server_id")
-	c.SetParamValues("")
-	rec := recorder(c)
-
-	if err := UpdateServerHandler(testBaseURL, c); err != nil {
-		t.Fatalf("UpdateServerHandler retornou erro: %v", err)
-	}
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "server_id ausente")
-}
-
 func TestUpdateServerHandlerInvalidJSON(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
-	c := newContext(t, http.MethodPut, "/servers/"+server.ID, []byte("{invalido"), "")
+	c := newContext(t, http.MethodPut, "/server", []byte("{invalido"), "")
 	c.Set(middleware.UserIDContextKey, owner.ID)
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
 	rec := recorder(c)
 
 	if err := UpdateServerHandler(testBaseURL, c); err != nil {
@@ -6270,6 +6014,7 @@ func TestUpdateServerHandlerInvalidJSON(t *testing.T) {
 }
 
 func TestUpdateServerHandlerInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário dono: %v", err)
@@ -6293,10 +6038,8 @@ func TestUpdateServerHandlerInvalidInput(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			body, _ := json.Marshal(tc.body)
-			c := newContext(t, http.MethodPut, "/servers/"+server.ID, body, "")
+			c := newContext(t, http.MethodPut, "/server", body, "")
 			c.Set(middleware.UserIDContextKey, owner.ID)
-			c.SetParamNames("server_id")
-			c.SetParamValues(server.ID)
 			rec := recorder(c)
 
 			if err := UpdateServerHandler(testBaseURL, c); err != nil {
@@ -6308,7 +6051,7 @@ func TestUpdateServerHandlerInvalidInput(t *testing.T) {
 	}
 
 	// tentativas inválidas não devem alterar o servidor
-	stored, err := storage.GetServerByID(testCtx(), server.ID)
+	stored, err := storage.GetServer(testCtx())
 	if err != nil {
 		t.Fatalf("GetServerByID retornou erro: %v", err)
 	}
@@ -6393,7 +6136,7 @@ func TestCreateServerHandlerSuccess(t *testing.T) {
 	}
 
 	// o servidor deve ter sido persistido com o usuário como dono
-	stored, err := storage.GetServerByID(testCtx(), resp.ID)
+	stored, err := storage.GetServer(testCtx())
 	if err != nil {
 		t.Fatalf("GetServerByID retornou erro: %v", err)
 	}
@@ -6406,7 +6149,7 @@ func TestCreateServerHandlerSuccess(t *testing.T) {
 	if stored.IconMedia == nil {
 		t.Fatal("esperava icon_media persistida")
 	}
-	summary, err := services.GetServer(testCtx(), resp.ID)
+	summary, err := services.GetServer(testCtx())
 	if err != nil {
 		t.Fatalf("GetServer retornou erro: %v", err)
 	}
@@ -6533,16 +6276,14 @@ func TestCreateServerHandlerInvalidInput(t *testing.T) {
 // --- ListChannelsHandler (tarefa 5.4) ---
 
 func TestListChannelsHandlerEmpty(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
-	c := newContext(t, http.MethodGet, "/channels?server_id="+server.ID, nil, "")
+	c := newContext(t, http.MethodGet, "/channels", nil, "")
 	rec := recorder(c)
 
 	if err := ListChannelsHandler(testBaseURL, c); err != nil {
@@ -6567,19 +6308,17 @@ func TestListChannelsHandlerEmpty(t *testing.T) {
 }
 
 func TestListChannelsHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channelA, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channelA, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
-	channelB, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	channelB, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6612,9 +6351,6 @@ func TestListChannelsHandlerSuccess(t *testing.T) {
 			t.Errorf("canal %s não encontrado na listagem", want.ID)
 			continue
 		}
-		if item.ServerID != server.ID {
-			t.Errorf("esperava server_id %s, obtive %s", server.ID, item.ServerID)
-		}
 		if item.Name != want.Name {
 			t.Errorf("esperava name %q, obtive %q", want.Name, item.Name)
 		}
@@ -6633,68 +6369,18 @@ func TestListChannelsHandlerSuccess(t *testing.T) {
 	}
 }
 
-func TestListChannelsHandlerFilterByServer(t *testing.T) {
-	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
-	if err != nil {
-		t.Fatalf("falha ao criar usuário: %v", err)
-	}
-	serverA, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	serverB, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar segundo servidor: %v", err)
-	}
-	channelA, err := storage.CreateChannel(testCtx(), serverA.ID, "canal_"+randHex(4), "text")
-	if err != nil {
-		t.Fatalf("falha ao criar canal: %v", err)
-	}
-	if _, err := storage.CreateChannel(testCtx(), serverB.ID, "canal_"+randHex(4), "text"); err != nil {
-		t.Fatalf("falha ao criar canal: %v", err)
-	}
-
-	c := newContext(t, http.MethodGet, "/channels?server_id="+serverA.ID, nil, "")
-	rec := recorder(c)
-
-	if err := ListChannelsHandler(testBaseURL, c); err != nil {
-		t.Fatalf("ListChannelsHandler retornou erro: %v", err)
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
-	}
-
-	var resp struct {
-		Channels []models.ChannelSummary `json:"channels"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("falha ao decodificar resposta: %v", err)
-	}
-	if len(resp.Channels) != 1 {
-		t.Fatalf("esperava 1 canal do servidor filtrado, obtive %d", len(resp.Channels))
-	}
-	if resp.Channels[0].ID != channelA.ID {
-		t.Errorf("esperava id %s, obtive %s", channelA.ID, resp.Channels[0].ID)
-	}
-	if resp.Channels[0].ServerID != serverA.ID {
-		t.Errorf("esperava server_id %s, obtive %s", serverA.ID, resp.Channels[0].ServerID)
-	}
-}
-
 // --- CreateChannelHandler (tarefa 5.4) ---
 
 func TestCreateChannelHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 	channelName := "canal_" + randHex(4)
 
-	body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": channelName})
+	body, _ := json.Marshal(map[string]string{"name": channelName})
 	c := newContext(t, http.MethodPost, "/channels", body, "")
 	rec := recorder(c)
 
@@ -6711,9 +6397,6 @@ func TestCreateChannelHandlerSuccess(t *testing.T) {
 	}
 	if resp.ID == "" {
 		t.Error("esperava id preenchido")
-	}
-	if resp.ServerID != server.ID {
-		t.Errorf("esperava server_id %s, obtive %s", server.ID, resp.ServerID)
 	}
 	if resp.Name != channelName {
 		t.Errorf("esperava name %q, obtive %q", channelName, resp.Name)
@@ -6754,64 +6437,38 @@ func TestCreateChannelHandlerInvalidJSON(t *testing.T) {
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 }
 
-func TestCreateChannelHandlerMissingServerID(t *testing.T) {
-	body, _ := json.Marshal(map[string]string{"name": "canal_" + randHex(4)})
-	c := newContext(t, http.MethodPost, "/channels", body, "")
-	rec := recorder(c)
-
-	if err := CreateChannelHandler(testBaseURL, c); err != nil {
-		t.Fatalf("CreateChannelHandler retornou erro: %v", err)
-	}
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "server_id e name são obrigatórios; name deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
-}
-
 func TestCreateChannelHandlerMissingName(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
-	body, _ := json.Marshal(map[string]string{"server_id": server.ID})
-	c := newContext(t, http.MethodPost, "/channels", body, "")
+	c := newContext(t, http.MethodPost, "/channels", nil, "")
 	rec := recorder(c)
 
 	if err := CreateChannelHandler(testBaseURL, c); err != nil {
 		t.Fatalf("CreateChannelHandler retornou erro: %v", err)
 	}
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "server_id e name são obrigatórios; name deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
-}
-
-func TestCreateChannelHandlerServerNotFound(t *testing.T) {
-	body, _ := json.Marshal(map[string]string{"server_id": randUUID(), "name": "canal_" + randHex(4)})
-	c := newContext(t, http.MethodPost, "/channels", body, "")
-	rec := recorder(c)
-
-	if err := CreateChannelHandler(testBaseURL, c); err != nil {
-		t.Fatalf("CreateChannelHandler retornou erro: %v", err)
-	}
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'")
 }
 
 func TestCreateChannelHandlerNameTaken(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 	channelName := "canal_" + randHex(4)
-	if _, err := storage.CreateChannel(testCtx(), server.ID, channelName, "text"); err != nil {
+	if _, err := storage.CreateChannel(testCtx(), channelName, "text"); err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
-	// o nome é UNIQUE global na tabela channels: o mesmo nome em outro servidor também conflita
-	body, _ := json.Marshal(map[string]string{"server_id": server.ID, "name": channelName})
+	// o nome é UNIQUE global na tabela channels
+	body, _ := json.Marshal(map[string]string{"name": channelName})
 	c := newContext(t, http.MethodPost, "/channels", body, "")
 	rec := recorder(c)
 
@@ -6824,15 +6481,13 @@ func TestCreateChannelHandlerNameTaken(t *testing.T) {
 // --- UpdateChannelHandler (tarefa 5.4) ---
 
 func TestUpdateChannelHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6857,9 +6512,6 @@ func TestUpdateChannelHandlerSuccess(t *testing.T) {
 	}
 	if resp.ID != channel.ID {
 		t.Errorf("esperava id %s, obtive %s", channel.ID, resp.ID)
-	}
-	if resp.ServerID != server.ID {
-		t.Errorf("esperava server_id %s, obtive %s", server.ID, resp.ServerID)
 	}
 	if resp.Name != newName {
 		t.Errorf("esperava name %q, obtive %q", newName, resp.Name)
@@ -6900,15 +6552,13 @@ func TestUpdateChannelHandlerMissingParam(t *testing.T) {
 }
 
 func TestUpdateChannelHandlerInvalidJSON(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6925,15 +6575,13 @@ func TestUpdateChannelHandlerInvalidJSON(t *testing.T) {
 }
 
 func TestUpdateChannelHandlerMissingName(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -6964,20 +6612,18 @@ func TestUpdateChannelHandlerNotFound(t *testing.T) {
 }
 
 func TestUpdateChannelHandlerNameTaken(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 	takenName := "canal_" + randHex(4)
-	if _, err := storage.CreateChannel(testCtx(), server.ID, takenName, "text"); err != nil {
+	if _, err := storage.CreateChannel(testCtx(), takenName, "text"); err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
@@ -7005,15 +6651,13 @@ func TestUpdateChannelHandlerNameTaken(t *testing.T) {
 // --- DeleteChannelHandler (tarefa 5.4) ---
 
 func TestDeleteChannelHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -7066,15 +6710,13 @@ func TestDeleteChannelHandlerNotFound(t *testing.T) {
 // --- GetChannelPermissionsHandler (tarefa 5.4) ---
 
 func TestGetChannelPermissionsHandlerEmpty(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -7110,20 +6752,18 @@ func TestGetChannelPermissionsHandlerEmpty(t *testing.T) {
 }
 
 func TestGetChannelPermissionsHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 	roleName := "role_" + randHex(4)
-	role, err := storage.CreateRole(testCtx(), server.ID, roleName, nil, models.RolePermissions{})
+	role, err := storage.CreateRole(testCtx(), roleName, nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -7197,19 +6837,17 @@ func TestGetChannelPermissionsHandlerMissingParam(t *testing.T) {
 // --- UpdateChannelPermissionsHandler (tarefa 5.4) ---
 
 func TestUpdateChannelPermissionsHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -7261,15 +6899,13 @@ func TestUpdateChannelPermissionsHandlerSuccess(t *testing.T) {
 }
 
 func TestUpdateChannelPermissionsHandlerMissingChannelID(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -7287,15 +6923,13 @@ func TestUpdateChannelPermissionsHandlerMissingChannelID(t *testing.T) {
 }
 
 func TestUpdateChannelPermissionsHandlerMissingRoleID(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -7313,19 +6947,17 @@ func TestUpdateChannelPermissionsHandlerMissingRoleID(t *testing.T) {
 }
 
 func TestUpdateChannelPermissionsHandlerInvalidJSON(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -7342,15 +6974,13 @@ func TestUpdateChannelPermissionsHandlerInvalidJSON(t *testing.T) {
 }
 
 func TestUpdateChannelPermissionsHandlerChannelNotFound(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -7369,15 +6999,13 @@ func TestUpdateChannelPermissionsHandlerChannelNotFound(t *testing.T) {
 }
 
 func TestUpdateChannelPermissionsHandlerRoleNotFound(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -7395,60 +7023,24 @@ func TestUpdateChannelPermissionsHandlerRoleNotFound(t *testing.T) {
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "role não encontrada")
 }
 
-func TestUpdateChannelPermissionsHandlerRoleFromOtherServer(t *testing.T) {
-	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
-	if err != nil {
-		t.Fatalf("falha ao criar usuário: %v", err)
-	}
-	serverA, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	serverB, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar segundo servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), serverA.ID, "canal_"+randHex(4), "text")
-	if err != nil {
-		t.Fatalf("falha ao criar canal: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), serverB.ID, "role_"+randHex(4), nil, models.RolePermissions{})
-	if err != nil {
-		t.Fatalf("falha ao criar role: %v", err)
-	}
-
-	body, _ := json.Marshal(map[string]models.ChannelPermission{"permissions": {ReadChannel: true}})
-	c := newContext(t, http.MethodPut, "/channels/"+channel.ID+"/permissions/"+role.ID, body, "")
-	c.SetParamNames("channel_id", "role_id")
-	c.SetParamValues(channel.ID, role.ID)
-	rec := recorder(c)
-
-	if err := UpdateChannelPermissionsHandler(testBaseURL, c); err != nil {
-		t.Fatalf("UpdateChannelPermissionsHandler retornou erro: %v", err)
-	}
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "role não encontrada")
-}
-
 // --- ChangeChannelPositionHandler (tarefa 8.4) ---
 
 func TestChangeChannelPositionHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	c1, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	c1, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar primeiro canal: %v", err)
 	}
-	c2, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	c2, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar segundo canal: %v", err)
 	}
-	c3, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	c3, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar terceiro canal: %v", err)
 	}
@@ -7481,7 +7073,7 @@ func TestChangeChannelPositionHandlerSuccess(t *testing.T) {
 		t.Errorf("esperava posição 3 persistida, obtive %d", stored.Position)
 	}
 
-	channels, err := storage.ListChannelsByServer(testCtx(), server.ID)
+	channels, err := storage.ListChannels(testCtx())
 	if err != nil {
 		t.Fatalf("ListChannelsByServer retornou erro: %v", err)
 	}
@@ -7506,15 +7098,13 @@ func TestChangeChannelPositionHandlerMissingParam(t *testing.T) {
 }
 
 func TestChangeChannelPositionHandlerInvalidJSON(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -7531,15 +7121,13 @@ func TestChangeChannelPositionHandlerInvalidJSON(t *testing.T) {
 }
 
 func TestChangeChannelPositionHandlerInvalidPosition(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	channel, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -7554,7 +7142,7 @@ func TestChangeChannelPositionHandlerInvalidPosition(t *testing.T) {
 		t.Fatalf("ChangeChannelPositionHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"old_position e new_position devem ser posições válidas (1 até o número de canais do servidor)")
+		"old_position e new_position devem ser posições válidas (1 até o número de canais)")
 }
 
 func TestChangeChannelPositionHandlerNotFound(t *testing.T) {
@@ -7571,19 +7159,17 @@ func TestChangeChannelPositionHandlerNotFound(t *testing.T) {
 }
 
 func TestChangeChannelPositionHandlerConflict(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	c1, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text")
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	c1, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar primeiro canal: %v", err)
 	}
-	if _, err := storage.CreateChannel(testCtx(), server.ID, "canal_"+randHex(4), "text"); err != nil {
+	if _, err := storage.CreateChannel(testCtx(), "canal_"+randHex(4), "text"); err != nil {
 		t.Fatalf("falha ao criar segundo canal: %v", err)
 	}
 
@@ -7603,18 +7189,14 @@ func TestChangeChannelPositionHandlerConflict(t *testing.T) {
 // --- ListRolesHandler (tarefa 6.2) ---
 
 func TestListRolesHandlerEmpty(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
-	c := newContext(t, http.MethodGet, "/servers/"+server.ID+"/roles", nil, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
+	c := newContext(t, http.MethodGet, "/roles", nil, "")
 	rec := recorder(c)
 
 	if err := ListRolesHandler(testBaseURL, c); err != nil {
@@ -7639,28 +7221,24 @@ func TestListRolesHandlerEmpty(t *testing.T) {
 }
 
 func TestListRolesHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 	colorA := "#FF0000"
 	colorB := "#00FF00"
-	roleA, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), &colorA, models.RolePermissions{ManageRoles: true})
+	roleA, err := storage.CreateRole(testCtx(), "role_"+randHex(4), &colorA, models.RolePermissions{ManageRoles: true})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
-	roleB, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), &colorB, models.RolePermissions{BanMembers: true})
+	roleB, err := storage.CreateRole(testCtx(), "role_"+randHex(4), &colorB, models.RolePermissions{BanMembers: true})
 	if err != nil {
 		t.Fatalf("falha ao criar segunda role: %v", err)
 	}
 
-	c := newContext(t, http.MethodGet, "/servers/"+server.ID+"/roles", nil, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
+	c := newContext(t, http.MethodGet, "/roles", nil, "")
 	rec := recorder(c)
 
 	if err := ListRolesHandler(testBaseURL, c); err != nil {
@@ -7691,9 +7269,6 @@ func TestListRolesHandlerSuccess(t *testing.T) {
 			t.Errorf("role %s não encontrada na listagem", want.ID)
 			continue
 		}
-		if item.ServerID != server.ID {
-			t.Errorf("esperava server_id %s, obtive %s", server.ID, item.ServerID)
-		}
 		if item.Name != want.Name {
 			t.Errorf("esperava name %q, obtive %q", want.Name, item.Name)
 		}
@@ -7709,43 +7284,15 @@ func TestListRolesHandlerSuccess(t *testing.T) {
 	}
 }
 
-func TestListRolesHandlerServerNotFound(t *testing.T) {
-	serverID := randUUID()
-
-	c := newContext(t, http.MethodGet, "/servers/"+serverID+"/roles", nil, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(serverID)
-	rec := recorder(c)
-
-	if err := ListRolesHandler(testBaseURL, c); err != nil {
-		t.Fatalf("ListRolesHandler retornou erro: %v", err)
-	}
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
-}
-
-func TestListRolesHandlerMissingParam(t *testing.T) {
-	c := newContext(t, http.MethodGet, "/servers//roles", nil, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues("")
-	rec := recorder(c)
-
-	if err := ListRolesHandler(testBaseURL, c); err != nil {
-		t.Fatalf("ListRolesHandler retornou erro: %v", err)
-	}
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "server_id ausente")
-}
-
 // --- CreateRoleHandler (tarefa 6.2) ---
 
 func TestCreateRoleHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
 	name := "role_" + randHex(4)
 	color := "#FF0000"
@@ -7755,9 +7302,7 @@ func TestCreateRoleHandlerSuccess(t *testing.T) {
 		"color":       color,
 		"permissions": permissions,
 	})
-	c := newContext(t, http.MethodPost, "/servers/"+server.ID+"/roles", body, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
+	c := newContext(t, http.MethodPost, "/roles", body, "")
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7773,9 +7318,6 @@ func TestCreateRoleHandlerSuccess(t *testing.T) {
 	}
 	if resp.ID == "" {
 		t.Error("esperava id preenchido")
-	}
-	if resp.ServerID != server.ID {
-		t.Errorf("esperava server_id %s, obtive %s", server.ID, resp.ServerID)
 	}
 	if resp.Name != name {
 		t.Errorf("esperava name %q, obtive %q", name, resp.Name)
@@ -7807,20 +7349,16 @@ func TestCreateRoleHandlerSuccess(t *testing.T) {
 }
 
 func TestCreateRoleHandlerNoColor(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
 	name := "role_" + randHex(4)
 	body, _ := json.Marshal(map[string]string{"name": name})
-	c := newContext(t, http.MethodPost, "/servers/"+server.ID+"/roles", body, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
+	c := newContext(t, http.MethodPost, "/roles", body, "")
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7843,18 +7381,14 @@ func TestCreateRoleHandlerNoColor(t *testing.T) {
 }
 
 func TestCreateRoleHandlerInvalidJSON(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
-	c := newContext(t, http.MethodPost, "/servers/"+server.ID+"/roles", []byte("{invalido"), "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
+	c := newContext(t, http.MethodPost, "/roles", []byte("{invalido"), "")
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7864,19 +7398,15 @@ func TestCreateRoleHandlerInvalidJSON(t *testing.T) {
 }
 
 func TestCreateRoleHandlerMissingName(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
 	body, _ := json.Marshal(map[string]string{"name": ""})
-	c := newContext(t, http.MethodPost, "/servers/"+server.ID+"/roles", body, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
+	c := newContext(t, http.MethodPost, "/roles", body, "")
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7887,19 +7417,15 @@ func TestCreateRoleHandlerMissingName(t *testing.T) {
 }
 
 func TestCreateRoleHandlerNameTooLong(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
 	body, _ := json.Marshal(map[string]string{"name": strings.Repeat("r", 33)})
-	c := newContext(t, http.MethodPost, "/servers/"+server.ID+"/roles", body, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
+	c := newContext(t, http.MethodPost, "/roles", body, "")
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7910,19 +7436,15 @@ func TestCreateRoleHandlerNameTooLong(t *testing.T) {
 }
 
 func TestCreateRoleHandlerInvalidColor(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
 	body, _ := json.Marshal(map[string]string{"name": "role_" + randHex(4), "color": "FF0000"})
-	c := newContext(t, http.MethodPost, "/servers/"+server.ID+"/roles", body, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
+	c := newContext(t, http.MethodPost, "/roles", body, "")
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7932,73 +7454,39 @@ func TestCreateRoleHandlerInvalidColor(t *testing.T) {
 		"name é obrigatório e deve ter no máximo 32 caracteres; color deve ser hexadecimal #RRGGBB")
 }
 
-func TestCreateRoleHandlerServerNotFound(t *testing.T) {
-	serverID := randUUID()
-
-	body, _ := json.Marshal(map[string]string{"name": "role_" + randHex(4)})
-	c := newContext(t, http.MethodPost, "/servers/"+serverID+"/roles", body, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(serverID)
-	rec := recorder(c)
-
-	if err := CreateRoleHandler(testBaseURL, c); err != nil {
-		t.Fatalf("CreateRoleHandler retornou erro: %v", err)
-	}
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
-}
-
 func TestCreateRoleHandlerNameTaken(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 	name := "role_" + randHex(4)
-	if _, err := storage.CreateRole(testCtx(), server.ID, name, nil, models.RolePermissions{}); err != nil {
+	if _, err := storage.CreateRole(testCtx(), name, nil, models.RolePermissions{}); err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
 
 	body, _ := json.Marshal(map[string]string{"name": name})
-	c := newContext(t, http.MethodPost, "/servers/"+server.ID+"/roles", body, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues(server.ID)
+	c := newContext(t, http.MethodPost, "/roles", body, "")
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
 		t.Fatalf("CreateRoleHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusConflict, "role-name-taken", "Nome de role já existe",
-		"o nome informado já está em uso no servidor")
-}
-
-func TestCreateRoleHandlerMissingParam(t *testing.T) {
-	body, _ := json.Marshal(map[string]string{"name": "role_" + randHex(4)})
-	c := newContext(t, http.MethodPost, "/servers//roles", body, "")
-	c.SetParamNames("server_id")
-	c.SetParamValues("")
-	rec := recorder(c)
-
-	if err := CreateRoleHandler(testBaseURL, c); err != nil {
-		t.Fatalf("CreateRoleHandler retornou erro: %v", err)
-	}
-	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "server_id ausente")
+		"o nome informado já está em uso")
 }
 
 // --- UpdateRoleHandler (tarefa 6.2) ---
 
 func TestUpdateRoleHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -8030,9 +7518,6 @@ func TestUpdateRoleHandlerSuccess(t *testing.T) {
 	if resp.ID != role.ID {
 		t.Errorf("esperava id %s, obtive %s", role.ID, resp.ID)
 	}
-	if resp.ServerID != server.ID {
-		t.Errorf("esperava server_id %s, obtive %s", server.ID, resp.ServerID)
-	}
 	if resp.Name != newName {
 		t.Errorf("esperava name %q, obtive %q", newName, resp.Name)
 	}
@@ -8063,15 +7548,13 @@ func TestUpdateRoleHandlerSuccess(t *testing.T) {
 }
 
 func TestUpdateRoleHandlerInvalidJSON(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -8088,15 +7571,13 @@ func TestUpdateRoleHandlerInvalidJSON(t *testing.T) {
 }
 
 func TestUpdateRoleHandlerMissingName(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -8115,15 +7596,13 @@ func TestUpdateRoleHandlerMissingName(t *testing.T) {
 }
 
 func TestUpdateRoleHandlerInvalidColor(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -8155,19 +7634,17 @@ func TestUpdateRoleHandlerNotFound(t *testing.T) {
 }
 
 func TestUpdateRoleHandlerNameTaken(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	roleA, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	roleA, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
-	roleB, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	roleB, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar segunda role: %v", err)
 	}
@@ -8182,7 +7659,7 @@ func TestUpdateRoleHandlerNameTaken(t *testing.T) {
 		t.Fatalf("UpdateRoleHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusConflict, "role-name-taken", "Nome de role já existe",
-		"o nome informado já está em uso no servidor")
+		"o nome informado já está em uso")
 }
 
 func TestUpdateRoleHandlerMissingParam(t *testing.T) {
@@ -8200,19 +7677,17 @@ func TestUpdateRoleHandlerMissingParam(t *testing.T) {
 // --- DeleteRoleHandler (tarefa 6.2) ---
 
 func TestDeleteRoleHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 	member, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar membro: %v", err)
 	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -8271,6 +7746,7 @@ func TestDeleteRoleHandlerMissingParam(t *testing.T) {
 // --- AssignUserRoleHandler (tarefa 6.2) ---
 
 func TestAssignUserRoleHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
@@ -8279,11 +7755,8 @@ func TestAssignUserRoleHandlerSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar membro: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -8326,6 +7799,7 @@ func TestAssignUserRoleHandlerSuccess(t *testing.T) {
 }
 
 func TestAssignUserRoleHandlerIdempotent(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
@@ -8334,11 +7808,8 @@ func TestAssignUserRoleHandlerIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar membro: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -8417,15 +7888,13 @@ func TestAssignUserRoleHandlerMissingRoleID(t *testing.T) {
 }
 
 func TestAssignUserRoleHandlerUserNotFound(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -8478,6 +7947,7 @@ func TestAssignUserRoleHandlerMissingUserParam(t *testing.T) {
 // --- RemoveUserRoleHandler (tarefa 6.2) ---
 
 func TestRemoveUserRoleHandlerSuccess(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
@@ -8486,11 +7956,8 @@ func TestRemoveUserRoleHandlerSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar membro: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -8521,15 +7988,13 @@ func TestRemoveUserRoleHandlerSuccess(t *testing.T) {
 }
 
 func TestRemoveUserRoleHandlerUserNotFound(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -8565,6 +8030,7 @@ func TestRemoveUserRoleHandlerRoleNotFound(t *testing.T) {
 }
 
 func TestRemoveUserRoleHandlerUserRoleNotFound(t *testing.T) {
+	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
@@ -8573,11 +8039,8 @@ func TestRemoveUserRoleHandlerUserRoleNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar membro: %v", err)
 	}
-	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
-	if err != nil {
-		t.Fatalf("falha ao criar servidor: %v", err)
-	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(4), nil, models.RolePermissions{})
+	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(4), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -8630,8 +8093,8 @@ func newContextWithAuthCookie(t *testing.T, method, path string, body []byte, ip
 // backend (1 backend = 1 servidor).
 func removeAllServersTest(t *testing.T) {
 	t.Helper()
-	if _, err := storage.GetDB().ExecContext(testCtx(), "DELETE FROM servers"); err != nil {
-		t.Fatalf("falha ao limpar a tabela servers: %v", err)
+	if err := cleanServers(testCtx()); err != nil {
+		t.Fatalf("falha ao limpar tabelas de servidor: %v", err)
 	}
 }
 
@@ -8993,11 +8456,14 @@ func newMultipartContext(t *testing.T, method, path string, fields map[string]st
 // nele, retornando os dois registros.
 func createServerAndChannelTest(t *testing.T, ownerID string) (models.Server, models.Channel) {
 	t.Helper()
+	if err := cleanServers(testCtx()); err != nil {
+		t.Fatalf("falha ao limpar tabelas de servidor: %v", err)
+	}
 	server, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &ownerID)
 	if err != nil {
 		t.Fatalf("falha ao criar servidor: %v", err)
 	}
-	channel, err := storage.CreateChannel(testCtx(), server.ID, "chn_"+randHex(4), "text")
+	channel, err := storage.CreateChannel(testCtx(), "chn_"+randHex(4), "text")
 	if err != nil {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
@@ -9185,8 +8651,8 @@ func TestListMessagesHandlerInvalidSince(t *testing.T) {
 func TestListMessagesHandlerForbiddenWithoutPermission(t *testing.T) {
 	owner := newTestMessageUser(t)
 	actor := newTestMessageUser(t)
-	server, channel := createServerAndChannelTest(t, owner.ID)
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(8), nil, models.RolePermissions{})
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(8), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -9371,8 +8837,8 @@ func TestCreateMessageHandlerChannelNotFound(t *testing.T) {
 func TestCreateMessageHandlerForbiddenWithoutPermission(t *testing.T) {
 	owner := newTestMessageUser(t)
 	actor := newTestMessageUser(t)
-	server, channel := createServerAndChannelTest(t, owner.ID)
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(8), nil, models.RolePermissions{})
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(8), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -9628,12 +9094,12 @@ func TestDeleteMessageHandlerForbiddenOtherUser(t *testing.T) {
 func TestDeleteMessageHandlerWithDeleteMessagesRole(t *testing.T) {
 	owner := newTestMessageUser(t)
 	actor := newTestMessageUser(t)
-	server, channel := createServerAndChannelTest(t, owner.ID)
+	_, channel := createServerAndChannelTest(t, owner.ID)
 	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "x", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
-	role, err := storage.CreateRole(testCtx(), server.ID, "role_"+randHex(8), nil, models.RolePermissions{})
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(8), nil, models.RolePermissions{})
 	if err != nil {
 		t.Fatalf("falha ao criar role: %v", err)
 	}
@@ -9688,9 +9154,9 @@ func TestDeleteMessageHandlerOwnerDeletesOtherMessage(t *testing.T) {
 
 func TestListEmojisHandlerEmpty(t *testing.T) {
 	owner := newTestMessageUser(t)
-	server, _ := createServerAndChannelTest(t, owner.ID)
+	createServerAndChannelTest(t, owner.ID)
 
-	c := newContext(t, http.MethodGet, "/emojis?server_id="+server.ID, nil, "")
+	c := newContext(t, http.MethodGet, "/emojis", nil, "")
 	rec := recorder(c)
 
 	if err := ListEmojisHandler(testBaseURL, c); err != nil {
@@ -9713,18 +9179,18 @@ func TestListEmojisHandlerEmpty(t *testing.T) {
 
 func TestListEmojisHandlerSuccess(t *testing.T) {
 	owner := newTestMessageUser(t)
-	server, _ := createServerAndChannelTest(t, owner.ID)
-	e1, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
+	createServerAndChannelTest(t, owner.ID)
+	e1, err := storage.CreateEmoji(testCtx(), "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	e2, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{2}), &owner.ID)
+	e2, err := storage.CreateEmoji(testCtx(), "emoji_"+randHex(8), newTestMediaHash(t, []byte{2}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 
-	c := newContext(t, http.MethodGet, "/emojis?server_id="+server.ID, nil, "")
+	c := newContext(t, http.MethodGet, "/emojis", nil, "")
 	rec := recorder(c)
 
 	if err := ListEmojisHandler(testBaseURL, c); err != nil {
@@ -9758,14 +9224,14 @@ func TestListEmojisHandlerSuccess(t *testing.T) {
 
 func TestListEmojisHandlerPagination(t *testing.T) {
 	owner := newTestMessageUser(t)
-	server, _ := createServerAndChannelTest(t, owner.ID)
+	createServerAndChannelTest(t, owner.ID)
 	for i := 0; i < 26; i++ {
-		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID); err != nil {
+		if _, err := storage.CreateEmoji(testCtx(), "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID); err != nil {
 			t.Fatalf("falha ao criar emoji %d: %v", i, err)
 		}
 	}
 
-	c := newContext(t, http.MethodGet, "/emojis?server_id="+server.ID, nil, "")
+	c := newContext(t, http.MethodGet, "/emojis", nil, "")
 	rec := recorder(c)
 
 	if err := ListEmojisHandler(testBaseURL, c); err != nil {
@@ -9788,18 +9254,18 @@ func TestListEmojisHandlerPagination(t *testing.T) {
 
 func TestListEmojisHandlerSince(t *testing.T) {
 	owner := newTestMessageUser(t)
-	server, _ := createServerAndChannelTest(t, owner.ID)
-	first, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
+	createServerAndChannelTest(t, owner.ID)
+	first, err := storage.CreateEmoji(testCtx(), "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	second, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{2}), &owner.ID)
+	second, err := storage.CreateEmoji(testCtx(), "emoji_"+randHex(8), newTestMediaHash(t, []byte{2}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
 
-	c := newContext(t, http.MethodGet, "/emojis?server_id="+server.ID+"&since="+first.CreatedAt.Format(time.RFC3339Nano), nil, "")
+	c := newContext(t, http.MethodGet, "/emojis?since="+first.CreatedAt.Format(time.RFC3339Nano), nil, "")
 	rec := recorder(c)
 
 	if err := ListEmojisHandler(testBaseURL, c); err != nil {
@@ -9819,9 +9285,9 @@ func TestListEmojisHandlerSince(t *testing.T) {
 
 func TestListEmojisHandlerInvalidSince(t *testing.T) {
 	owner := newTestMessageUser(t)
-	server, _ := createServerAndChannelTest(t, owner.ID)
+	createServerAndChannelTest(t, owner.ID)
 
-	c := newContext(t, http.MethodGet, "/emojis?server_id="+server.ID+"&since=nao-e-data", nil, "")
+	c := newContext(t, http.MethodGet, "/emojis?since=nao-e-data", nil, "")
 	rec := recorder(c)
 
 	if err := ListEmojisHandler(testBaseURL, c); err != nil {
@@ -9833,10 +9299,9 @@ func TestListEmojisHandlerInvalidSince(t *testing.T) {
 
 func TestCreateEmojiHandlerSuccess(t *testing.T) {
 	owner := newTestMessageUser(t)
-	server, _ := createServerAndChannelTest(t, owner.ID)
+	createServerAndChannelTest(t, owner.ID)
 	name := "emoji_" + randHex(8)
 	body, _ := json.Marshal(map[string]string{
-		"server_id":  server.ID,
 		"name":       name,
 		"format":     "png",
 		"image_blob": base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)),
@@ -9856,7 +9321,7 @@ func TestCreateEmojiHandlerSuccess(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &emoji); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if emoji.ID == "" || emoji.ServerID != server.ID || emoji.Name != name {
+	if emoji.ID == "" || emoji.Name != name {
 		t.Errorf("emoji retornado não confere: %+v", emoji)
 	}
 	if emoji.Format != "PNG" {
@@ -9872,7 +9337,7 @@ func TestCreateEmojiHandlerSuccess(t *testing.T) {
 
 func TestCreateEmojiHandlerInvalidBody(t *testing.T) {
 	owner := newTestMessageUser(t)
-	server, _ := createServerAndChannelTest(t, owner.ID)
+	createServerAndChannelTest(t, owner.ID)
 	blob := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
 	gif := base64.StdEncoding.EncodeToString([]byte{0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 1, 1, 0})
 
@@ -9880,14 +9345,13 @@ func TestCreateEmojiHandlerInvalidBody(t *testing.T) {
 		desc string
 		body map[string]string
 	}{
-		{"server_id ausente", map[string]string{"name": "x", "format": "PNG", "image_blob": blob}},
-		{"name ausente", map[string]string{"server_id": server.ID, "format": "PNG", "image_blob": blob}},
-		{"format ausente", map[string]string{"server_id": server.ID, "name": "x", "image_blob": blob}},
-		{"image_blob ausente", map[string]string{"server_id": server.ID, "name": "x", "format": "PNG"}},
-		{"name acima de 32 caracteres", map[string]string{"server_id": server.ID, "name": strings.Repeat("a", 33), "format": "PNG", "image_blob": blob}},
-		{"format inválido", map[string]string{"server_id": server.ID, "name": "x", "format": "SVG", "image_blob": blob}},
-		{"base64 inválido", map[string]string{"server_id": server.ID, "name": "x", "format": "PNG", "image_blob": "!!!"}},
-		{"conteúdo não corresponde ao formato", map[string]string{"server_id": server.ID, "name": "x", "format": "PNG", "image_blob": gif}},
+		{"name ausente", map[string]string{"format": "PNG", "image_blob": blob}},
+		{"format ausente", map[string]string{"name": "x", "image_blob": blob}},
+		{"image_blob ausente", map[string]string{"name": "x", "format": "PNG"}},
+		{"name acima de 32 caracteres", map[string]string{"name": strings.Repeat("a", 33), "format": "PNG", "image_blob": blob}},
+		{"format inválido", map[string]string{"name": "x", "format": "SVG", "image_blob": blob}},
+		{"base64 inválido", map[string]string{"name": "x", "format": "PNG", "image_blob": "!!!"}},
+		{"conteúdo não corresponde ao formato", map[string]string{"name": "x", "format": "PNG", "image_blob": gif}},
 	}
 	for _, tc := range cases {
 		body, _ := json.Marshal(tc.body)
@@ -9899,36 +9363,16 @@ func TestCreateEmojiHandlerInvalidBody(t *testing.T) {
 			t.Fatalf("%s: CreateEmojiHandler retornou erro: %v", tc.desc, err)
 		}
 		assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-			"server_id, name, format e image_blob são obrigatórios; name deve ter no máximo 32 caracteres; "+
+			"name, format e image_blob são obrigatórios; name deve ter no máximo 32 caracteres; "+
 				"format deve ser GIF, JPEG ou PNG; image_blob deve ser base64 de uma imagem com no máximo 256kb")
 	}
 }
 
-func TestCreateEmojiHandlerServerNotFound(t *testing.T) {
-	owner := newTestMessageUser(t)
-	body, _ := json.Marshal(map[string]string{
-		"server_id":  randUUID(),
-		"name":       "emoji_" + randHex(8),
-		"format":     "PNG",
-		"image_blob": base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)),
-	})
-
-	c := newContext(t, http.MethodPost, "/emojis", body, "")
-	c.Set(middleware.UserIDContextKey, owner.ID)
-	rec := recorder(c)
-
-	if err := CreateEmojiHandler(testBaseURL, c); err != nil {
-		t.Fatalf("CreateEmojiHandler retornou erro: %v", err)
-	}
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
-}
-
 func TestCreateEmojiHandlerNameTaken(t *testing.T) {
 	owner := newTestMessageUser(t)
-	server, _ := createServerAndChannelTest(t, owner.ID)
+	createServerAndChannelTest(t, owner.ID)
 	name := "emoji_" + randHex(8)
 	body, _ := json.Marshal(map[string]string{
-		"server_id":  server.ID,
 		"name":       name,
 		"format":     "PNG",
 		"image_blob": base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)),
@@ -9957,15 +9401,14 @@ func TestCreateEmojiHandlerNameTaken(t *testing.T) {
 
 func TestCreateEmojiHandlerLimitReached(t *testing.T) {
 	owner := newTestMessageUser(t)
-	server, _ := createServerAndChannelTest(t, owner.ID)
+	createServerAndChannelTest(t, owner.ID)
 	for i := 0; i < 500; i++ {
-		if _, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID); err != nil {
+		if _, err := storage.CreateEmoji(testCtx(), "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID); err != nil {
 			t.Fatalf("falha ao criar emoji %d: %v", i, err)
 		}
 	}
 
 	body, _ := json.Marshal(map[string]string{
-		"server_id":  server.ID,
 		"name":       "emoji_" + randHex(8),
 		"format":     "PNG",
 		"image_blob": base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)),
@@ -9979,12 +9422,11 @@ func TestCreateEmojiHandlerLimitReached(t *testing.T) {
 		t.Fatalf("CreateEmojiHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusConflict, "emoji-limit-reached", "Limite de emojis atingido",
-		"o servidor já possui o número máximo de emojis (500)")
+		"o número máximo de emojis (500) já foi atingido")
 }
 
 func TestCreateEmojiHandlerMissingUserID(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{
-		"server_id":  "x",
 		"name":       "x",
 		"format":     "PNG",
 		"image_blob": "x",
@@ -10001,8 +9443,8 @@ func TestCreateEmojiHandlerMissingUserID(t *testing.T) {
 
 func TestDeleteEmojiHandlerSuccess(t *testing.T) {
 	owner := newTestMessageUser(t)
-	server, _ := createServerAndChannelTest(t, owner.ID)
-	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
+	createServerAndChannelTest(t, owner.ID)
+	emoji, err := storage.CreateEmoji(testCtx(), "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -10042,8 +9484,8 @@ func TestDeleteEmojiHandlerNotFound(t *testing.T) {
 func TestDeleteEmojiHandlerForbidden(t *testing.T) {
 	owner := newTestMessageUser(t)
 	stranger := newTestMessageUser(t)
-	server, _ := createServerAndChannelTest(t, owner.ID)
-	emoji, err := storage.CreateEmoji(testCtx(), server.ID, "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
+	createServerAndChannelTest(t, owner.ID)
+	emoji, err := storage.CreateEmoji(testCtx(), "emoji_"+randHex(8), newTestMediaHash(t, []byte{1}), &owner.ID)
 	if err != nil {
 		t.Fatalf("falha ao criar emoji: %v", err)
 	}
@@ -10093,7 +9535,7 @@ func TestDeleteEmojiHandlerMissingParam(t *testing.T) {
 
 func TestSearchHandlerSuccess(t *testing.T) {
 	owner := newTestMessageUser(t)
-	server, channel := createServerAndChannelTest(t, owner.ID)
+	_, channel := createServerAndChannelTest(t, owner.ID)
 	unique := "w" + randHex(8)
 	msg, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem "+unique, nil)
 	if err != nil {
@@ -10122,7 +9564,7 @@ func TestSearchHandlerSuccess(t *testing.T) {
 		t.Fatalf("esperava 1 resultado, obtive %d", len(resp.Results))
 	}
 	r := resp.Results[0]
-	if r.Type != "message" || r.ID != msg.ID || r.ChannelID != channel.ID || r.ServerID != server.ID {
+	if r.Type != "message" || r.ID != msg.ID || r.ChannelID != channel.ID {
 		t.Errorf("resultado inesperado: %+v", r)
 	}
 	if r.AuthorID == nil || *r.AuthorID != owner.ID {
@@ -10378,8 +9820,8 @@ func TestUpdateUserHandlerDescriptionTooLong(t *testing.T) {
 func TestDownloadAttachmentRoutePartialContent(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
-	server := createServerFor(t, userID)
-	channel := createChannelFor(t, server.ID, "chn_"+randHex(4))
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
 	attachment := newMessageWithAttachmentRoute(t, e, channel.ID, token)
 
 	blob, err := os.ReadFile(mediaPathFor(attachment.MediaShaHash))
