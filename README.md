@@ -34,21 +34,21 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Crons GC Attachments orfãos/tabela quebrada e limpeza de logs.
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
 - [ ] React Mensagens
-- [ ] Pin message /POST messages/:id/pin/ permissão pin_message, tabela pinned_messages, delete cascade.
+- [ ] Pin message /POST channels/:channel_id/messages/:message_id/pin permissão pin_message, criação de tabela pinned_messages x channel, delete cascade, máximo de 100 mensagens pinnadas por canal.
 - [ ] Notificações (persistentes)
-- [ ] Direct Messages
 - [ ] Refresh token rotation com detecção de reuse, tabela endpoint de dispositivos conectados, endpoint de derrubar todas as conexões (inclusive atual)
-- [ ] Hashed Resync para conexão instável
 - [ ] Detecção e moderação Automática (Contra conteúdo sensível)
-- [ ] Bot API
 
 ### V2:
 
+- [ ] Hashed Resync para conexão instável
+- [ ] Direct Messages
+- [ ] Bot API
 - [ ] Mais User Settings
 - [ ] Threads
 - [ ] Favoritos (GIF, Emoji)
 - [ ] Events Scheduling
-- [ ] WebTransport Support
+- [ ] Estudo viabilidade WebTransport 
 - [ ] Suporte NoSQL (intercambeavel nas settings) ou particionamento postgresql
 
 ## Arquitetura
