@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"papo/internal/models"
 )
@@ -154,6 +155,21 @@ func ListThumbnailsByAttachmentIDs(ctx context.Context, attachmentIDs []string) 
 	}
 
 	return thumbnails, nil
+}
+
+// DeleteOrphanAttachments remove attachments não vinculados a mensagem
+// (messages_id NULL, órfãos de uma gravação incompleta) criados antes do
+// cutoff. As thumbnails caem via ON DELETE CASCADE. Retorna o número de
+// registros removidos.
+func DeleteOrphanAttachments(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := GetDB().ExecContext(ctx,
+		"DELETE FROM attachments WHERE messages_id IS NULL AND created_at < $1",
+		cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("falha ao remover attachments órfãos: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // ListAttachmentsByMessage lista os attachments de uma mensagem ordenados por

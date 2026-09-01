@@ -12,6 +12,7 @@ import (
 	"papo/internal/config"
 	"papo/internal/handlers"
 	"papo/internal/middleware"
+	"papo/internal/services"
 	"papo/internal/storage"
 	"papo/internal/utils"
 	"papo/internal/websocket"
@@ -52,6 +53,13 @@ func main() {
 
 	// Inicia o hub WebSocket (estado efêmero de transporte).
 	go websocket.GetHub().Run()
+
+	// Rotina de manutenção (GC de mídia + purge de auditoria): roda no boot e
+	// a cada 12h. O cancelamento do ctx para o scheduler e interrompe o job em
+	// curso (a trigger append-only de audit_logs é recriada mesmo assim).
+	maintenanceCtx, stopMaintenance := context.WithCancel(context.Background())
+	defer stopMaintenance()
+	go services.RunMaintenance(maintenanceCtx, cfg)
 
 	e := echo.New()
 

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"papo/internal/config"
 	"papo/internal/models"
 	"papo/internal/utils"
 
@@ -253,8 +255,13 @@ func newTestMedia(t *testing.T, content []byte) string {
 // expõem como mime_type).
 func newTestMediaWithMime(t *testing.T, content []byte, mimeType string) string {
 	t.Helper()
-	sum := sha256.Sum256(content)
-	hash := hex.EncodeToString(sum[:])
+	cfg := config.LoadConfig()
+
+	mac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
+	mac.Write(content)
+
+	hash := hex.EncodeToString(mac.Sum(nil))
+
 	if _, _, err := InsertMediaIfAbsent(testCtx(), hash, mimeType, int64(len(content))); err != nil {
 		t.Fatalf("falha ao inserir mídia de apoio: %v", err)
 	}
@@ -648,8 +655,12 @@ func TestUpdateUserStatus(t *testing.T) {
 
 func TestInsertMediaIfAbsent(t *testing.T) {
 	content := []byte("conteúdo de mídia de teste")
-	sum := sha256.Sum256(content)
-	hash := hex.EncodeToString(sum[:])
+	cfg := config.LoadConfig()
+
+	mac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
+	mac.Write(content)
+
+	hash := hex.EncodeToString(mac.Sum(nil))
 
 	media, created, err := InsertMediaIfAbsent(testCtx(), hash, "image/png", int64(len(content)))
 	if err != nil {
@@ -685,8 +696,11 @@ func TestInsertMediaIfAbsent(t *testing.T) {
 
 	// conteúdo diferente: hash diferente, linha nova
 	other := []byte("outro conteúdo")
-	otherSum := sha256.Sum256(other)
-	otherHash := hex.EncodeToString(otherSum[:])
+	otherMac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
+	otherMac.Write(other)
+
+	otherHash := hex.EncodeToString(otherMac.Sum(nil))
+
 	if otherHash == hash {
 		t.Fatal("hashes de conteúdos diferentes deveriam diferir")
 	}

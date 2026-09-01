@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -10,16 +11,17 @@ import (
 	"path/filepath"
 	"strings"
 
+	"papo/internal/config"
 	"papo/internal/models"
 	"papo/internal/storage"
 )
 
 // mediaBaseDir é a pasta (relativa ao diretório de trabalho do backend) onde
 // todos os blobs de mídia são guardados em content-addressable storage
-// (media/<ab>/<cd>/<sha256>). Avatar, ícone, emoji, attachment, thumbnail e
+// (media/<ab>/<cd>/<hash>). Avatar, ícone, emoji, attachment, thumbnail e
 // imagem de link preview compartilham o mesmo storage: conteúdo idêntico é
-// gravado uma única vez.
-const mediaBaseDir = "media"
+// gravado uma única vez. (var: os testes apontam para uma pasta temporária.)
+var mediaBaseDir = "media"
 
 // mediaBlobPath retorna o caminho do blob no content-addressable storage: os
 // 2 primeiros bytes (4 hex) do hash viram subpastas para não estourar o
@@ -29,12 +31,16 @@ func mediaBlobPath(shaHash string) string {
 }
 
 // StoreMediaFromBytes grava o conteúdo em content-addressable storage e
-// registra a mídia na tabela media (deduplicação pelo sha256 do conteúdo).
-// Retorna o sha256 (hex) e o registro de mídia. Se o conteúdo já existe, o
+// registra a mídia na tabela media (deduplicação pelo hmac-sha256 do conteúdo).
+// Retorna o hmac-sha256 (hex) e o registro de mídia. Se o conteúdo já existe, o
 // registro existente é reutilizado e a gravação em disco é pulada.
 func StoreMediaFromBytes(ctx context.Context, content []byte, mimeType string) (string, models.Media, error) {
-	sum := sha256.Sum256(content)
-	hash := hex.EncodeToString(sum[:])
+	cfg := config.LoadConfig()
+
+	mac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
+	mac.Write(content)
+
+	hash := hex.EncodeToString(mac.Sum(nil))
 
 	media, _, err := storage.InsertMediaIfAbsent(ctx, hash, mimeType, int64(len(content)))
 	if err != nil {

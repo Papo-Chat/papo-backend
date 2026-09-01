@@ -1459,9 +1459,14 @@ func TestUpdateStatus(t *testing.T) {
 // --- Mídia (content-addressable) ---
 
 func TestStoreMediaFromBytes(t *testing.T) {
+	cfg := config.LoadConfig()
+
+	mac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
+
 	content := []byte("conteúdo de teste da mídia")
-	sum := sha256.Sum256(content)
-	expectedHash := hex.EncodeToString(sum[:])
+	mac.Write(content)
+
+	expectedHash := hex.EncodeToString(mac.Sum(nil))
 
 	hash, media, err := StoreMediaFromBytes(testCtx(), content, "text/plain")
 	if err != nil {

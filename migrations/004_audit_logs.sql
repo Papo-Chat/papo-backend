@@ -37,7 +37,6 @@ EXECUTE FUNCTION prevent_audit_logs_modification();
 -- +goose Down
 
 DROP TRIGGER IF EXISTS prevent_audit_logs_modification ON audit_logs;
-DROP TRIGGER IF EXISTS audit_logs_no_update_delete ON audit_logs;
 
 DROP FUNCTION IF EXISTS prevent_audit_logs_modification();
 

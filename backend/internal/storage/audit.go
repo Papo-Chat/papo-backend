@@ -168,3 +168,57 @@ func ListAuditLogs(ctx context.Context, p AuditLogParams) ([]models.AuditLog, er
 
 	return logs, nil
 }
+
+// auditLogsTriggerName é o nome da trigger que torna audit_logs append-only
+// (migration 004).
+const auditLogsTriggerName = "prevent_audit_logs_modification"
+
+// AuditTriggerExists indica se a trigger append-only de audit_logs está
+// instalada.
+func AuditTriggerExists(ctx context.Context) (bool, error) {
+	var exists bool
+	err := GetDB().QueryRowContext(ctx,
+		"SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'audit_logs'::regclass AND tgname = $1)",
+		auditLogsTriggerName,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("falha ao verificar trigger de auditoria: %w", err)
+	}
+	return exists, nil
+}
+
+// DropAuditLogsTrigger remove a trigger append-only de audit_logs (usada pelo
+// purge de retenção; deve ser recriada logo em seguida).
+func DropAuditLogsTrigger(ctx context.Context) error {
+	if _, err := GetDB().ExecContext(ctx,
+		"DROP TRIGGER IF EXISTS "+auditLogsTriggerName+" ON audit_logs"); err != nil {
+		return fmt.Errorf("falha ao remover trigger de auditoria: %w", err)
+	}
+	return nil
+}
+
+// CreateAuditLogsTrigger reinstala a trigger append-only de audit_logs (mesma
+// definição da migration 004; a função já existe no banco).
+func CreateAuditLogsTrigger(ctx context.Context) error {
+	if _, err := GetDB().ExecContext(ctx,
+		"CREATE TRIGGER "+auditLogsTriggerName+" BEFORE UPDATE OR DELETE ON audit_logs "+
+			"FOR EACH ROW EXECUTE FUNCTION "+auditLogsTriggerName+"()"); err != nil {
+		return fmt.Errorf("falha ao recriar trigger de auditoria: %w", err)
+	}
+	return nil
+}
+
+// PurgeAuditLogsBatch remove até limit logs de auditoria com created_at
+// anterior ao cutoff e retorna a quantidade removida (0 = nada a remover).
+// (PostgreSQL não suporta DELETE ... LIMIT: o lote é selecionado em um
+// subselect e o DELETE apaga por id.)
+func PurgeAuditLogsBatch(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	res, err := GetDB().ExecContext(ctx,
+		"DELETE FROM audit_logs WHERE id IN (SELECT id FROM audit_logs WHERE created_at < $1 ORDER BY created_at LIMIT $2)",
+		cutoff, limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("falha ao purgar auditoria: %w", err)
+	}
+	return res.RowsAffected()
+}

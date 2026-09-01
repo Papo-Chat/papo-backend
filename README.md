@@ -17,7 +17,7 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - **Logrus** — logging
 - **Go Puro** - Sem cgo ou microserviços, binário leve e focado em rodar com o mínimo de recursos possível.
 
-## Roadmap
+## Roadmap (V1)
 
 - [x] Backend MVP completo (endpoints, websocket, com segurança, testes e performance)
 - [x] Event para troca de avatar/nickname
@@ -31,18 +31,25 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Batch request para user profiles (POST /users/profileBatch com body com ids dos usuários), retorna o mesmo que profile mas array (máximo 50 usuários)
 - [x] Fixar código em single server
 - [x] Auditoria/Logs para Admins 
-- [ ] Crons GC Attachments orfãos/tabela quebrada e limpeza de logs.
+- [x] Crons GC Attachments orfãos/tabela quebrada e limpeza de logs.
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
 - [ ] React Mensagens
 - [ ] Pin message /POST messages/:id/pin/ permissão pin_message, tabela pinned_messages, delete cascade.
 - [ ] Notificações (persistentes)
-- [ ] Refresh token rotation com detecção de reuse, tabela endpoint de dispositivos conectados, endpoint de derrubar todas as conexões (inclusive atual)
-- [ ] Detecção e moderação Automática (Contra conteúdo sensível)
 - [ ] Direct Messages
-- [ ] Bot API
-- [ ] Suporte NoSQL (intercambeavel nas settings) ou particionamento postgresql
+- [ ] Refresh token rotation com detecção de reuse, tabela endpoint de dispositivos conectados, endpoint de derrubar todas as conexões (inclusive atual)
 - [ ] Hashed Resync para conexão instável
-- [ ] WebTransport Support 
+- [ ] Detecção e moderação Automática (Contra conteúdo sensível)
+- [ ] Bot API
+
+### V2:
+
+- [ ] Mais User Settings
+- [ ] Threads
+- [ ] Favoritos (GIF, Emoji)
+- [ ] Events Scheduling
+- [ ] WebTransport Support
+- [ ] Suporte NoSQL (intercambeavel nas settings) ou particionamento postgresql
 
 ## Arquitetura
 
@@ -88,7 +95,8 @@ backend/
 - **Attachments endereçados por conteúdo** (SHA-256), com deduplicação automática.
 - **Thumbnail e Link Preview** Processamento de thumbnails muito robusto com etiqueta para robots.txt (oEmbed, OpenGraph, Youtube etc.)
 - **Roles** Sistema de roles simplificado com permissões para acessar canal, moderação e administração.
-
+- **Manutenção Automática** Crons autônomas que visam limpar e corrigir estados inválidos do servidor.
+- **Logging** Logs de interações dos usuários que visa cumprir LGPD e GDRP, sem log explicito de IP e com limpeza frequente. 
 
 ## Pré-requisitos:
 * Go 1.21+, Docker (para o Postgres), [Goose](https://github.com/pressly/goose).
@@ -135,6 +143,7 @@ DATABASE_URL=postgres://papo:papo123@localhost:5432/papo
 JWT_SECRET=troque_por_um_segredo_aleatorio
 
 # Usado para que o endpoint de midia não sirva hash padrão
+# USE CHAVES DIFERENTES
 HMAC_SECRET=segredo_de_midia_unguessable
 
 # Url usada para erros RFC 7807, pode ser deixada em branco sem problema

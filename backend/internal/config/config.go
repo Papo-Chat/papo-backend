@@ -48,7 +48,8 @@ type Config struct {
 	PreviewDescriptionMax int
 
 	// Retenção dos logs de auditoria (dias). A exclusão por retenção é feita
-	// por um cron futuro; este valor apenas define o período de retenção.
+	// pela rotina de manutenção (services.RunMaintenance), que roda no boot e
+	// a cada 12h.
 	LogDuration time.Duration
 }
 
