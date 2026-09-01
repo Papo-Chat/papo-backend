@@ -1,12 +1,14 @@
 package services
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"papo/internal/config"
 	"papo/internal/storage"
 )
 
@@ -277,6 +279,56 @@ func TestPurgeAuditLogs(t *testing.T) {
 	}
 }
 
+// TestPurgeAuditLogsBatched garante que o purge remove mais de
+// auditPurgeBatchSize logs expirados (o laço de lotes deve continuar até não
+// sobrar nada) e preserva os logs dentro da retenção.
+func TestPurgeAuditLogsBatched(t *testing.T) {
+	const expiredCount = auditPurgeBatchSize + 5 // força 2 lotes
+
+	// Logs expirados (além da retenção de 90 dias), inseridos em lote.
+	if _, err := storage.GetDB().ExecContext(testCtx(),
+		"INSERT INTO audit_logs (actor_username, action, entity_type, created_at) "+
+			"SELECT 'purge_batch', 'test.purge_batch', 'user', now() - interval '100 days' "+
+			"FROM generate_series(1, $1)",
+		expiredCount,
+	); err != nil {
+		t.Fatalf("falha ao inserir logs expirados: %v", err)
+	}
+
+	// Log dentro da retenção → mantido.
+	var recentID string
+	if err := storage.GetDB().QueryRowContext(testCtx(),
+		"INSERT INTO audit_logs (actor_username, action, entity_type, created_at) "+
+			"VALUES ('purge_batch', 'test.purge_batch_recent', 'user', now()) RETURNING id",
+	).Scan(&recentID); err != nil {
+		t.Fatalf("falha ao inserir log recente: %v", err)
+	}
+
+	if err := purgeAuditLogs(testCtx(), 90*24*time.Hour); err != nil {
+		t.Fatalf("purgeAuditLogs retornou erro: %v", err)
+	}
+
+	var expiredLeft int
+	if err := storage.GetDB().QueryRowContext(testCtx(),
+		"SELECT count(*) FROM audit_logs WHERE action = 'test.purge_batch'",
+	).Scan(&expiredLeft); err != nil {
+		t.Fatalf("falha ao contar logs restantes: %v", err)
+	}
+	if expiredLeft != 0 {
+		t.Errorf("todos os %d logs expirados deveriam ter sido removidos, %d restante(s)", expiredCount, expiredLeft)
+	}
+
+	var recentExists bool
+	if err := storage.GetDB().QueryRowContext(testCtx(),
+		"SELECT EXISTS (SELECT 1 FROM audit_logs WHERE id = $1)", recentID,
+	).Scan(&recentExists); err != nil {
+		t.Fatalf("falha ao consultar log recente: %v", err)
+	}
+	if !recentExists {
+		t.Errorf("log dentro da retenção deveria ter sido mantido")
+	}
+}
+
 // TestPurgeAuditLogTriggerSelfHeal garante que, se a trigger estiver ausente
 // (crash em uma purga anterior), o purge a recria antes de prosseguir.
 func TestPurgeAuditLogTriggerSelfHeal(t *testing.T) {
@@ -307,5 +359,76 @@ func TestPurgeAuditLogTriggerSelfHeal(t *testing.T) {
 	}
 	if !exists {
 		t.Errorf("trigger ausente deveria ter sido recriada (auto-cura)")
+	}
+}
+
+// TestRunMaintenanceStartsAndStops garante que a rotina roda os jobs
+// imediatamente no boot (sem esperar o intervalo de 12h) e retorna quando o
+// contexto é cancelado (shutdown do servidor).
+func TestRunMaintenanceStartsAndStops(t *testing.T) {
+	withTempMediaDir(t)
+
+	// Efeito observável do GC: arquivo órfão antigo (sem row na media).
+	orphan := randHex(32)
+	orphanPath := writeMediaBlob(t, orphan, []byte("órfão"))
+	setOldMtime(t, orphanPath)
+
+	// Efeito observável do purge: log de auditoria além da retenção.
+	var expiredID string
+	if err := storage.GetDB().QueryRowContext(testCtx(),
+		"INSERT INTO audit_logs (actor_username, action, entity_type, created_at) "+
+			"VALUES ('run_maintenance', 'test.run_maintenance', 'user', now() - interval '100 days') RETURNING id",
+	).Scan(&expiredID); err != nil {
+		t.Fatalf("falha ao inserir log expirado: %v", err)
+	}
+
+	logExists := func() (bool, error) {
+		var exists bool
+		err := storage.GetDB().QueryRowContext(testCtx(),
+			"SELECT EXISTS (SELECT 1 FROM audit_logs WHERE id = $1)", expiredID,
+		).Scan(&exists)
+		return exists, err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunMaintenance(ctx, &config.Config{LogDuration: 90 * 24 * time.Hour})
+	}()
+
+	// Os jobs devem rodar imediatamente (não após 12h): espera os efeitos.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		_, statErr := os.Stat(orphanPath)
+		fileGone := errors.Is(statErr, os.ErrNotExist)
+		exists, err := logExists()
+		if err != nil {
+			t.Fatalf("falha ao consultar log: %v", err)
+		}
+		if fileGone && !exists {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if _, err := os.Stat(orphanPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("arquivo órfão deveria ter sido removido no run inicial (stat err = %v)", err)
+	}
+	exists, err := logExists()
+	if err != nil {
+		t.Fatalf("falha ao consultar log: %v", err)
+	}
+	if exists {
+		t.Errorf("log expirado deveria ter sido removido no run inicial")
+	}
+
+	// O cancelamento deve parar o scheduler.
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Errorf("RunMaintenance não retornou após o cancelamento do contexto")
 	}
 }
