@@ -189,6 +189,13 @@ func RegisterSearchRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware)
 }
 
+// RegisterAdminRoutes registra as rotas administrativas.
+func RegisterAdminRoutes(e *echo.Echo, cfg *config.Config) {
+	e.GET("/admin/audit-logs", func(c echo.Context) error {
+		return ListAuditLogsHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware, middleware.RequireManageServer())
+}
+
 // RegisterWebSocketRoutes registra a rota do WebSocket.
 // Usa o mesmo cookie Auth da API REST: o JWT é validado pelo
 // JWTMiddleware durante o handshake, antes do upgrade da conexão.

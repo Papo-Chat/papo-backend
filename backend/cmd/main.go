@@ -62,6 +62,9 @@ func main() {
 	e.Use(echoMiddleware.Recover())
 	e.Use(echoMiddleware.RequestID())
 	e.Use(middleware.RequestIDMiddleware)
+	// Injeta IP real e User-Agent no request context para a auditoria (a
+	// camada de service só recebe o request context, sem o echo.Context).
+	e.Use(middleware.AuditContext)
 	// Rate limit global por IP em todos os endpoints (inclui o handshake
 	// WebSocket em GET /ws). As rotas de auth mantêm um limite próprio mais
 	// restrito, aplicado por cima deste.
@@ -79,6 +82,7 @@ func main() {
 	handlers.RegisterEmojiRoutes(e, cfg)
 	handlers.RegisterRoleRoutes(e, cfg)
 	handlers.RegisterSearchRoutes(e, cfg)
+	handlers.RegisterAdminRoutes(e, cfg)
 	handlers.RegisterWebSocketRoutes(e, cfg)
 
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)

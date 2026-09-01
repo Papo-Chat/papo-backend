@@ -133,13 +133,20 @@ type updateServerRequest struct {
 // Permissão: dono do servidor ou role `manage_server`
 // (middleware RequireManageServer).
 func UpdateServerHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
 	var req updateServerRequest
 	if err := c.Bind(&req); err != nil {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	switch err := services.UpdateServer(c.Request().Context(), req.Name, req.IconBlob, req.IconFormat, req.Public, req.Password); {
+	switch err := services.UpdateServer(c.Request().Context(), userID, req.Name, req.IconBlob, req.IconFormat, req.Public, req.Password); {
 	case errors.Is(err, services.ErrServerNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "servidor não encontrado")

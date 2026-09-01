@@ -123,6 +123,17 @@ func CreateEmoji(ctx context.Context, name, format, imageBlob, createdBy string)
 	emoji.ImageBlob = decoded
 	emoji.Format = mimeToFormat(emoji.MimeType)
 
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    createdBy,
+		Action:     ActionEmojiCreate,
+		EntityType: EntityEmoji,
+		EntityID:   &emoji.ID,
+		Metadata: map[string]any{
+			"name":   name,
+			"format": upperFormat,
+		},
+	})
+
 	return emoji, nil
 }
 
@@ -147,21 +158,30 @@ func DeleteEmoji(ctx context.Context, emojiID, userID string) error {
 		return err
 	}
 
-	if emoji.CreatedBy != nil && *emoji.CreatedBy == userID {
-		return deleteEmoji(ctx, emojiID)
+	if emoji.CreatedBy == nil || *emoji.CreatedBy != userID {
+		allowed, err := userHasRolePermission(ctx, userID, func(p models.RolePermissions) bool {
+			return p.ManageServer
+		})
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return ErrPermissionDenied
+		}
 	}
 
-	allowed, err := userHasRolePermission(ctx, userID, func(p models.RolePermissions) bool {
-		return p.ManageServer
-	})
-	if err != nil {
+	if err := deleteEmoji(ctx, emojiID); err != nil {
 		return err
 	}
-	if !allowed {
-		return ErrPermissionDenied
-	}
 
-	return deleteEmoji(ctx, emojiID)
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    userID,
+		Action:     ActionEmojiDelete,
+		EntityType: EntityEmoji,
+		EntityID:   &emojiID,
+	})
+
+	return nil
 }
 
 // deleteEmoji exclui o emoji e mapeia o erro de registro inexistente.

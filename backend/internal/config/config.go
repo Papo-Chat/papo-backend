@@ -46,6 +46,10 @@ type Config struct {
 	PreviewFetchRateUser  int
 	PreviewTitleMax       int
 	PreviewDescriptionMax int
+
+	// Retenção dos logs de auditoria (dias). A exclusão por retenção é feita
+	// por um cron futuro; este valor apenas define o período de retenção.
+	LogDuration time.Duration
 }
 
 var (
@@ -95,6 +99,8 @@ func LoadConfig() *Config {
 		PreviewFetchRateUser:  getEnvInt("PREVIEW_FETCH_RATE_PER_USER", 10),
 		PreviewTitleMax:       getEnvInt("PREVIEW_TITLE_MAX", 200),
 		PreviewDescriptionMax: getEnvInt("PREVIEW_DESCRIPTION_MAX", 300),
+
+		LogDuration: time.Duration(getEnvInt("LOG_DURATION", 90)) * 24 * time.Hour,
 	}
 
 	return configInstance

@@ -65,7 +65,19 @@ func UpdateSettings(ctx context.Context, userID string, config models.UserConfig
 		return models.UserSettings{}, err
 	}
 
-	return storage.UpsertUserSettings(ctx, userID, config)
+	settings, err := storage.UpsertUserSettings(ctx, userID, config)
+	if err != nil {
+		return models.UserSettings{}, err
+	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    userID,
+		Action:     ActionUserUpdateSettings,
+		EntityType: EntityUser,
+		EntityID:   &userID,
+	})
+
+	return settings, nil
 }
 
 // validateUserConfig confere os valores permitidos do user_config (README):
@@ -234,6 +246,18 @@ func UpdateUser(ctx context.Context, userID, nickname, status, description strin
 		return fmt.Errorf("falha ao atualizar o perfil do usuário: %w", err)
 	}
 
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    userID,
+		Action:     ActionUserUpdateProfile,
+		EntityType: EntityUser,
+		EntityID:   &userID,
+		Metadata: map[string]any{
+			"nickname":    nickname,
+			"status":      status,
+			"description": description,
+		},
+	})
+
 	return nil
 }
 
@@ -255,7 +279,16 @@ func UpdateAvatar(ctx context.Context, userID, avatar, avatarFormat string) erro
 	}
 
 	if avatar == "" && avatarFormat == "" {
-		return storage.UpdateUserAvatar(ctx, nil, userID)
+		if err := storage.UpdateUserAvatar(ctx, nil, userID); err != nil {
+			return err
+		}
+		RecordAudit(ctx, AuditEntry{
+			ActorID:    userID,
+			Action:     ActionUserUpdateAvatar,
+			EntityType: EntityUser,
+			EntityID:   &userID,
+		})
+		return nil
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(avatar)
@@ -285,6 +318,13 @@ func UpdateAvatar(ctx context.Context, userID, avatar, avatarFormat string) erro
 		return fmt.Errorf("falha ao atualizar o avatar do usuário: %w", err)
 	}
 
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    userID,
+		Action:     ActionUserUpdateAvatar,
+		EntityType: EntityUser,
+		EntityID:   &userID,
+	})
+
 	return nil
 }
 
@@ -306,7 +346,16 @@ func UpdateBanner(ctx context.Context, userID, banner, bannerFormat string) erro
 	}
 
 	if banner == "" && bannerFormat == "" {
-		return storage.UpdateUserBanner(ctx, nil, userID)
+		if err := storage.UpdateUserBanner(ctx, nil, userID); err != nil {
+			return err
+		}
+		RecordAudit(ctx, AuditEntry{
+			ActorID:    userID,
+			Action:     ActionUserUpdateBanner,
+			EntityType: EntityUser,
+			EntityID:   &userID,
+		})
+		return nil
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(banner)
@@ -335,6 +384,13 @@ func UpdateBanner(ctx context.Context, userID, banner, bannerFormat string) erro
 	if err := storage.UpdateUserBanner(ctx, &sha, userID); err != nil {
 		return fmt.Errorf("falha ao atualizar o banner do usuário: %w", err)
 	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    userID,
+		Action:     ActionUserUpdateBanner,
+		EntityType: EntityUser,
+		EntityID:   &userID,
+	})
 
 	return nil
 }
@@ -365,6 +421,18 @@ func UpdateStatus(ctx context.Context, userID string, status *string) error {
 		return fmt.Errorf("falha ao atualizar o status do usuário: %w", err)
 	}
 
+	statusMeta := map[string]any{}
+	if status != nil {
+		statusMeta["status"] = *status
+	}
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    userID,
+		Action:     ActionUserUpdateStatus,
+		EntityType: EntityUser,
+		EntityID:   &userID,
+		Metadata:   statusMeta,
+	})
+
 	return nil
 }
 
@@ -373,7 +441,7 @@ func UpdateStatus(ctx context.Context, userID string, status *string) error {
 // (README). A autorização (dono de servidor ou manage_server) é feita no
 // middleware antes de chegar aqui.
 // Retorna ErrUserNotFound quando o usuário não existe.
-func BanUser(ctx context.Context, targetID string, banState bool) error {
+func BanUser(ctx context.Context, actorID, targetID string, banState bool) error {
 	if targetID == "" {
 		return ErrUserNotFound
 	}
@@ -392,6 +460,19 @@ func BanUser(ctx context.Context, targetID string, banState bool) error {
 		return ErrServerOwner
 	}
 
+	action := ActionUserBan
+	if !banState {
+		action = ActionUserUnban
+	}
+	RecordAudit(ctx, AuditEntry{
+		ActorID:      actorID,
+		Action:       action,
+		EntityType:   EntityUser,
+		EntityID:     &targetID,
+		TargetUserID: &targetID,
+		Metadata:     map[string]any{"banned": banState},
+	})
+
 	return nil
 }
 
@@ -399,7 +480,7 @@ func BanUser(ctx context.Context, targetID string, banState bool) error {
 // (users.reset_password = TRUE). A autorização (usuário agindo sobre si mesmo
 // ou dono de um servidor) é feita no middleware RequireSelfOrServerOwner antes
 // de chegar aqui. Retorna ErrUserNotFound quando o usuário não existe.
-func ResetUserPassword(ctx context.Context, targetID string) error {
+func ResetUserPassword(ctx context.Context, actorID, targetID string) error {
 	if targetID == "" {
 		return ErrUserNotFound
 	}
@@ -410,6 +491,14 @@ func ResetUserPassword(ctx context.Context, targetID string) error {
 		}
 		return fmt.Errorf("falha ao marcar o usuário para reset de senha: %w", err)
 	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:      actorID,
+		Action:       ActionUserResetPassword,
+		EntityType:   EntityUser,
+		EntityID:     &targetID,
+		TargetUserID: &targetID,
+	})
 
 	return nil
 }
@@ -449,6 +538,13 @@ func ChangePassword(ctx context.Context, userID, password string) error {
 		}
 		return fmt.Errorf("falha ao atualizar a senha do usuário: %w", err)
 	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    userID,
+		Action:     ActionUserChangePassword,
+		EntityType: EntityUser,
+		EntityID:   &userID,
+	})
 
 	return nil
 }

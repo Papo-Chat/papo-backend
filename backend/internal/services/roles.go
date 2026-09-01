@@ -31,7 +31,7 @@ func ListRoles(ctx context.Context) ([]models.Role, error) {
 // Retorna ErrInvalidInput quando o nome está vazio ou acima de 32 caracteres ou
 // quando a cor não é um hexadecimal #RRGGBB e ErrRoleNameTaken quando o nome
 // já está em uso.
-func CreateRole(ctx context.Context, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
+func CreateRole(ctx context.Context, actorID, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
 	if name == "" || utf8.RuneCountInString(name) > maxRoleNameLength {
 		return models.Role{}, ErrInvalidInput
 	}
@@ -48,6 +48,14 @@ func CreateRole(ctx context.Context, name string, color *string, permissions mod
 		return models.Role{}, err
 	}
 
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    actorID,
+		Action:     ActionRoleCreate,
+		EntityType: EntityRole,
+		EntityID:   &role.ID,
+		Metadata:   map[string]any{"name": name},
+	})
+
 	return role, nil
 }
 
@@ -56,7 +64,7 @@ func CreateRole(ctx context.Context, name string, color *string, permissions mod
 // Retorna ErrRoleNotFound quando a role não existe, ErrInvalidInput quando o
 // nome está vazio ou acima de 32 caracteres ou quando a cor não é um
 // hexadecimal #RRGGBB e ErrRoleNameTaken quando o nome já está em uso.
-func UpdateRole(ctx context.Context, roleID, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
+func UpdateRole(ctx context.Context, actorID, roleID, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
 	if roleID == "" {
 		return models.Role{}, ErrRoleNotFound
 	}
@@ -84,6 +92,14 @@ func UpdateRole(ctx context.Context, roleID, name string, color *string, permiss
 		return models.Role{}, err
 	}
 
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    actorID,
+		Action:     ActionRoleUpdate,
+		EntityType: EntityRole,
+		EntityID:   &roleID,
+		Metadata:   map[string]any{"name": name},
+	})
+
 	return updated, nil
 }
 
@@ -91,7 +107,7 @@ func UpdateRole(ctx context.Context, roleID, name string, color *string, permiss
 // a role, as atribuições dos usuários (ON DELETE CASCADE) e as entradas das
 // permissões dos canais, de forma atômica.
 // Retorna ErrRoleNotFound quando a role não existe.
-func DeleteRole(ctx context.Context, roleID string) error {
+func DeleteRole(ctx context.Context, actorID, roleID string) error {
 	if roleID == "" {
 		return ErrRoleNotFound
 	}
@@ -103,6 +119,13 @@ func DeleteRole(ctx context.Context, roleID string) error {
 		return err
 	}
 
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    actorID,
+		Action:     ActionRoleDelete,
+		EntityType: EntityRole,
+		EntityID:   &roleID,
+	})
+
 	return nil
 }
 
@@ -110,7 +133,7 @@ func DeleteRole(ctx context.Context, roleID string) error {
 // Atribuir uma role já atribuída é idempotente: retorna a atribuição existente.
 // Retorna ErrUserNotFound quando o usuário não existe e ErrRoleNotFound quando
 // a role não existe.
-func AssignUserRole(ctx context.Context, userID, roleID string) (models.UserRole, error) {
+func AssignUserRole(ctx context.Context, actorID, userID, roleID string) (models.UserRole, error) {
 	if userID == "" {
 		return models.UserRole{}, ErrUserNotFound
 	}
@@ -134,11 +157,23 @@ func AssignUserRole(ctx context.Context, userID, roleID string) (models.UserRole
 
 	userRole, err := storage.AssignUserRole(ctx, userID, roleID)
 	if errors.Is(err, storage.ErrUniqueViolation) {
-		return storage.GetUserRole(ctx, userID, roleID)
+		// Atribuição já existente (idempotente): retorna a atribuição atual.
+		userRole, err = storage.GetUserRole(ctx, userID, roleID)
+		if err != nil {
+			return models.UserRole{}, err
+		}
 	}
 	if err != nil {
 		return models.UserRole{}, err
 	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:      actorID,
+		Action:       ActionUserRoleAssign,
+		EntityType:   EntityUserRole,
+		TargetUserID: &userID,
+		Metadata:     map[string]any{"role_id": roleID},
+	})
 
 	return userRole, nil
 }
@@ -147,7 +182,7 @@ func AssignUserRole(ctx context.Context, userID, roleID string) (models.UserRole
 // (README: DELETE /users/:user_id/roles/:role_id).
 // Retorna ErrUserNotFound quando o usuário não existe, ErrRoleNotFound quando a
 // role não existe e ErrUserRoleNotFound quando o usuário não possui a role.
-func RemoveUserRole(ctx context.Context, userID, roleID string) error {
+func RemoveUserRole(ctx context.Context, actorID, userID, roleID string) error {
 	if userID == "" {
 		return ErrUserNotFound
 	}
@@ -175,6 +210,14 @@ func RemoveUserRole(ctx context.Context, userID, roleID string) error {
 		}
 		return err
 	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:      actorID,
+		Action:       ActionUserRoleRemove,
+		EntityType:   EntityUserRole,
+		TargetUserID: &userID,
+		Metadata:     map[string]any{"role_id": roleID},
+	})
 
 	return nil
 }

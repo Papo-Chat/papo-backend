@@ -255,6 +255,26 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 		setAttachmentThumbnails(&messageAttachments, thumbnails)
 	}
 
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    authorID,
+		Action:     ActionMessageCreate,
+		EntityType: EntityMessage,
+		EntityID:   &message.ID,
+		Metadata:   map[string]any{"channel_id": channelID},
+	})
+	for _, att := range createdAttachments {
+		RecordAudit(ctx, AuditEntry{
+			ActorID:    authorID,
+			Action:     ActionMediaUpload,
+			EntityType: EntityAttachment,
+			EntityID:   &att.ID,
+			Metadata: map[string]any{
+				"filename":  att.OriginalFileName,
+				"mime_type": att.MimeType,
+			},
+		})
+	}
+
 	return models.MessageWithAttachment{
 		Message:     message,
 		Attachments: messageAttachments,
@@ -428,6 +448,14 @@ func EditMessage(ctx context.Context, messageID, authorID, content string) (mode
 	// processados em background (ProcessEditedMessagePreviews, chamado por
 	// uma goroutine no handler) e as mudanças chegam via WS new_preview /
 	// remove_preview. A resposta retorna Previews nil.
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    authorID,
+		Action:     ActionMessageEdit,
+		EntityType: EntityMessage,
+		EntityID:   &updated.ID,
+		Metadata:   map[string]any{"channel_id": updated.ChannelID},
+	})
+
 	return models.MessageWithAttachment{
 		Message:     updated,
 		Attachments: messageAttachments,
@@ -474,29 +502,39 @@ func DeleteMessage(ctx context.Context, messageID, authorID string) (string, err
 		return "", err
 	}
 
-	if message.AuthorID != nil && *message.AuthorID == authorID {
-		return message.ChannelID, deleteMessage(ctx, messageID)
+	if message.AuthorID == nil || *message.AuthorID != authorID {
+		channel, err := storage.GetChannelByID(ctx, message.ChannelID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return "", ErrChannelNotFound
+		}
+		if err != nil {
+			return "", err
+		}
+
+		allowed, err := userHasChannelPermission(ctx, channel, authorID, false, func(p models.ChannelPermission) bool {
+			return p.DeleteMessages
+		})
+		if err != nil {
+			return "", err
+		}
+		if !allowed {
+			return "", ErrPermissionDenied
+		}
 	}
 
-	channel, err := storage.GetChannelByID(ctx, message.ChannelID)
-	if errors.Is(err, storage.ErrNotFound) {
-		return "", ErrChannelNotFound
-	}
-	if err != nil {
+	if err := deleteMessage(ctx, messageID); err != nil {
 		return "", err
 	}
 
-	allowed, err := userHasChannelPermission(ctx, channel, authorID, false, func(p models.ChannelPermission) bool {
-		return p.DeleteMessages
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    authorID,
+		Action:     ActionMessageDelete,
+		EntityType: EntityMessage,
+		EntityID:   &messageID,
+		Metadata:   map[string]any{"channel_id": message.ChannelID},
 	})
-	if err != nil {
-		return "", err
-	}
-	if !allowed {
-		return "", ErrPermissionDenied
-	}
 
-	return message.ChannelID, deleteMessage(ctx, messageID)
+	return message.ChannelID, nil
 }
 
 // deleteMessage exclui a mensagem e mapeia o erro de registro inexistente.

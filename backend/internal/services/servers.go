@@ -130,6 +130,19 @@ func CreateServerWithIcon(ctx context.Context, name, icon, iconFormat string, pu
 		return models.Server{}, err
 	}
 
+	if ownerID != nil {
+		RecordAudit(ctx, AuditEntry{
+			ActorID:    *ownerID,
+			Action:     ActionServerCreate,
+			EntityType: EntityServer,
+			EntityID:   &server.ID,
+			Metadata: map[string]any{
+				"name":   name,
+				"public": public,
+			},
+		})
+	}
+
 	return server, nil
 }
 
@@ -160,7 +173,7 @@ func serverPasswordHash(isPublic bool, password string) (*string, error) {
 // quando o nome está vazio ou acima de 32 caracteres, quando o ícone não é
 // um GIF, JPEG ou PNG válido de até 2MB com dimensões de até 512px ou quando
 // o servidor privado não tem senha.
-func UpdateServer(ctx context.Context, name, icon, iconFormat string, public *bool, password *string) error {
+func UpdateServer(ctx context.Context, actorID, name, icon, iconFormat string, public *bool, password *string) error {
 	if name == "" || utf8.RuneCountInString(name) > maxServerNameLength {
 		return ErrInvalidInput
 	}
@@ -219,7 +232,6 @@ func UpdateServer(ctx context.Context, name, icon, iconFormat string, public *bo
 		}, passwordHash); err != nil {
 			return fmt.Errorf("falha ao atualizar o servidor: %w", err)
 		}
-		return nil
 	} else {
 		if _, err := storage.UpdateServer(ctx, current.ID, models.Server{
 			Name:         name,
@@ -229,6 +241,17 @@ func UpdateServer(ctx context.Context, name, icon, iconFormat string, public *bo
 			return fmt.Errorf("falha ao atualizar o servidor: %w", err)
 		}
 	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    actorID,
+		Action:     ActionServerUpdate,
+		EntityType: EntityServer,
+		EntityID:   &current.ID,
+		Metadata: map[string]any{
+			"name":   name,
+			"public": isPublic,
+		},
+	})
 
 	return nil
 }

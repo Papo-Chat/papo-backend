@@ -50,7 +50,7 @@ func ListChannels(ctx context.Context) ([]models.ChannelSummary, error) {
 // ou quando um canal category recebe topic, ErrChannelLimitReached quando o
 // limite de 500 canais já foi atingido e ErrChannelNameTaken quando o nome
 // já está em uso.
-func CreateChannel(ctx context.Context, name, channelType, topic string) (models.ChannelSummary, error) {
+func CreateChannel(ctx context.Context, actorID, name, channelType, topic string) (models.ChannelSummary, error) {
 	if channelType == "" {
 		channelType = "text"
 	}
@@ -83,6 +83,17 @@ func CreateChannel(ctx context.Context, name, channelType, topic string) (models
 		return models.ChannelSummary{}, err
 	}
 
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    actorID,
+		Action:     ActionChannelCreate,
+		EntityType: EntityChannel,
+		EntityID:   &channel.ID,
+		Metadata: map[string]any{
+			"name": name,
+			"type": channelType,
+		},
+	})
+
 	// Reconsulta a visão summary para que a resposta da criação tenha a
 	// mesma forma da listagem (permissões expandidas e last_message).
 	return storage.GetChannelSummary(ctx, channel.ID)
@@ -97,7 +108,7 @@ func CreateChannel(ctx context.Context, name, channelType, topic string) (models
 // caracteres, quando o topic excede 512 caracteres ou quando um canal
 // category recebe topic, ErrChannelNotFound quando o canal não existe e
 // ErrChannelNameTaken quando o nome já está em uso.
-func UpdateChannel(ctx context.Context, id, name string, topic *string) (models.ChannelSummary, error) {
+func UpdateChannel(ctx context.Context, actorID, id, name string, topic *string) (models.ChannelSummary, error) {
 	if id == "" {
 		return models.ChannelSummary{}, ErrChannelNotFound
 	}
@@ -132,6 +143,18 @@ func UpdateChannel(ctx context.Context, id, name string, topic *string) (models.
 		return models.ChannelSummary{}, err
 	}
 
+	channelMeta := map[string]any{"name": name}
+	if topic != nil {
+		channelMeta["topic"] = *topic
+	}
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    actorID,
+		Action:     ActionChannelUpdate,
+		EntityType: EntityChannel,
+		EntityID:   &id,
+		Metadata:   channelMeta,
+	})
+
 	// Reconsulta a visão summary para que a resposta da edição tenha a
 	// mesma forma da listagem (permissões expandidas e last_message).
 	return storage.GetChannelSummary(ctx, id)
@@ -143,7 +166,7 @@ func UpdateChannel(ctx context.Context, id, name string, topic *string) (models.
 // Retorna ErrInvalidInput quando as posições são inválidas,
 // ErrChannelNotFound quando o canal não existe e
 // ErrChannelPositionConflict quando o canal não está em old_position.
-func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, newPosition int) (models.ChannelSummary, error) {
+func ChangeChannelPosition(ctx context.Context, actorID, channelID string, oldPosition, newPosition int) (models.ChannelSummary, error) {
 	if channelID == "" {
 		return models.ChannelSummary{}, ErrChannelNotFound
 	}
@@ -163,6 +186,17 @@ func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, n
 		return models.ChannelSummary{}, err
 	}
 
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    actorID,
+		Action:     ActionChannelMovePosition,
+		EntityType: EntityChannel,
+		EntityID:   &channel.ID,
+		Metadata: map[string]any{
+			"old_position": oldPosition,
+			"new_position": newPosition,
+		},
+	})
+
 	// Reconsulta a visão summary para que a resposta tenha a mesma forma da
 	// listagem (permissões expandidas e last_message).
 	return storage.GetChannelSummary(ctx, channel.ID)
@@ -170,7 +204,7 @@ func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, n
 
 // DeleteChannel exclui um canal pelo id (README: 204 when successful).
 // Retorna ErrChannelNotFound quando o canal não existe.
-func DeleteChannel(ctx context.Context, id string) error {
+func DeleteChannel(ctx context.Context, actorID, id string) error {
 	if id == "" {
 		return ErrChannelNotFound
 	}
@@ -188,6 +222,13 @@ func DeleteChannel(ctx context.Context, id string) error {
 		}
 		return err
 	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    actorID,
+		Action:     ActionChannelDelete,
+		EntityType: EntityChannel,
+		EntityID:   &id,
+	})
 
 	return nil
 }
@@ -311,7 +352,7 @@ func ChannelReaders(ctx context.Context, channelID string, userIDs []string) (ma
 // permissões resultantes.
 // Retorna ErrChannelNotFound quando o canal não existe e ErrRoleNotFound
 // quando a role não existe.
-func UpdateChannelPermissions(ctx context.Context, channelID, roleID string, permission models.ChannelPermission) (models.ChannelPermission, error) {
+func UpdateChannelPermissions(ctx context.Context, actorID, channelID, roleID string, permission models.ChannelPermission) (models.ChannelPermission, error) {
 	if channelID == "" || roleID == "" {
 		if channelID == "" {
 			return models.ChannelPermission{}, ErrChannelNotFound
@@ -336,6 +377,14 @@ func UpdateChannelPermissions(ctx context.Context, channelID, roleID string, per
 	if _, err := storage.UpdateChannelPermissions(ctx, channelID, roleID, permission); err != nil {
 		return models.ChannelPermission{}, err
 	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    actorID,
+		Action:     ActionChannelPermUpdate,
+		EntityType: EntityChannel,
+		EntityID:   &channelID,
+		Metadata:   map[string]any{"role_id": roleID},
+	})
 
 	return permission, nil
 }

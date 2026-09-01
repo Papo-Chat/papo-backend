@@ -448,7 +448,8 @@ type banUserRequest struct {
 // Permissão: dono de algum servidor ou role `manage_server`
 // (middleware RequireServerOwnerOrManageServer). O id da URL é o autoritativo.
 func BanUserHandler(baseURL string, c echo.Context) error {
-	if _, ok := c.Get(middleware.UserIDContextKey).(string); !ok {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
 		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
 			"unauthorized", "Token inválido ou expirado",
 			"token de autenticação ausente, inválido ou expirado")
@@ -470,7 +471,7 @@ func BanUserHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "campo 'ban_state' é obrigatório")
 	}
 
-	switch err := services.BanUser(c.Request().Context(), targetID, *req.BanState); {
+	switch err := services.BanUser(c.Request().Context(), userID, targetID, *req.BanState); {
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "usuário não encontrado")
@@ -493,7 +494,8 @@ func BanUserHandler(baseURL string, c echo.Context) error {
 // Permissão: usuário agindo sobre si mesmo ou dono de um servidor
 // (middleware RequireSelfOrServerOwner). O id da URL é o autoritativo.
 func ResetUserHandler(baseURL string, c echo.Context) error {
-	if _, ok := c.Get(middleware.UserIDContextKey).(string); !ok {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
 		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
 			"unauthorized", "Token inválido ou expirado",
 			"token de autenticação ausente, inválido ou expirado")
@@ -505,7 +507,7 @@ func ResetUserHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "user_id ausente")
 	}
 
-	switch err := services.ResetUserPassword(c.Request().Context(), targetID); {
+	switch err := services.ResetUserPassword(c.Request().Context(), userID, targetID); {
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "usuário não encontrado")

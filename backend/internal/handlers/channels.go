@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"papo/internal/middleware"
 	"papo/internal/models"
 	"papo/internal/services"
 	"papo/internal/utils"
@@ -37,13 +38,20 @@ type createChannelRequest struct {
 
 // CreateChannelHandler implementa POST /channels.
 func CreateChannelHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
 	var req createChannelRequest
 	if err := c.Bind(&req); err != nil {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	channel, err := services.CreateChannel(c.Request().Context(), req.Name, req.Type, req.Topic)
+	channel, err := services.CreateChannel(c.Request().Context(), userID, req.Name, req.Type, req.Topic)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -86,6 +94,13 @@ type updateChannelRequest struct {
 // Permissão: dono do servidor ou role `manage_channels`
 // (middleware RequireManageChannels).
 func UpdateChannelHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
 	channelID := c.Param("channel_id")
 	if channelID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -98,7 +113,7 @@ func UpdateChannelHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	channel, err := services.UpdateChannel(c.Request().Context(), channelID, req.Name, req.Topic)
+	channel, err := services.UpdateChannel(c.Request().Context(), userID, channelID, req.Name, req.Topic)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -132,13 +147,20 @@ func UpdateChannelHandler(baseURL string, c echo.Context) error {
 
 // DeleteChannelHandler implementa DELETE /channels/:channel_id.
 func DeleteChannelHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
 	channelID := c.Param("channel_id")
 	if channelID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "channel_id ausente")
 	}
 
-	err := services.DeleteChannel(c.Request().Context(), channelID)
+	err := services.DeleteChannel(c.Request().Context(), userID, channelID)
 	switch {
 	case errors.Is(err, services.ErrChannelNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
@@ -204,6 +226,13 @@ type updateChannelPermissionsResponse struct {
 // UpdateChannelPermissionsHandler implementa
 // PUT /channels/:channel_id/permissions/:role_id.
 func UpdateChannelPermissionsHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
 	channelID := c.Param("channel_id")
 	if channelID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -221,7 +250,7 @@ func UpdateChannelPermissionsHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	permissions, err := services.UpdateChannelPermissions(c.Request().Context(), channelID, roleID, req.Permissions)
+	permissions, err := services.UpdateChannelPermissions(c.Request().Context(), userID, channelID, roleID, req.Permissions)
 	switch {
 	case errors.Is(err, services.ErrChannelNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
@@ -253,6 +282,13 @@ type changeChannelPositionRequest struct {
 // Permissão: dono do servidor ou role `manage_channels`
 // (middleware RequireManageChannels).
 func ChangeChannelPositionHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
 	channelID := c.Param("channel_id")
 	if channelID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -265,7 +301,7 @@ func ChangeChannelPositionHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	channel, err := services.ChangeChannelPosition(c.Request().Context(), channelID, req.OldPosition, req.NewPosition)
+	channel, err := services.ChangeChannelPosition(c.Request().Context(), userID, channelID, req.OldPosition, req.NewPosition)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,

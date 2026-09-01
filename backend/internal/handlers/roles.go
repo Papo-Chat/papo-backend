@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"papo/internal/middleware"
 	"papo/internal/models"
 	"papo/internal/services"
 	"papo/internal/utils"
@@ -39,13 +40,20 @@ type createRoleRequest struct {
 // Permissão: dono do servidor ou role `manage_roles`
 // (middleware RequireManageRoles).
 func CreateRoleHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
 	var req createRoleRequest
 	if err := c.Bind(&req); err != nil {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	role, err := services.CreateRole(c.Request().Context(), req.Name, req.Color, req.Permissions)
+	role, err := services.CreateRole(c.Request().Context(), userID, req.Name, req.Color, req.Permissions)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -75,6 +83,13 @@ type updateRoleRequest struct {
 // Permissão: dono do servidor ou role `manage_roles`
 // (middleware RequireManageRoles).
 func UpdateRoleHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
 	roleID := c.Param("role_id")
 	if roleID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -87,7 +102,7 @@ func UpdateRoleHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	role, err := services.UpdateRole(c.Request().Context(), roleID, req.Name, req.Color, req.Permissions)
+	role, err := services.UpdateRole(c.Request().Context(), userID, roleID, req.Name, req.Color, req.Permissions)
 	switch {
 	case errors.Is(err, services.ErrRoleNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
@@ -114,13 +129,20 @@ func UpdateRoleHandler(baseURL string, c echo.Context) error {
 // Permissão: dono do servidor ou role `manage_roles`
 // (middleware RequireManageRoles).
 func DeleteRoleHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
 	roleID := c.Param("role_id")
 	if roleID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "role_id ausente")
 	}
 
-	err := services.DeleteRole(c.Request().Context(), roleID)
+	err := services.DeleteRole(c.Request().Context(), userID, roleID)
 	switch {
 	case errors.Is(err, services.ErrRoleNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
@@ -143,6 +165,13 @@ type assignUserRoleRequest struct {
 // Permissão: dono do servidor ou role `manage_roles`
 // (middleware RequireManageRoles).
 func AssignUserRoleHandler(baseURL string, c echo.Context) error {
+	actorID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
 	userID := c.Param("user_id")
 	if userID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -155,7 +184,7 @@ func AssignUserRoleHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "role_id é obrigatório")
 	}
 
-	userRole, err := services.AssignUserRole(c.Request().Context(), userID, req.RoleID)
+	userRole, err := services.AssignUserRole(c.Request().Context(), actorID, userID, req.RoleID)
 	switch {
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
@@ -177,6 +206,13 @@ func AssignUserRoleHandler(baseURL string, c echo.Context) error {
 // Permissão: dono do servidor ou role `manage_roles`
 // (middleware RequireManageRoles).
 func RemoveUserRoleHandler(baseURL string, c echo.Context) error {
+	actorID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
 	userID := c.Param("user_id")
 	if userID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -188,7 +224,7 @@ func RemoveUserRoleHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "role_id ausente")
 	}
 
-	err := services.RemoveUserRole(c.Request().Context(), userID, roleID)
+	err := services.RemoveUserRole(c.Request().Context(), actorID, userID, roleID)
 	switch {
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,

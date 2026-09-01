@@ -61,6 +61,13 @@ func Register(ctx context.Context, username, password, ip string) (models.User, 
 		return models.User{}, err
 	}
 
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    user.ID,
+		Action:     ActionUserRegister,
+		EntityType: EntityUser,
+		EntityID:   &user.ID,
+	})
+
 	return user, nil
 }
 
