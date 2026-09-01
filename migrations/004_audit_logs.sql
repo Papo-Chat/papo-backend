@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     entity_id UUID,
     target_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
     metadata JSONB NOT NULL DEFAULT '{}',
-    ip_address INET,
+    ip_address TEXT,
     user_agent TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

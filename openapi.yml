@@ -26,6 +26,7 @@ tags:
   - name: Media
   - name: LinkPreviews
   - name: Search
+  - name: Admin
   - name: WebSocket
 
 security:
@@ -1419,6 +1420,75 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: Lista os logs de auditoria (Limite de 100 por requisição, use cursor com since + last_id para paginar)
+      description: |
+        Retorna os eventos auditáveis em ordem decrescente (mais recentes
+        primeiro). Requer a permissão `manage_server` (dono do servidor ou role
+        com a permissão). Os filtros opcionais podem ser combinados.
+      parameters:
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+          description: 'Filtra por ação (ex.: user.ban, message.delete, role.create)'
+        - name: actor_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Filtra por quem executou a ação
+        - name: entity_type
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filtra por tipo de entidade (user, server, channel, message, attachment, role, user_role, emoji)
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Timestamp ISO 8601 (created_at >= since)
+        - name: until
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Timestamp ISO 8601 (created_at <= until)
+        - name: last_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: ID do último log da página anterior (cursor exato usado com since)
+      responses:
+        '200':
+          description: Logs de auditoria
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogList'
+        '400':
+          description: Parâmetro inválido (since/until fora do formato ISO 8601)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /ws:
     get:
       tags: [WebSocket]
@@ -2411,3 +2481,42 @@ components:
         score:
           type: number
           format: double
+
+    AuditLogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        actor_username:
+          type: string
+          description: Snapshot do username do ator no momento da operação
+        action:
+          type: string
+          description: 'Ação auditável (ex.: user.ban, message.delete, role.create)'
+        entity_type:
+          type: string
+          description: Tipo da entidade afetada (user, server, channel, message, attachment, role, user_role, emoji)
+        target_user_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Usuário alvo da ação, quando difere do ator
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Dados específicos da ação
+        created_at:
+          type: string
+          format: date-time
+
+    AuditLogList:
+      type: object
+      properties:
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogEntry'
+        has_more:
+          type: boolean
+          description: Indica se existe próxima página (cursor since + last_id)

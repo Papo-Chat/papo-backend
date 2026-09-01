@@ -114,9 +114,11 @@ func newApp() *echo.Echo {
 	e := echo.New()
 	e.Use(echoMiddleware.RequestID())
 	e.Use(echoMiddleware.Recover())
+	e.Use(middleware.AuditContext)
 
 	cfg := config.LoadConfig()
 	RegisterAuthRoutes(e, cfg)
+	RegisterAdminRoutes(e, cfg)
 	RegisterUserRoutes(e, cfg)
 	RegisterServerRoutes(e, cfg)
 	RegisterChannelRoutes(e, cfg)
@@ -127,6 +129,7 @@ func newApp() *echo.Echo {
 	RegisterEmojiRoutes(e, cfg)
 	RegisterRoleRoutes(e, cfg)
 	RegisterSearchRoutes(e, cfg)
+	RegisterWebSocketRoutes(e, cfg)
 	return e
 }
 
@@ -377,6 +380,8 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		{http.MethodPost, "/users/" + userID + "/roles"},
 		{http.MethodDelete, "/users/" + userID + "/roles/00000000-0000-4000-8000-000000000000"},
 		{http.MethodPost, "/search"},
+		{http.MethodGet, "/admin/audit-logs"},
+		{http.MethodGet, "/ws"},
 	}
 
 	for _, tc := range cases {
@@ -6500,6 +6505,7 @@ func TestCreateChannelHandlerSuccess(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{"name": channelName})
 	c := newContext(t, http.MethodPost, "/channels", body, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := CreateChannelHandler(testBaseURL, c); err != nil {
@@ -6547,6 +6553,7 @@ func TestCreateChannelHandlerSuccess(t *testing.T) {
 
 func TestCreateChannelHandlerInvalidJSON(t *testing.T) {
 	c := newContext(t, http.MethodPost, "/channels", []byte("{invalido"), "")
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := CreateChannelHandler(testBaseURL, c); err != nil {
@@ -6564,6 +6571,7 @@ func TestCreateChannelHandlerMissingName(t *testing.T) {
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
 	c := newContext(t, http.MethodPost, "/channels", nil, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := CreateChannelHandler(testBaseURL, c); err != nil {
@@ -6588,6 +6596,7 @@ func TestCreateChannelHandlerNameTaken(t *testing.T) {
 	// o nome é UNIQUE global na tabela channels
 	body, _ := json.Marshal(map[string]string{"name": channelName})
 	c := newContext(t, http.MethodPost, "/channels", body, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := CreateChannelHandler(testBaseURL, c); err != nil {
@@ -6615,6 +6624,7 @@ func TestUpdateChannelHandlerSuccess(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+channel.ID, body, "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(channel.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateChannelHandler(testBaseURL, c); err != nil {
@@ -6661,6 +6671,7 @@ func TestUpdateChannelHandlerMissingParam(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/", []byte(`{"name":"canal"}`), "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues("")
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := UpdateChannelHandler(testBaseURL, c); err != nil {
@@ -6684,6 +6695,7 @@ func TestUpdateChannelHandlerInvalidJSON(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+channel.ID, []byte("{invalido"), "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(channel.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateChannelHandler(testBaseURL, c); err != nil {
@@ -6708,6 +6720,7 @@ func TestUpdateChannelHandlerMissingName(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+channel.ID, body, "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(channel.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateChannelHandler(testBaseURL, c); err != nil {
@@ -6721,6 +6734,7 @@ func TestUpdateChannelHandlerNotFound(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+randUUID(), body, "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(randUUID())
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := UpdateChannelHandler(testBaseURL, c); err != nil {
@@ -6749,6 +6763,7 @@ func TestUpdateChannelHandlerNameTaken(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+channel.ID, body, "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(channel.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateChannelHandler(testBaseURL, c); err != nil {
@@ -6783,6 +6798,7 @@ func TestDeleteChannelHandlerSuccess(t *testing.T) {
 	c := newContext(t, http.MethodDelete, "/channels/"+channel.ID, nil, "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(channel.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := DeleteChannelHandler(testBaseURL, c); err != nil {
@@ -6805,6 +6821,7 @@ func TestDeleteChannelHandlerMissingParam(t *testing.T) {
 	c := newContext(t, http.MethodDelete, "/channels/", nil, "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues("")
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := DeleteChannelHandler(testBaseURL, c); err != nil {
@@ -6817,6 +6834,7 @@ func TestDeleteChannelHandlerNotFound(t *testing.T) {
 	c := newContext(t, http.MethodDelete, "/channels/"+randUUID(), nil, "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(randUUID())
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := DeleteChannelHandler(testBaseURL, c); err != nil {
@@ -6975,6 +6993,7 @@ func TestUpdateChannelPermissionsHandlerSuccess(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+channel.ID+"/permissions/"+role.ID, body, "")
 	c.SetParamNames("channel_id", "role_id")
 	c.SetParamValues(channel.ID, role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateChannelPermissionsHandler(testBaseURL, c); err != nil {
@@ -7032,6 +7051,7 @@ func TestUpdateChannelPermissionsHandlerMissingChannelID(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels//permissions/"+role.ID, body, "")
 	c.SetParamNames("channel_id", "role_id")
 	c.SetParamValues("", role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateChannelPermissionsHandler(testBaseURL, c); err != nil {
@@ -7056,6 +7076,7 @@ func TestUpdateChannelPermissionsHandlerMissingRoleID(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+channel.ID+"/permissions/", body, "")
 	c.SetParamNames("channel_id", "role_id")
 	c.SetParamValues(channel.ID, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateChannelPermissionsHandler(testBaseURL, c); err != nil {
@@ -7083,6 +7104,7 @@ func TestUpdateChannelPermissionsHandlerInvalidJSON(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+channel.ID+"/permissions/"+role.ID, []byte("{invalido"), "")
 	c.SetParamNames("channel_id", "role_id")
 	c.SetParamValues(channel.ID, role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateChannelPermissionsHandler(testBaseURL, c); err != nil {
@@ -7108,6 +7130,7 @@ func TestUpdateChannelPermissionsHandlerChannelNotFound(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+channelID+"/permissions/"+role.ID, body, "")
 	c.SetParamNames("channel_id", "role_id")
 	c.SetParamValues(channelID, role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateChannelPermissionsHandler(testBaseURL, c); err != nil {
@@ -7133,6 +7156,7 @@ func TestUpdateChannelPermissionsHandlerRoleNotFound(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+channel.ID+"/permissions/"+roleID, body, "")
 	c.SetParamNames("channel_id", "role_id")
 	c.SetParamValues(channel.ID, roleID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateChannelPermissionsHandler(testBaseURL, c); err != nil {
@@ -7167,6 +7191,7 @@ func TestChangeChannelPositionHandlerSuccess(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+c1.ID+"/change_position", body, "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(c1.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := ChangeChannelPositionHandler(testBaseURL, c); err != nil {
@@ -7207,6 +7232,7 @@ func TestChangeChannelPositionHandlerMissingParam(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels//change_position", []byte(`{"old_position":1,"new_position":2}`), "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues("")
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := ChangeChannelPositionHandler(testBaseURL, c); err != nil {
@@ -7230,6 +7256,7 @@ func TestChangeChannelPositionHandlerInvalidJSON(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+channel.ID+"/change_position", []byte("{invalido"), "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(channel.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := ChangeChannelPositionHandler(testBaseURL, c); err != nil {
@@ -7254,6 +7281,7 @@ func TestChangeChannelPositionHandlerInvalidPosition(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+channel.ID+"/change_position", body, "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(channel.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := ChangeChannelPositionHandler(testBaseURL, c); err != nil {
@@ -7268,6 +7296,7 @@ func TestChangeChannelPositionHandlerNotFound(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+randUUID()+"/change_position", body, "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(randUUID())
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := ChangeChannelPositionHandler(testBaseURL, c); err != nil {
@@ -7295,6 +7324,7 @@ func TestChangeChannelPositionHandlerConflict(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/channels/"+c1.ID+"/change_position", body, "")
 	c.SetParamNames("channel_id")
 	c.SetParamValues(c1.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := ChangeChannelPositionHandler(testBaseURL, c); err != nil {
@@ -7421,6 +7451,7 @@ func TestCreateRoleHandlerSuccess(t *testing.T) {
 		"permissions": permissions,
 	})
 	c := newContext(t, http.MethodPost, "/roles", body, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7477,6 +7508,7 @@ func TestCreateRoleHandlerNoColor(t *testing.T) {
 	name := "role_" + randHex(4)
 	body, _ := json.Marshal(map[string]string{"name": name})
 	c := newContext(t, http.MethodPost, "/roles", body, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7507,6 +7539,7 @@ func TestCreateRoleHandlerInvalidJSON(t *testing.T) {
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
 	c := newContext(t, http.MethodPost, "/roles", []byte("{invalido"), "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7525,6 +7558,7 @@ func TestCreateRoleHandlerMissingName(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{"name": ""})
 	c := newContext(t, http.MethodPost, "/roles", body, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7544,6 +7578,7 @@ func TestCreateRoleHandlerNameTooLong(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{"name": strings.Repeat("r", 33)})
 	c := newContext(t, http.MethodPost, "/roles", body, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7563,6 +7598,7 @@ func TestCreateRoleHandlerInvalidColor(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{"name": "role_" + randHex(4), "color": "FF0000"})
 	c := newContext(t, http.MethodPost, "/roles", body, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7586,6 +7622,7 @@ func TestCreateRoleHandlerNameTaken(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{"name": name})
 	c := newContext(t, http.MethodPost, "/roles", body, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := CreateRoleHandler(testBaseURL, c); err != nil {
@@ -7620,6 +7657,7 @@ func TestUpdateRoleHandlerSuccess(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/roles/"+role.ID, body, "")
 	c.SetParamNames("role_id")
 	c.SetParamValues(role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateRoleHandler(testBaseURL, c); err != nil {
@@ -7680,6 +7718,7 @@ func TestUpdateRoleHandlerInvalidJSON(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/roles/"+role.ID, []byte("{invalido"), "")
 	c.SetParamNames("role_id")
 	c.SetParamValues(role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateRoleHandler(testBaseURL, c); err != nil {
@@ -7704,6 +7743,7 @@ func TestUpdateRoleHandlerMissingName(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/roles/"+role.ID, body, "")
 	c.SetParamNames("role_id")
 	c.SetParamValues(role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateRoleHandler(testBaseURL, c); err != nil {
@@ -7729,6 +7769,7 @@ func TestUpdateRoleHandlerInvalidColor(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/roles/"+role.ID, body, "")
 	c.SetParamNames("role_id")
 	c.SetParamValues(role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateRoleHandler(testBaseURL, c); err != nil {
@@ -7743,6 +7784,7 @@ func TestUpdateRoleHandlerNotFound(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/roles/"+randUUID(), body, "")
 	c.SetParamNames("role_id")
 	c.SetParamValues(randUUID())
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := UpdateRoleHandler(testBaseURL, c); err != nil {
@@ -7771,6 +7813,7 @@ func TestUpdateRoleHandlerNameTaken(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/roles/"+roleA.ID, body, "")
 	c.SetParamNames("role_id")
 	c.SetParamValues(roleA.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := UpdateRoleHandler(testBaseURL, c); err != nil {
@@ -7784,6 +7827,7 @@ func TestUpdateRoleHandlerMissingParam(t *testing.T) {
 	c := newContext(t, http.MethodPut, "/roles/", []byte(`{"name":"role"}`), "")
 	c.SetParamNames("role_id")
 	c.SetParamValues("")
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := UpdateRoleHandler(testBaseURL, c); err != nil {
@@ -7816,6 +7860,7 @@ func TestDeleteRoleHandlerSuccess(t *testing.T) {
 	c := newContext(t, http.MethodDelete, "/roles/"+role.ID, nil, "")
 	c.SetParamNames("role_id")
 	c.SetParamValues(role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := DeleteRoleHandler(testBaseURL, c); err != nil {
@@ -7841,6 +7886,7 @@ func TestDeleteRoleHandlerNotFound(t *testing.T) {
 	c := newContext(t, http.MethodDelete, "/roles/"+roleID, nil, "")
 	c.SetParamNames("role_id")
 	c.SetParamValues(roleID)
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := DeleteRoleHandler(testBaseURL, c); err != nil {
@@ -7853,6 +7899,7 @@ func TestDeleteRoleHandlerMissingParam(t *testing.T) {
 	c := newContext(t, http.MethodDelete, "/roles/", nil, "")
 	c.SetParamNames("role_id")
 	c.SetParamValues("")
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := DeleteRoleHandler(testBaseURL, c); err != nil {
@@ -7883,6 +7930,7 @@ func TestAssignUserRoleHandlerSuccess(t *testing.T) {
 	c := newContext(t, http.MethodPost, "/users/"+member.ID+"/roles", body, "")
 	c.SetParamNames("user_id")
 	c.SetParamValues(member.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := AssignUserRoleHandler(testBaseURL, c); err != nil {
@@ -7936,6 +7984,7 @@ func TestAssignUserRoleHandlerIdempotent(t *testing.T) {
 	c := newContext(t, http.MethodPost, "/users/"+member.ID+"/roles", body, "")
 	c.SetParamNames("user_id")
 	c.SetParamValues(member.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := AssignUserRoleHandler(testBaseURL, c); err != nil {
@@ -7953,6 +8002,7 @@ func TestAssignUserRoleHandlerIdempotent(t *testing.T) {
 	c2 := newContext(t, http.MethodPost, "/users/"+member.ID+"/roles", body, "")
 	c2.SetParamNames("user_id")
 	c2.SetParamValues(member.ID)
+	c2.Set(middleware.UserIDContextKey, owner.ID)
 	rec2 := recorder(c2)
 
 	if err := AssignUserRoleHandler(testBaseURL, c2); err != nil {
@@ -7979,6 +8029,7 @@ func TestAssignUserRoleHandlerInvalidJSON(t *testing.T) {
 	c := newContext(t, http.MethodPost, "/users/"+member.ID+"/roles", []byte("{invalido"), "")
 	c.SetParamNames("user_id")
 	c.SetParamValues(member.ID)
+	c.Set(middleware.UserIDContextKey, member.ID)
 	rec := recorder(c)
 
 	if err := AssignUserRoleHandler(testBaseURL, c); err != nil {
@@ -7997,6 +8048,7 @@ func TestAssignUserRoleHandlerMissingRoleID(t *testing.T) {
 	c := newContext(t, http.MethodPost, "/users/"+member.ID+"/roles", body, "")
 	c.SetParamNames("user_id")
 	c.SetParamValues(member.ID)
+	c.Set(middleware.UserIDContextKey, member.ID)
 	rec := recorder(c)
 
 	if err := AssignUserRoleHandler(testBaseURL, c); err != nil {
@@ -8022,6 +8074,7 @@ func TestAssignUserRoleHandlerUserNotFound(t *testing.T) {
 	c := newContext(t, http.MethodPost, "/users/"+userID+"/roles", body, "")
 	c.SetParamNames("user_id")
 	c.SetParamValues(userID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := AssignUserRoleHandler(testBaseURL, c); err != nil {
@@ -8041,6 +8094,7 @@ func TestAssignUserRoleHandlerRoleNotFound(t *testing.T) {
 	c := newContext(t, http.MethodPost, "/users/"+member.ID+"/roles", body, "")
 	c.SetParamNames("user_id")
 	c.SetParamValues(member.ID)
+	c.Set(middleware.UserIDContextKey, member.ID)
 	rec := recorder(c)
 
 	if err := AssignUserRoleHandler(testBaseURL, c); err != nil {
@@ -8054,6 +8108,7 @@ func TestAssignUserRoleHandlerMissingUserParam(t *testing.T) {
 	c := newContext(t, http.MethodPost, "/users//roles", body, "")
 	c.SetParamNames("user_id")
 	c.SetParamValues("")
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := AssignUserRoleHandler(testBaseURL, c); err != nil {
@@ -8086,6 +8141,7 @@ func TestRemoveUserRoleHandlerSuccess(t *testing.T) {
 	c := newContext(t, http.MethodDelete, "/users/"+member.ID+"/roles/"+role.ID, nil, "")
 	c.SetParamNames("user_id", "role_id")
 	c.SetParamValues(member.ID, role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := RemoveUserRoleHandler(testBaseURL, c); err != nil {
@@ -8121,6 +8177,7 @@ func TestRemoveUserRoleHandlerUserNotFound(t *testing.T) {
 	c := newContext(t, http.MethodDelete, "/users/"+userID+"/roles/"+role.ID, nil, "")
 	c.SetParamNames("user_id", "role_id")
 	c.SetParamValues(userID, role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := RemoveUserRoleHandler(testBaseURL, c); err != nil {
@@ -8139,6 +8196,7 @@ func TestRemoveUserRoleHandlerRoleNotFound(t *testing.T) {
 	c := newContext(t, http.MethodDelete, "/users/"+member.ID+"/roles/"+roleID, nil, "")
 	c.SetParamNames("user_id", "role_id")
 	c.SetParamValues(member.ID, roleID)
+	c.Set(middleware.UserIDContextKey, member.ID)
 	rec := recorder(c)
 
 	if err := RemoveUserRoleHandler(testBaseURL, c); err != nil {
@@ -8166,6 +8224,7 @@ func TestRemoveUserRoleHandlerUserRoleNotFound(t *testing.T) {
 	c := newContext(t, http.MethodDelete, "/users/"+member.ID+"/roles/"+role.ID, nil, "")
 	c.SetParamNames("user_id", "role_id")
 	c.SetParamValues(member.ID, role.ID)
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := RemoveUserRoleHandler(testBaseURL, c); err != nil {
@@ -8178,6 +8237,7 @@ func TestRemoveUserRoleHandlerMissingParams(t *testing.T) {
 	c := newContext(t, http.MethodDelete, "/users//roles/", nil, "")
 	c.SetParamNames("user_id", "role_id")
 	c.SetParamValues("", "")
+	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
 	if err := RemoveUserRoleHandler(testBaseURL, c); err != nil {

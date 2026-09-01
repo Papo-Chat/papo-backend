@@ -2,6 +2,9 @@ package middleware
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 )
@@ -21,11 +24,34 @@ const (
 func AuditContext(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		ctx := c.Request().Context()
-		ctx = context.WithValue(ctx, auditIPKey, c.RealIP())
+		ctx = context.WithValue(ctx, auditIPKey, maskIP(c.RealIP()))
 		ctx = context.WithValue(ctx, auditUserAgentKey, c.Request().UserAgent())
 		c.SetRequest(c.Request().WithContext(ctx))
 		return next(c)
 	}
+}
+
+// maskIP maska o IP antes de gravar na auditoria (LGPD/GDPR): em IPv4 mantém os
+// três primeiros octetos e substitui o último por "xxx" (ex.: 192.168.1.xxx);
+// em IPv6 mantém apenas o primeiro hexteto. IP vazio retorna vazio; valores não
+// reconhecidos viram "xxx". O objetivo é preservar contexto de rede sem
+// armazenar o endereço completo do cliente.
+func maskIP(ip string) string {
+	if ip == "" {
+		return ""
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return "xxx"
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		return fmt.Sprintf("%d.%d.%d.xxx", v4[0], v4[1], v4[2])
+	}
+	hextets := strings.Split(parsed.String(), ":")
+	if hextets[0] != "" {
+		return hextets[0] + ".xxx"
+	}
+	return "xxx"
 }
 
 // AuditIP retorna o IP real injetado por AuditContext, ou nil se ausente.

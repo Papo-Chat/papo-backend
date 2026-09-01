@@ -833,3 +833,31 @@ func TestCORSWithoutOriginPassesThrough(t *testing.T) {
 		t.Errorf("não esperava Access-Control-Allow-Origin sem header Origin, obtive %q", got)
 	}
 }
+
+// TestMaskIP garante o mascaramento de IP para auditoria (LGPD/GDPR):
+// IPv4 mantém os 3 primeiros octetos, IPv6 o primeiro hexteto, e casos
+// degenerados produzem um valor não vazio e não identificável.
+func TestMaskIP(t *testing.T) {
+	cases := []struct {
+		name string
+		ip   string
+		want string
+	}{
+		{"ipv4", "192.168.1.42", "192.168.1.xxx"},
+		{"ipv4-zero", "0.0.0.0", "0.0.0.xxx"},
+		{"ipv4-max", "255.255.255.255", "255.255.255.xxx"},
+		{"ipv6", "2001:db8:85a3::8a2e:370:7334", "2001.xxx"},
+		{"ipv6-loopback", "::1", "xxx"},
+		{"ipv6-full", "fe80:0000:0000:0000:1a2b:3c4d:5e6f:7a8b", "fe80.xxx"},
+		{"vazio", "", ""},
+		{"invalido", "não-é-ip", "xxx"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := maskIP(tc.ip); got != tc.want {
+				t.Errorf("maskIP(%q) = %q, esperado %q", tc.ip, got, tc.want)
+			}
+		})
+	}
+}

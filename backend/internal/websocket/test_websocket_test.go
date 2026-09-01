@@ -308,7 +308,11 @@ func newTestServerChannel(t *testing.T, ownerID *string) (models.Server, models.
 	if err != nil {
 		t.Fatalf("falha ao criar servidor de teste: %v", err)
 	}
-	channel, err := services.CreateChannel(testCtx(), "chan_"+randHex(8), "text", "")
+	actorID := ""
+	if ownerID != nil {
+		actorID = *ownerID
+	}
+	channel, err := services.CreateChannel(testCtx(), actorID, "chan_"+randHex(8), "text", "")
 	if err != nil {
 		t.Fatalf("falha ao criar canal de teste: %v", err)
 	}
@@ -323,7 +327,11 @@ func grantChannelReadPermission(t *testing.T, server models.Server, channel mode
 	if err != nil {
 		t.Fatalf("falha ao criar role de teste: %v", err)
 	}
-	if _, err := services.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, models.ChannelPermission{ReadChannel: true}); err != nil {
+	actorID := ""
+	if server.OwnerID != nil {
+		actorID = *server.OwnerID
+	}
+	if _, err := services.UpdateChannelPermissions(testCtx(), actorID, channel.ID, role.ID, models.ChannelPermission{ReadChannel: true}); err != nil {
 		t.Fatalf("falha ao definir a permissão de leitura no canal: %v", err)
 	}
 	if _, err := storage.AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
