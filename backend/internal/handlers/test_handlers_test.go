@@ -353,7 +353,7 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		{http.MethodPut, "/users/" + userID + "/password"},
 		{http.MethodPut, "/users/" + userID + "/ban"},
 		{http.MethodPost, "/users/" + userID + "/reset"},
-		{http.MethodPost, "/servers"},
+		{http.MethodPost, "/server"},
 		{http.MethodPut, "/server"},
 		{http.MethodGet, "/channels"},
 		{http.MethodPost, "/channels"},
@@ -1137,9 +1137,7 @@ func TestWrongMethodReturns405(t *testing.T) {
 		{http.MethodGet, "/users/settings"},
 		{http.MethodPost, "/users"},
 		{http.MethodGet, "/users/" + userID + "/password"},
-		{http.MethodDelete, "/servers"},
 		{http.MethodDelete, "/server"},
-		{http.MethodPost, "/server"},
 		{http.MethodDelete, "/channels"},
 		{http.MethodGet, "/channels/00000000-0000-4000-8000-000000000000"},
 		{http.MethodPost, "/channels/00000000-0000-4000-8000-000000000000"},
@@ -1176,17 +1174,15 @@ func TestUnknownRouteReturns404(t *testing.T) {
 
 // --- rotas de servidores (tarefa 5.2) ---
 
-// TestListServersRouteWithAuth garante que GET /servers responde a listagem
-// de servidores para o usuário autenticado pelo cookie.
-// TestGetServersRouteWithAuth garante que GET /servers responde o único
-// servidor do backend para o usuário autenticado pelo cookie.
-func TestGetServersRouteWithAuth(t *testing.T) {
+// TestGetServerRouteWithAuth garante que GET /server responde o detalhe do
+// único servidor do backend para o usuário autenticado pelo cookie.
+func TestGetServerRouteWithAuth(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 
 	server := createServerFor(t, userID)
 
-	rec := do(t, e, http.MethodGet, "/servers", nil, authCookie(token))
+	rec := do(t, e, http.MethodGet, "/server", nil, authCookie(token))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
@@ -1196,8 +1192,9 @@ func TestGetServersRouteWithAuth(t *testing.T) {
 		Name          string  `json:"name"`
 		OwnerID       *string `json:"owner_id"`
 		OwnerUsername *string `json:"owner_username"`
-		ChannelCount  int     `json:"channel_count"`
+		RoleCount     int     `json:"role_count"`
 		MemberCount   int     `json:"member_count"`
+		ChannelCount  int     `json:"channel_count"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
@@ -1213,47 +1210,6 @@ func TestGetServersRouteWithAuth(t *testing.T) {
 	}
 	if resp.OwnerUsername == nil {
 		t.Error("esperava owner_username preenchido")
-	}
-	if resp.ChannelCount != 0 {
-		t.Errorf("esperava channel_count 0, obtive %d", resp.ChannelCount)
-	}
-	if resp.MemberCount < 1 {
-		t.Errorf("esperava member_count >= 1, obtive %d", resp.MemberCount)
-	}
-}
-
-// TestGetServerRouteWithAuth garante que GET /server responde o detalhe do
-// único servidor do backend para o usuário autenticado pelo cookie.
-func TestGetServerRouteWithAuth(t *testing.T) {
-	e := newApp()
-	userID, token := registerAndLogin(t, e)
-
-	server := createServerFor(t, userID)
-
-	rec := do(t, e, http.MethodGet, "/server", nil, authCookie(token))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		ID           string  `json:"id"`
-		Name         string  `json:"name"`
-		OwnerID      *string `json:"owner_id"`
-		RoleCount    int     `json:"role_count"`
-		MemberCount  int     `json:"member_count"`
-		ChannelCount int     `json:"channel_count"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("falha ao decodificar resposta: %v", err)
-	}
-	if resp.ID != server.ID {
-		t.Errorf("esperava id %q, obtive %q", server.ID, resp.ID)
-	}
-	if resp.Name != server.Name {
-		t.Errorf("esperava name %q, obtive %q", server.Name, resp.Name)
-	}
-	if resp.OwnerID == nil || *resp.OwnerID != userID {
-		t.Errorf("esperava owner_id %q, obtive %v", userID, resp.OwnerID)
 	}
 	if resp.RoleCount != 0 {
 		t.Errorf("esperava role_count 0, obtive %d", resp.RoleCount)
@@ -1332,9 +1288,9 @@ func TestUpdateServerRouteOtherUserForbidden(t *testing.T) {
 	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado", "usuário não possui a permissão necessária para esta operação")
 }
 
-// --- POST /servers ---
+// --- POST /server ---
 
-// TestCreateServerRouteWithAuth garante que POST /servers cria o servidor
+// TestCreateServerRouteWithAuth garante que POST /server cria o servidor
 // com o usuário autenticado como dono.
 func TestCreateServerRouteWithAuth(t *testing.T) {
 	cleanServers(context.Background())
@@ -1343,7 +1299,7 @@ func TestCreateServerRouteWithAuth(t *testing.T) {
 
 	serverName := "srv_" + randHex(4)
 	body, _ := json.Marshal(map[string]any{"name": serverName, "Public": true})
-	rec := do(t, e, http.MethodPost, "/servers", body, authCookie(token))
+	rec := do(t, e, http.MethodPost, "/server", body, authCookie(token))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
@@ -1379,7 +1335,7 @@ func TestCreateServerRouteWithAuth(t *testing.T) {
 	}
 }
 
-// TestCreateServerRouteAlreadyExists garante que POST /servers responde 409
+// TestCreateServerRouteAlreadyExists garante que POST /server responde 409
 // quando o backend já possui o servidor único.
 func TestCreateServerRouteAlreadyExists(t *testing.T) {
 	e := newApp()
@@ -1387,32 +1343,32 @@ func TestCreateServerRouteAlreadyExists(t *testing.T) {
 	createServerFor(t, userID)
 
 	body, _ := json.Marshal(map[string]any{"name": "srv_" + randHex(4), "public": true})
-	rec := do(t, e, http.MethodPost, "/servers", body, authCookie(token))
+	rec := do(t, e, http.MethodPost, "/server", body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusConflict, "server-already-exists", "Ação Proibida",
 		"O servidor já foi criado, não há como criar mais de 1 servidor")
 }
 
-// TestCreateServerRouteUnauthenticated garante que POST /servers exige
+// TestCreateServerRouteUnauthenticated garante que POST /server exige
 // autenticação.
 func TestCreateServerRouteUnauthenticated(t *testing.T) {
 	e := newApp()
 
 	body, _ := json.Marshal(map[string]string{"name": "srv_" + randHex(4)})
-	rec := do(t, e, http.MethodPost, "/servers", body, nil)
+	rec := do(t, e, http.MethodPost, "/server", body, nil)
 
 	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized",
 		"Token inválido ou expirado", "token de autenticação ausente, inválido ou expirado")
 }
 
-// TestCreateServerRouteInvalidInput garante que POST /servers responde 400
+// TestCreateServerRouteInvalidInput garante que POST /server responde 400
 // para nome ausente.
 func TestCreateServerRouteInvalidInput(t *testing.T) {
 	e := newApp()
 	_, token := registerAndLogin(t, e)
 
 	body, _ := json.Marshal(map[string]string{"icon_format": "PNG"})
-	rec := do(t, e, http.MethodPost, "/servers", body, authCookie(token))
+	rec := do(t, e, http.MethodPost, "/server", body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
 		"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG ou PNG de até 2MB; servidor privado (public=false) exige password")
@@ -5829,11 +5785,11 @@ func TestChangePasswordHandlerForbiddenOtherUser(t *testing.T) {
 		"não é possível alterar a senha de outro usuário")
 }
 
-// --- GetServerHandler (GET /servers e GET /server)
+// --- GetServerHandler (GET /server e GET /server)
 
 func TestGetServersHandlerNotFound(t *testing.T) {
 	cleanServers(testCtx())
-	c := newContext(t, http.MethodGet, "/servers", nil, "")
+	c := newContext(t, http.MethodGet, "/server", nil, "")
 	rec := recorder(c)
 
 	if err := GetServerHandler(testBaseURL, c); err != nil {
@@ -5857,7 +5813,7 @@ func TestGetServersHandlerSuccess(t *testing.T) {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
-	c := newContext(t, http.MethodGet, "/servers", nil, "")
+	c := newContext(t, http.MethodGet, "/server", nil, "")
 	rec := recorder(c)
 
 	if err := GetServerHandler(testBaseURL, c); err != nil {
@@ -6201,7 +6157,7 @@ func TestCreateServerHandlerSuccess(t *testing.T) {
 		"icon_blob":   base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)),
 		"icon_format": "png",
 	})
-	c := newContext(t, http.MethodPost, "/servers", body, "")
+	c := newContext(t, http.MethodPost, "/server", body, "")
 	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
@@ -6289,7 +6245,7 @@ func TestCreateServerHandlerNoIcon(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string]string{"name": "srv_" + randHex(4)})
-	c := newContext(t, http.MethodPost, "/servers", body, "")
+	c := newContext(t, http.MethodPost, "/server", body, "")
 	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
@@ -6321,7 +6277,7 @@ func TestCreateServerHandlerNoIcon(t *testing.T) {
 
 func TestCreateServerHandlerMissingUser(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"name": "srv_" + randHex(4)})
-	c := newContext(t, http.MethodPost, "/servers", body, "")
+	c := newContext(t, http.MethodPost, "/server", body, "")
 	rec := recorder(c)
 
 	if err := CreateServerHandler(testBaseURL, c); err != nil {
@@ -6337,7 +6293,7 @@ func TestCreateServerHandlerInvalidJSON(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	c := newContext(t, http.MethodPost, "/servers", []byte("{invalido"), "")
+	c := newContext(t, http.MethodPost, "/server", []byte("{invalido"), "")
 	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
@@ -6374,7 +6330,7 @@ func TestCreateServerHandlerInvalidInput(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			body, _ := json.Marshal(tc.body)
-			c := newContext(t, http.MethodPost, "/servers", body, "")
+			c := newContext(t, http.MethodPost, "/server", body, "")
 			c.Set(middleware.UserIDContextKey, owner.ID)
 			rec := recorder(c)
 

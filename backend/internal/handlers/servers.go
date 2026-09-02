@@ -13,7 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// serverDetail é a visão do servidor (GET /servers e GET /server; o sistema
+// serverDetail é a visão do servidor (GET /server; o sistema
 // tem um único servidor, 1 backend = 1 server).
 type serverDetail struct {
 	ID            string    `json:"id"`
@@ -29,8 +29,7 @@ type serverDetail struct {
 	ChannelCount  int       `json:"channel_count"`
 }
 
-// GetServerHandler implementa GET /servers e GET /server (o mesmo objeto: o
-// único servidor do backend).
+// GetServerHandler implementa GET /server (o único servidor do backend).
 func GetServerHandler(baseURL string, c echo.Context) error {
 	summary, err := services.GetServer(c.Request().Context())
 	switch {
@@ -55,7 +54,7 @@ type createServerRequest struct {
 	Public     bool    `json:"public"`
 }
 
-// serverCreated é a visão de servidor do POST /servers.
+// serverCreated é a visão de servidor do POST /server.
 // Não inclui contagens, presente apenas no detalhe (openapi.yml).
 type serverCreated struct {
 	ID            string    `json:"id"`
@@ -67,7 +66,7 @@ type serverCreated struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// CreateServerHandler implementa POST /servers.
+// CreateServerHandler implementa POST /server.
 // Permissão: a tabela servers não possui registry, então o usuário
 // autenticado é o dono do servidor (README).
 func CreateServerHandler(baseURL string, c echo.Context) error {

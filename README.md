@@ -33,10 +33,11 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Auditoria/Logs para Admins 
 - [x] Crons GC Attachments orfãos/tabela quebrada e limpeza de logs.
 - [x] Pin message /POST 
-- [ ] Suporte WebRTC (Audio, Video, Transmissão)
-- [ ] React Mensagens (Computa Emojis personalizados do banco ou unicode), ws events: react_up e react_down. Guarda o numero totais de reações em uma mensagem, mas também a lista de pessoas que reagiram a determinada mensagem. /channel/:id/message/:id/reactions
+- [ ] React Mensagens (Computa Emojis personalizados do banco ou unicode), ws events: outbound react_update(com message_id, emoji_id e count). A tabela guarda o numero totais de reações em uma mensagem e também a lista de pessoas que reagiram a determinada mensagem. POST/GET /channel/:id/message/:id/reactions. O GET vem com a lista de usuários.
+Já no endpoint de mensagem vai ter somente com um count de reações. Sem a lista de reações completas. 
 - [ ] Notificações, persistencia tabela notifications atrelada a user_id, notificações são mensagens que menciaonam o usuario, depois pode ter DM, Eventos
 - [ ] Refresh token rotation com detecção de reuse, tabela endpoint de dispositivos conectados, endpoint de derrubar todas as conexões (inclusive atual)
+- [ ] Suporte WebRTC (Audio, Video, Transmissão)
 - [ ] Detecção e moderação Automática (Contra conteúdo sensível)
 
 ### V2:
@@ -180,7 +181,7 @@ Esquema completo em [`openapi.yml`](./openapi.yml).
 |---|---|
 | Auth | `/auth/register`, `/auth/login`, `/auth/loginServer`, `/auth/whoami`, `/auth/logout` |
 | Users | `/users`, `/users/:id/profile`, `/users/profileBatch`, `/users/:id`, `/users/:id/banner`, `/users/:id/ban`, `/users/settings` |
-| Servers | `/servers`, `/server` |
+| Servers | `/server` |
 | Channels | `/channels`, `/channels/:id`, `/channels/:id/change_position`, `/channels/:id/permissions` |
 | Messages | `/channels/:id/messages`, `/messages`, `/messages/:id` |
 | Roles | `/roles` |

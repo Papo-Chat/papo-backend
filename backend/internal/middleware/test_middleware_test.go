@@ -470,8 +470,8 @@ func doPermissionRequest(t *testing.T, mw echo.MiddlewareFunc, c echo.Context) *
 }
 
 func TestPermissionDeniesWithoutAuthentication(t *testing.T) {
-	c := newPermissionContext(t, http.MethodPut, "/servers/"+nonexistentID, nil,
-		[]string{"server_id"}, []string{nonexistentID}, "")
+	c := newPermissionContext(t, http.MethodPut, "/server", nil,
+		[]string{}, []string{}, "")
 
 	rec := doPermissionRequest(t, RequireManageServer(), c)
 	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized",
@@ -480,10 +480,10 @@ func TestPermissionDeniesWithoutAuthentication(t *testing.T) {
 
 func TestPermissionAllowsOwnerWithoutRoles(t *testing.T) {
 	ownerID := newUser(t)
-	server := newServer(t, &ownerID)
+	newServer(t, &ownerID)
 
-	c := newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil,
-		[]string{"server_id"}, []string{server.ID}, ownerID)
+	c := newPermissionContext(t, http.MethodPut, "/server", nil,
+		[]string{}, []string{}, ownerID)
 
 	if rec := doPermissionRequest(t, RequireManageServer(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 para o dono, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
@@ -493,12 +493,12 @@ func TestPermissionAllowsOwnerWithoutRoles(t *testing.T) {
 func TestPermissionAllowsRoleWithPermission(t *testing.T) {
 	ownerID := newUser(t)
 	userID := newUser(t)
-	server := newServer(t, &ownerID)
+	newServer(t, &ownerID)
 	role := newRole(t, models.RolePermissions{ManageServer: true})
 	assignRole(t, userID, role.ID)
 
-	c := newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil,
-		[]string{"server_id"}, []string{server.ID}, userID)
+	c := newPermissionContext(t, http.MethodPut, "/server", nil,
+		[]string{}, []string{}, userID)
 
 	if rec := doPermissionRequest(t, RequireManageServer(), c); rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200 com a permissão, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
@@ -508,12 +508,12 @@ func TestPermissionAllowsRoleWithPermission(t *testing.T) {
 func TestPermissionDeniesRoleWithoutPermission(t *testing.T) {
 	ownerID := newUser(t)
 	userID := newUser(t)
-	server := newServer(t, &ownerID)
+	newServer(t, &ownerID)
 	role := newRole(t, models.RolePermissions{ManageChannels: true})
 	assignRole(t, userID, role.ID)
 
-	c := newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil,
-		[]string{"server_id"}, []string{server.ID}, userID)
+	c := newPermissionContext(t, http.MethodPut, "/server", nil,
+		[]string{}, []string{}, userID)
 
 	rec := doPermissionRequest(t, RequireManageServer(), c)
 	assertProblem(t, rec, http.StatusForbidden, "forbidden",
@@ -523,10 +523,10 @@ func TestPermissionDeniesRoleWithoutPermission(t *testing.T) {
 func TestPermissionDeniesUserWithoutRoles(t *testing.T) {
 	ownerID := newUser(t)
 	userID := newUser(t)
-	server := newServer(t, &ownerID)
+	newServer(t, &ownerID)
 
-	c := newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil,
-		[]string{"server_id"}, []string{server.ID}, userID)
+	c := newPermissionContext(t, http.MethodPut, "/server/", nil,
+		[]string{}, []string{}, userID)
 
 	rec := doPermissionRequest(t, RequireManageServer(), c)
 	assertProblem(t, rec, http.StatusForbidden, "forbidden",
@@ -694,7 +694,7 @@ func TestPermissionHelpersMapToCorrectPermission(t *testing.T) {
 		t.Fatalf("RequireManageChannels: esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 	assertProblem(t, doPermissionRequest(t, RequireManageServer(),
-		newPermissionContext(t, http.MethodPut, "/servers/"+server.ID, nil, names, values, userID)),
+		newPermissionContext(t, http.MethodPut, "/server/", nil, names, values, userID)),
 		http.StatusForbidden, "forbidden", "Acesso negado",
 		"usuário não possui a permissão necessária para esta operação", "")
 	assertProblem(t, doPermissionRequest(t, RequireManageRoles(),

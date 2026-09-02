@@ -66,12 +66,9 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 }
 
 // RegisterServerRoutes registra as rotas do servidor (1 backend = 1
-// servidor; GET /servers e GET /server retornam o mesmo objeto).
+// servidor).
 func RegisterServerRoutes(e *echo.Echo, cfg *config.Config) {
-	e.GET("/servers", func(c echo.Context) error {
-		return GetServerHandler(cfg.BaseURL, c)
-	})
-	e.POST("/servers", func(c echo.Context) error {
+	e.POST("/server", func(c echo.Context) error {
 		return CreateServerHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 	e.GET("/server", func(c echo.Context) error {
