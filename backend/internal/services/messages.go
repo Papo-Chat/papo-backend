@@ -27,6 +27,10 @@ var ErrTooManyAttachments = errors.New("máximo de attachments por mensagem exce
 // pinadas (100, README).
 var ErrTooManyPinnedMessages = errors.New("limite de mensagens pinadas por canal atingido")
 
+// ErrMessageNotPinned indica que a mensagem não está pinada no canal
+// (DELETE /channels/:channel_id/messages/:message_id/pin).
+var ErrMessageNotPinned = errors.New("mensagem não está pinada")
+
 // maxMessageContentLength é o tamanho máximo do content de uma mensagem
 // (8192 caracteres, README).
 const maxMessageContentLength = 8192
@@ -623,6 +627,147 @@ func PinMessage(ctx context.Context, channelID, messageID, userID string) (model
 	}
 
 	return pinned, created, nil
+}
+
+// UnpinMessage remove a fixação de uma mensagem em um canal
+// (DELETE /channels/:channel_id/messages/:message_id/pin). A mensagem deve
+// existir e pertencer ao canal da URL. O usuário precisa da permissão
+// read_channel do canal e da permissão pin_message em ao menos uma das roles
+// do servidor (o dono do servidor sempre pode).
+// Retorna ErrInvalidInput quando um parâmetro está ausente,
+// ErrMessageNotFound quando a mensagem não existe ou não pertence ao canal,
+// ErrPermissionDenied quando o usuário não pode ler o canal ou não tem
+// pin_message, e ErrMessageNotPinned quando a mensagem não está pinada.
+// O valor de retorno (removed) é true quando a fixação foi removida.
+func UnpinMessage(ctx context.Context, channelID, messageID, userID string) (bool, error) {
+	if channelID == "" || messageID == "" || userID == "" {
+		return false, ErrInvalidInput
+	}
+
+	message, err := storage.GetMessageByID(ctx, messageID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return false, ErrMessageNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+
+	// A mensagem deve pertencer ao canal da URL.
+	if message.ChannelID != channelID {
+		return false, ErrMessageNotFound
+	}
+
+	channel, err := storage.GetChannelByID(ctx, channelID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return false, ErrChannelNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+
+	allowed, err := userHasChannelPermission(ctx, channel, userID, true, func(p models.ChannelPermission) bool {
+		return p.ReadChannel
+	})
+	if err != nil {
+		return false, err
+	}
+	if !allowed {
+		return false, ErrPermissionDenied
+	}
+
+	allowed, err = userHasRolePermission(ctx, userID, func(p models.RolePermissions) bool {
+		return p.PinMessage
+	})
+	if err != nil {
+		return false, err
+	}
+	if !allowed {
+		return false, ErrPermissionDenied
+	}
+
+	removed, err := storage.UnpinMessage(ctx, channelID, messageID)
+	if err != nil {
+		return false, err
+	}
+	if !removed {
+		return false, ErrMessageNotPinned
+	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:    userID,
+		Action:     ActionMessageUnpin,
+		EntityType: EntityMessage,
+		EntityID:   &messageID,
+		Metadata:   map[string]any{"channel_id": channelID},
+	})
+
+	return true, nil
+}
+
+// ListPinnedMessages lista as mensagens pinadas de um canal com attachments,
+// previews, thumbnails e reações, na ordem em que foram fixadas (README:
+// GET /channels/:channel_id/pinned).
+// O dono do servidor do canal sempre pode ler; em canais sem roles com
+// permissões definidas a leitura é livre para todos; nos demais, o usuário
+// precisa da permissão read_channel em ao menos uma das roles do servidor.
+// Retorna ErrChannelNotFound quando o canal não existe e
+// ErrPermissionDenied quando o usuário não pode ler o canal.
+func ListPinnedMessages(ctx context.Context, channelID, userID string) (models.PinnedMessageList, error) {
+	if channelID == "" {
+		return models.PinnedMessageList{}, ErrChannelNotFound
+	}
+
+	channel, err := storage.GetChannelByID(ctx, channelID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return models.PinnedMessageList{}, ErrChannelNotFound
+	}
+	if err != nil {
+		return models.PinnedMessageList{}, err
+	}
+
+	allowed, err := userHasChannelPermission(ctx, channel, userID, true, func(p models.ChannelPermission) bool {
+		return p.ReadChannel
+	})
+	if err != nil {
+		return models.PinnedMessageList{}, err
+	}
+	if !allowed {
+		return models.PinnedMessageList{}, ErrPermissionDenied
+	}
+
+	messages, err := storage.ListPinnedMessagesWithAttachmentsByChannel(ctx, channelID)
+	if err != nil {
+		return models.PinnedMessageList{}, err
+	}
+
+	messageIDs := make([]string, 0, len(messages))
+	attachmentIDs := make([]string, 0)
+	for _, m := range messages {
+		messageIDs = append(messageIDs, m.ID)
+		for _, a := range m.Attachments {
+			attachmentIDs = append(attachmentIDs, a.ID)
+		}
+	}
+
+	previewsByMessage, err := storage.ListPreviewsByMessageIDs(ctx, messageIDs)
+	if err != nil {
+		return models.PinnedMessageList{}, err
+	}
+	thumbnails, err := storage.ListThumbnailsByAttachmentIDs(ctx, attachmentIDs)
+	if err != nil {
+		return models.PinnedMessageList{}, err
+	}
+	reactionCounts, err := storage.ReactionCountsByMessages(ctx, messageIDs)
+	if err != nil {
+		return models.PinnedMessageList{}, err
+	}
+	for i := range messages {
+		messages[i].Previews = previewsByMessage[messages[i].ID]
+		messages[i].Reactions = reactionCounts[messages[i].ID]
+		setAttachmentThumbnails(&messages[i].Attachments, thumbnails)
+	}
+
+	return models.PinnedMessageList{ChannelID: channelID, Pinned: messages}, nil
 }
 
 // userHasChannelPermission verifica se o usuário possui a permissão de canal

@@ -319,9 +319,106 @@ func PinMessageHandler(baseURL string, c echo.Context) error {
 	}
 
 	if created {
+		// Distribui a fixação aos clientes autorizados a ler o canal
+		// (evento message_pin).
+		broadcastChannelEvent(c, channelID, websocket.MessagePinOutbound{
+			Type:      websocket.EventTypeMessagePin,
+			MessageID: messageID,
+			IsPinned:  true,
+		})
 		return c.JSON(http.StatusCreated, pinned)
 	}
 	return c.JSON(http.StatusOK, pinned)
+}
+
+// UnpinMessageHandler implementa DELETE /channels/:channel_id/messages/:message_id/pin.
+// Permissão: read_channel do canal e pin_message (dono do servidor ou role com
+// a permissão). A mensagem não pinada retorna 404 (não é idempotente).
+func UnpinMessageHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	channelID := c.Param("channel_id")
+	messageID := c.Param("message_id")
+	if channelID == "" || messageID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido",
+			"channel_id e message_id são obrigatórios")
+	}
+
+	_, err := services.UnpinMessage(c.Request().Context(), channelID, messageID, userID)
+	switch {
+	case errors.Is(err, services.ErrInvalidInput):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido",
+			"channel_id e message_id são obrigatórios")
+	case errors.Is(err, services.ErrMessageNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado",
+			"mensagem não encontrada neste canal")
+	case errors.Is(err, services.ErrMessageNotPinned):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado",
+			"mensagem não está pinada neste canal")
+	case errors.Is(err, services.ErrPermissionDenied):
+		return utils.SendProblem(c, baseURL, http.StatusForbidden,
+			"forbidden", "Acesso negado",
+			"usuário não tem permissão para remover a fixação da mensagem")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao remover fixação da mensagem: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao remover a fixação da mensagem")
+	}
+
+	// Distribui a remoção da fixação aos clientes autorizados a ler o canal
+	// (evento message_pin).
+	broadcastChannelEvent(c, channelID, websocket.MessagePinOutbound{
+		Type:      websocket.EventTypeMessagePin,
+		MessageID: messageID,
+		IsPinned:  false,
+	})
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// ListPinnedMessagesHandler implementa GET /channels/:channel_id/pinned.
+// Permissão: read_channel do canal.
+func ListPinnedMessagesHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	channelID := c.Param("channel_id")
+	if channelID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "channel_id ausente")
+	}
+
+	list, err := services.ListPinnedMessages(c.Request().Context(), channelID, userID)
+	switch {
+	case errors.Is(err, services.ErrChannelNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "canal não encontrado")
+	case errors.Is(err, services.ErrPermissionDenied):
+		return utils.SendProblem(c, baseURL, http.StatusForbidden,
+			"forbidden", "Acesso negado",
+			"usuário não tem permissão para ler o canal")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao listar mensagens pinadas: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao listar as mensagens pinadas")
+	}
+
+	return c.JSON(http.StatusOK, list)
 }
 
 // broadcastChannelEvent envia um evento via WebSocket no contexto da

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"papo/internal/models"
 )
@@ -94,4 +95,106 @@ func PinMessage(ctx context.Context, channelID, messageID, pinnedBy string) (mod
 	}
 
 	return pinned, true, nil
+}
+
+// UnpinMessage remove a fixação de uma mensagem em um canal
+// (DELETE /channels/:channel_id/messages/:message_id/pin).
+// Retorna (false, nil) quando a mensagem não estava pinada.
+func UnpinMessage(ctx context.Context, channelID, messageID string) (bool, error) {
+	result, err := GetDB().ExecContext(ctx,
+		"DELETE FROM pinned_messages WHERE channel_id = $1 AND message_id = $2",
+		channelID, messageID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("falha ao remover fixação da mensagem: %w", err)
+	}
+
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("falha ao remover fixação da mensagem: %w", err)
+	}
+
+	return n > 0, nil
+}
+
+// ListPinnedMessagesWithAttachmentsByChannel lista as mensagens pinadas de um
+// canal com a informação mínima dos seus attachments, na ordem em que foram
+// fixadas (pinned_at crescente; o desempate por id torna a ordem estável).
+// Mensagens sem attachments aparecem com Attachments vazia.
+func ListPinnedMessagesWithAttachmentsByChannel(ctx context.Context, channelID string) ([]models.MessageWithAttachment, error) {
+	query := "SELECT p.id, p.channel_id, p.author_id, p.content, p.created_at, p.edited_at, p.reply_to, " +
+		"a.id, m.mime_type, a.original_file_name, m.size_bytes, a.created_at " +
+		"FROM (SELECT msg.id, msg.channel_id, msg.author_id, msg.content, msg.created_at, msg.edited_at, msg.reply_to, pm.pinned_at " +
+		"FROM messages msg " +
+		"JOIN pinned_messages pm ON pm.message_id = msg.id AND pm.channel_id = msg.channel_id " +
+		"WHERE msg.channel_id = $1) p " +
+		"LEFT JOIN attachments a ON a.messages_id = p.id " +
+		"LEFT JOIN media m ON m.sha_hash = a.media_sha_hash " +
+		"ORDER BY p.pinned_at, p.id, a.created_at, a.id"
+
+	rows, err := GetDB().QueryContext(ctx, query, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar mensagens pinadas: %w", err)
+	}
+	defer rows.Close()
+
+	messages := make([]models.MessageWithAttachment, 0)
+	var current models.MessageWithAttachment
+	var hasCurrent bool
+	for rows.Next() {
+		var (
+			message      models.Message
+			attachmentID *string
+			mimeType     *string
+			fileName     *string
+			sizeBytes    *int64
+			attachmentAt *time.Time
+		)
+		err := rows.Scan(
+			&message.ID,
+			&message.ChannelID,
+			&message.AuthorID,
+			&message.Content,
+			&message.CreatedAt,
+			&message.EditedAt,
+			&message.ReplyTo,
+			&attachmentID,
+			&mimeType,
+			&fileName,
+			&sizeBytes,
+			&attachmentAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao ler mensagem pinada: %w", err)
+		}
+
+		if !hasCurrent || current.Message.ID != message.ID {
+			if hasCurrent {
+				messages = append(messages, current)
+			}
+			current = models.MessageWithAttachment{
+				Message:     message,
+				Attachments: make([]models.MessageAttachment, 0),
+			}
+			hasCurrent = true
+		}
+
+		if attachmentID != nil {
+			current.Attachments = append(current.Attachments, models.MessageAttachment{
+				ID:               *attachmentID,
+				MimeType:         *mimeType,
+				OriginalFileName: *fileName,
+				SizeBytes:        *sizeBytes,
+				CreatedAt:        *attachmentAt,
+			})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao listar mensagens pinadas: %w", err)
+	}
+	if hasCurrent {
+		messages = append(messages, current)
+	}
+
+	return messages, nil
 }

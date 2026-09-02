@@ -6364,6 +6364,7 @@ func TestListChannelsHandlerEmpty(t *testing.T) {
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
 	c := newContext(t, http.MethodGet, "/channels", nil, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := ListChannelsHandler(testBaseURL, c); err != nil {
@@ -6404,6 +6405,7 @@ func TestListChannelsHandlerSuccess(t *testing.T) {
 	}
 
 	c := newContext(t, http.MethodGet, "/channels", nil, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
 	if err := ListChannelsHandler(testBaseURL, c); err != nil {
@@ -10240,6 +10242,375 @@ func TestPinMessageHandlerWithPinRole(t *testing.T) {
 	}
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// --- UnpinMessageHandler ---
+
+func unpinContext(t *testing.T, channelID, messageID, userID string) echo.Context {
+	t.Helper()
+	c := newContext(t, http.MethodDelete, "/channels/"+channelID+"/messages/"+messageID+"/pin", nil, "")
+	if userID != "" {
+		c.Set(middleware.UserIDContextKey, userID)
+	}
+	c.SetParamNames("channel_id", "message_id")
+	c.SetParamValues(channelID, messageID)
+	return c
+}
+
+func TestUnpinMessageHandlerRemoved(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+	if _, _, err := storage.PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil {
+		t.Fatalf("falha ao fixar mensagem: %v", err)
+	}
+
+	c := unpinContext(t, channel.ID, message.ID, owner.ID)
+	rec := recorder(c)
+
+	if err := UnpinMessageHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UnpinMessageHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava status 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUnpinMessageHandlerNotPinned(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	c := unpinContext(t, channel.ID, message.ID, owner.ID)
+	rec := recorder(c)
+
+	if err := UnpinMessageHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UnpinMessageHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado",
+		"mensagem não está pinada neste canal")
+}
+
+func TestUnpinMessageHandlerNotFound(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+
+	c := unpinContext(t, channel.ID, randUUID(), owner.ID)
+	rec := recorder(c)
+
+	if err := UnpinMessageHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UnpinMessageHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado",
+		"mensagem não encontrada neste canal")
+}
+
+func TestUnpinMessageHandlerForbidden(t *testing.T) {
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+	if _, _, err := storage.PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil {
+		t.Fatalf("falha ao fixar mensagem: %v", err)
+	}
+
+	c := unpinContext(t, channel.ID, message.ID, actor.ID)
+	rec := recorder(c)
+
+	if err := UnpinMessageHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UnpinMessageHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
+		"usuário não tem permissão para remover a fixação da mensagem")
+}
+
+func TestUnpinMessageHandlerUnauthorized(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	c := unpinContext(t, channel.ID, message.ID, "")
+	rec := recorder(c)
+
+	if err := UnpinMessageHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UnpinMessageHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+func TestUnpinMessageHandlerMissingParam(t *testing.T) {
+	owner := newTestMessageUser(t)
+
+	c := unpinContext(t, "", "", owner.ID)
+	rec := recorder(c)
+
+	if err := UnpinMessageHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UnpinMessageHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"channel_id e message_id são obrigatórios")
+}
+
+// --- ListPinnedMessagesHandler ---
+
+func pinnedContext(t *testing.T, channelID, userID string) echo.Context {
+	t.Helper()
+	c := newContext(t, http.MethodGet, "/channels/"+channelID+"/pinned", nil, "")
+	if userID != "" {
+		c.Set(middleware.UserIDContextKey, userID)
+	}
+	c.SetParamNames("channel_id")
+	c.SetParamValues(channelID)
+	return c
+}
+
+func TestListPinnedMessagesHandler(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	m1, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "uma", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+	m2, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "duas", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+	for _, m := range []models.Message{m2, m1} {
+		if _, _, err := storage.PinMessage(testCtx(), channel.ID, m.ID, owner.ID); err != nil {
+			t.Fatalf("falha ao fixar mensagem: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	c := pinnedContext(t, channel.ID, owner.ID)
+	rec := recorder(c)
+
+	if err := ListPinnedMessagesHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListPinnedMessagesHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var list models.PinnedMessageList
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if list.ChannelID != channel.ID {
+		t.Errorf("esperava channel_id %s, obtive %s", channel.ID, list.ChannelID)
+	}
+	if len(list.Pinned) != 2 {
+		t.Fatalf("esperava 2 mensagens pinadas, obtive %d", len(list.Pinned))
+	}
+	if list.Pinned[0].ID != m2.ID || list.Pinned[1].ID != m1.ID {
+		t.Errorf("ordem incorreta: obtive [%s, %s]", list.Pinned[0].ID, list.Pinned[1].ID)
+	}
+}
+
+func TestListPinnedMessagesHandlerEmpty(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+
+	c := pinnedContext(t, channel.ID, owner.ID)
+	rec := recorder(c)
+
+	if err := ListPinnedMessagesHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListPinnedMessagesHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	// lista vazia serializa como [] (não null)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if string(raw["pinned"]) != "[]" {
+		t.Errorf("esperava pinned como [], obtive %s", raw["pinned"])
+	}
+}
+
+func TestListPinnedMessagesHandlerNotFound(t *testing.T) {
+	owner := newTestMessageUser(t)
+
+	c := pinnedContext(t, randUUID(), owner.ID)
+	rec := recorder(c)
+
+	if err := ListPinnedMessagesHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListPinnedMessagesHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado",
+		"canal não encontrado")
+}
+
+func TestListPinnedMessagesHandlerForbidden(t *testing.T) {
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+
+	role, err := storage.CreateRole(testCtx(), "role_"+randHex(8), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	if _, err := storage.UpdateChannelPermissions(testCtx(), channel.ID, role.ID, models.ChannelPermission{ReadChannel: false}); err != nil {
+		t.Fatalf("falha ao definir permissões do canal: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), actor.ID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+
+	c := pinnedContext(t, channel.ID, actor.ID)
+	rec := recorder(c)
+
+	if err := ListPinnedMessagesHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListPinnedMessagesHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
+		"usuário não tem permissão para ler o canal")
+}
+
+func TestListPinnedMessagesHandlerUnauthorized(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+
+	c := pinnedContext(t, channel.ID, "")
+	rec := recorder(c)
+
+	if err := ListPinnedMessagesHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListPinnedMessagesHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+// --- GET /channels (last_read) ---
+
+func TestListChannelsRouteLastRead(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	_, channel := createServerAndChannelTest(t, userID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, userID, "lida", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+	if err := storage.TouchLastReadMessage(testCtx(), userID, channel.ID, message); err != nil {
+		t.Fatalf("falha ao registrar leitura: %v", err)
+	}
+
+	rec := do(t, e, http.MethodGet, "/channels", nil, authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Channels []models.ChannelSummary `json:"channels"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	var got *models.ChannelSummary
+	for i := range resp.Channels {
+		if resp.Channels[i].ID == channel.ID {
+			got = &resp.Channels[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("canal %s não encontrado na listagem", channel.ID)
+	}
+	if got.LastReadMessage == nil || *got.LastReadMessage != message.ID {
+		t.Errorf("esperava last_read_message %s, obtive %v", message.ID, got.LastReadMessage)
+	}
+	if got.LastReadAt == nil || got.LastReadAt.IsZero() {
+		t.Errorf("esperava last_read_at preenchido, obtive %v", got.LastReadAt)
+	}
+}
+
+// --- message_pin (websocket) ---
+
+// TestPinUnpinBroadcastsMessagePin garante que fixar e desfixar uma mensagem
+// distribuem o evento message_pin (com is_pinned true/false) aos clientes do
+// canal.
+func TestPinUnpinBroadcastsMessagePin(t *testing.T) {
+	e := newApp()
+	cfg := config.LoadConfig()
+	RegisterWebSocketRoutes(e, cfg)
+	go websocket.GetHub().Run()
+
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	userID, token := registerAndLogin(t, e)
+	_, channel := createServerAndChannelTest(t, userID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, userID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	header := http.Header{}
+	header.Set(echo.HeaderCookie, "Auth="+token)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+	conn, _, err := ws.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("falha ao abrir conexão websocket: %v", err)
+	}
+	defer conn.Close()
+
+	// primeiro evento: presence_sync da própria conexão
+	readWSMessage(t, conn)
+
+	// fixar → message_pin com is_pinned=true
+	rec := do(t, e, http.MethodPost, "/channels/"+channel.ID+"/messages/"+message.ID+"/pin", nil, authCookie(token))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("pin: esperava 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	assertMessagePinEvent(t, conn, message.ID, true)
+
+	// desfixar → message_pin com is_pinned=false
+	rec = do(t, e, http.MethodDelete, "/channels/"+channel.ID+"/messages/"+message.ID+"/pin", nil, authCookie(token))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("unpin: esperava 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	assertMessagePinEvent(t, conn, message.ID, false)
+}
+
+// assertMessagePinEvent lê a próxima mensagem websocket e valida o evento
+// message_pin (type, message_id e is_pinned).
+func assertMessagePinEvent(t *testing.T, conn *ws.Conn, messageID string, isPinned bool) {
+	t.Helper()
+	data := readWSMessage(t, conn)
+
+	var event struct {
+		Type      string `json:"type"`
+		MessageID string `json:"message_id"`
+		IsPinned  bool   `json:"is_pinned"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		t.Fatalf("falha ao decodificar evento: %v", err)
+	}
+	if event.Type != "message_pin" {
+		t.Fatalf("esperava tipo message_pin, obtive %q (corpo: %s)", event.Type, data)
+	}
+	if event.MessageID != messageID {
+		t.Errorf("esperava message_id %s, obtive %s", messageID, event.MessageID)
+	}
+	if event.IsPinned != isPinned {
+		t.Errorf("esperava is_pinned=%v, obtive %v", isPinned, event.IsPinned)
 	}
 }
 

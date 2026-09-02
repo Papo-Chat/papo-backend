@@ -96,6 +96,9 @@ func RegisterChannelRoutes(e *echo.Echo, cfg *config.Config) {
 	e.DELETE("/channels/:channel_id", func(c echo.Context) error {
 		return DeleteChannelHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware, middleware.RequireManageChannels())
+	e.GET("/channels/:channel_id/pinned", func(c echo.Context) error {
+		return ListPinnedMessagesHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
 	e.GET("/channels/:channel_id/permissions", func(c echo.Context) error {
 		return GetChannelPermissionsHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
@@ -120,6 +123,9 @@ func RegisterMessageRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware)
 	e.POST("/channels/:channel_id/messages/:message_id/pin", func(c echo.Context) error {
 		return PinMessageHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.DELETE("/channels/:channel_id/messages/:message_id/pin", func(c echo.Context) error {
+		return UnpinMessageHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 	e.POST("/channels/:channel_id/messages/:message_id/reactions", func(c echo.Context) error {
 		return AddReactionHandler(cfg.BaseURL, c)

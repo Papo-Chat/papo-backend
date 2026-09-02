@@ -2561,7 +2561,7 @@ func TestListChannels(t *testing.T) {
 		t.Fatalf("falha ao criar canal B: %v", err)
 	}
 
-	channels, err := ListChannels(testCtx())
+	channels, err := ListChannels(testCtx(), owner.ID)
 	if err != nil {
 		t.Fatalf("ListChannels retornou erro: %v", err)
 	}
@@ -2619,7 +2619,7 @@ func TestListChannelsLastMessage(t *testing.T) {
 		t.Fatalf("falha ao criar primeira mensagem: %v", err)
 	}
 
-	channels, err := ListChannels(testCtx())
+	channels, err := ListChannels(testCtx(), author.ID)
 	if err != nil {
 		t.Fatalf("ListChannels retornou erro: %v", err)
 	}
@@ -2658,7 +2658,7 @@ func TestListChannelsLastMessage(t *testing.T) {
 		t.Fatalf("falha ao criar segunda mensagem: %v", err)
 	}
 
-	channels, err = ListChannels(testCtx())
+	channels, err = ListChannels(testCtx(), author.ID)
 	if err != nil {
 		t.Fatalf("ListChannels retornou erro: %v", err)
 	}
@@ -2709,7 +2709,7 @@ func TestListChannelsPermissionsExpanded(t *testing.T) {
 		t.Fatalf("falha ao atualizar permissões da role B: %v", err)
 	}
 
-	channels, err := ListChannels(testCtx())
+	channels, err := ListChannels(testCtx(), testActorID())
 	if err != nil {
 		t.Fatalf("ListChannels retornou erro: %v", err)
 	}
@@ -7175,6 +7175,300 @@ func TestPinMessageLimit(t *testing.T) {
 	}
 	if _, _, err := PinMessage(testCtx(), channel.ID, overflow.ID, owner.ID); !errors.Is(err, ErrTooManyPinnedMessages) {
 		t.Errorf("esperava ErrTooManyPinnedMessages, obtive %v", err)
+	}
+}
+
+// --- UnpinMessage ---
+
+func TestUnpinMessageOwner(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	if _, _, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil {
+		t.Fatalf("PinMessage retornou erro: %v", err)
+	}
+
+	removed, err := UnpinMessage(testCtx(), channel.ID, message.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("UnpinMessage retornou erro: %v", err)
+	}
+	if !removed {
+		t.Error("esperava removed=true")
+	}
+}
+
+func TestUnpinMessageNotPinned(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	if _, err := UnpinMessage(testCtx(), channel.ID, message.ID, owner.ID); !errors.Is(err, ErrMessageNotPinned) {
+		t.Errorf("esperava ErrMessageNotPinned, obtive %v", err)
+	}
+}
+
+func TestUnpinMessageWithPermissionRole(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	role, err := storage.CreateRole(testCtx(), newRandomRoleName(), nil, models.RolePermissions{PinMessage: true})
+	if err != nil {
+		t.Fatalf("CreateRole retornou erro: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), actor.ID, role.ID); err != nil {
+		t.Fatalf("AssignUserRole retornou erro: %v", err)
+	}
+
+	if _, _, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil {
+		t.Fatalf("PinMessage retornou erro: %v", err)
+	}
+
+	if _, err := UnpinMessage(testCtx(), channel.ID, message.ID, actor.ID); err != nil {
+		t.Errorf("UnpinMessage com role pin_message falhou: %v", err)
+	}
+}
+
+func TestUnpinMessageWithoutPermission(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	if _, _, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil {
+		t.Fatalf("PinMessage retornou erro: %v", err)
+	}
+
+	if _, err := UnpinMessage(testCtx(), channel.ID, message.ID, actor.ID); !errors.Is(err, ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied, obtive %v", err)
+	}
+}
+
+func TestUnpinMessageWithoutReadPermission(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	// canal restrito: o ator tem pin_message mas não read_channel
+	role, err := storage.CreateRole(testCtx(), newRandomRoleName(), nil, models.RolePermissions{PinMessage: true})
+	if err != nil {
+		t.Fatalf("CreateRole retornou erro: %v", err)
+	}
+	if _, err := UpdateChannelPermissions(testCtx(), testActorID(), channel.ID, role.ID, models.ChannelPermission{ReadChannel: false}); err != nil {
+		t.Fatalf("UpdateChannelPermissions retornou erro: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), actor.ID, role.ID); err != nil {
+		t.Fatalf("AssignUserRole retornou erro: %v", err)
+	}
+
+	if _, _, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil {
+		t.Fatalf("PinMessage retornou erro: %v", err)
+	}
+
+	if _, err := UnpinMessage(testCtx(), channel.ID, message.ID, actor.ID); !errors.Is(err, ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied sem read_channel, obtive %v", err)
+	}
+}
+
+func TestUnpinMessageNotFound(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+
+	// mensagem inexistente
+	if _, err := UnpinMessage(testCtx(), channel.ID, randUUID(), owner.ID); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para mensagem inexistente, obtive %v", err)
+	}
+
+	// mensagem de outro canal
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	other, err := CreateChannel(testCtx(), testActorID(), newRandomChannelName(), "text", "")
+	if err != nil {
+		t.Fatalf("CreateChannel (outro) retornou erro: %v", err)
+	}
+	if _, err := UnpinMessage(testCtx(), other.ID, message.ID, owner.ID); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para canal divergente, obtive %v", err)
+	}
+}
+
+func TestUnpinMessageInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		channelID string
+		messageID string
+		userID    string
+	}{
+		{"canal vazio", "", message.ID, owner.ID},
+		{"mensagem vazia", channel.ID, "", owner.ID},
+		{"usuário vazio", channel.ID, message.ID, ""},
+	} {
+		if _, err := UnpinMessage(testCtx(), tc.channelID, tc.messageID, tc.userID); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("[%s] esperava ErrInvalidInput, obtive %v", tc.name, err)
+		}
+	}
+}
+
+// --- ListPinnedMessages ---
+
+func TestListPinnedMessages(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+
+	m1, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "uma", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (uma) retornou erro: %v", err)
+	}
+	m2, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "duas", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (duas) retornou erro: %v", err)
+	}
+
+	for _, m := range []models.Message{m2, m1} {
+		if _, _, err := PinMessage(testCtx(), channel.ID, m.ID, owner.ID); err != nil {
+			t.Fatalf("PinMessage retornou erro: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	list, err := ListPinnedMessages(testCtx(), channel.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("ListPinnedMessages retornou erro: %v", err)
+	}
+	if list.ChannelID != channel.ID {
+		t.Errorf("esperava channel_id %s, obtive %s", channel.ID, list.ChannelID)
+	}
+	if len(list.Pinned) != 2 {
+		t.Fatalf("esperava 2 mensagens pinadas, obtive %d", len(list.Pinned))
+	}
+	if list.Pinned[0].ID != m2.ID || list.Pinned[1].ID != m1.ID {
+		t.Errorf("ordem incorreta: obtive [%s, %s]", list.Pinned[0].ID, list.Pinned[1].ID)
+	}
+
+	// canal sem pins: lista vazia (não nil)
+	emptyChannel, err := CreateChannel(testCtx(), testActorID(), newRandomChannelName(), "text", "")
+	if err != nil {
+		t.Fatalf("CreateChannel (vazio) retornou erro: %v", err)
+	}
+	empty, err := ListPinnedMessages(testCtx(), emptyChannel.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("ListPinnedMessages (vazio) retornou erro: %v", err)
+	}
+	if empty.Pinned == nil || len(empty.Pinned) != 0 {
+		t.Errorf("esperava lista vazia não nil, obtive %v", empty.Pinned)
+	}
+}
+
+func TestListPinnedMessagesPermissionDenied(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+
+	// canal restrito: o ator não tem read_channel
+	role, err := storage.CreateRole(testCtx(), newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("CreateRole retornou erro: %v", err)
+	}
+	if _, err := UpdateChannelPermissions(testCtx(), testActorID(), channel.ID, role.ID, models.ChannelPermission{ReadChannel: false}); err != nil {
+		t.Fatalf("UpdateChannelPermissions retornou erro: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), actor.ID, role.ID); err != nil {
+		t.Fatalf("AssignUserRole retornou erro: %v", err)
+	}
+
+	if _, err := ListPinnedMessages(testCtx(), channel.ID, actor.ID); !errors.Is(err, ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied, obtive %v", err)
+	}
+}
+
+func TestListPinnedMessagesNotFound(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+
+	if _, err := ListPinnedMessages(testCtx(), randUUID(), owner.ID); !errors.Is(err, ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound, obtive %v", err)
+	}
+}
+
+// --- ListChannels (last_read) ---
+
+func TestListChannelsLastRead(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "lida", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	if err := storage.TouchLastReadMessage(testCtx(), owner.ID, channel.ID, message); err != nil {
+		t.Fatalf("TouchLastReadMessage retornou erro: %v", err)
+	}
+
+	summaries, err := ListChannels(testCtx(), owner.ID)
+	if err != nil {
+		t.Fatalf("ListChannels retornou erro: %v", err)
+	}
+	var got *models.ChannelSummary
+	for i := range summaries {
+		if summaries[i].ID == channel.ID {
+			got = &summaries[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("canal %s não encontrado na listagem", channel.ID)
+	}
+	if got.LastReadMessage == nil || *got.LastReadMessage != message.ID {
+		t.Errorf("esperava last_read_message %s, obtive %v", message.ID, got.LastReadMessage)
+	}
+	if got.LastReadAt == nil || got.LastReadAt.IsZero() {
+		t.Errorf("esperava last_read_at preenchido, obtive %v", got.LastReadAt)
+	}
+
+	// outro usuário: last_read nulo
+	other, err := ListChannels(testCtx(), testActorID())
+	if err != nil {
+		t.Fatalf("ListChannels (outro usuário) retornou erro: %v", err)
+	}
+	for _, s := range other {
+		if s.ID == channel.ID && (s.LastReadMessage != nil || s.LastReadAt != nil) {
+			t.Errorf("esperava last_read nulo para outro usuário, obtive %v / %v", s.LastReadMessage, s.LastReadAt)
+		}
 	}
 }
 

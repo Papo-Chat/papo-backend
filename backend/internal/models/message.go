@@ -52,3 +52,11 @@ type MessageList struct {
 	Messages  []MessageWithAttachment `json:"messages"`
 	HasMore   bool                    `json:"has_more"`
 }
+
+// PinnedMessageList é a resposta de GET /channels/:channel_id/pinned: as
+// mensagens pinadas do canal, na ordem em que foram fixadas (pinned_at).
+// Pinned é [] (nunca null) quando o canal não tem mensagens pinadas.
+type PinnedMessageList struct {
+	ChannelID string                  `json:"channel_id"`
+	Pinned    []MessageWithAttachment `json:"pinned"`
+}

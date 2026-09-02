@@ -509,6 +509,7 @@ func TestEventTypeIsInbound(t *testing.T) {
 		{"avatar_update", EventTypeAvatarUpdate, false},
 		{"message_edit", EventTypeMessageEdit, false},
 		{"message_delete", EventTypeMessageDelete, false},
+		{"message_pin", EventTypeMessagePin, false},
 		{"channel_create", EventTypeChannelCreate, false},
 		{"channel_update", EventTypeChannelUpdate, false},
 		{"channel_delete", EventTypeChannelDelete, false},

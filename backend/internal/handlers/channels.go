@@ -19,7 +19,14 @@ type channelListResponse struct {
 
 // ListChannelsHandler implementa GET /channels.
 func ListChannelsHandler(baseURL string, c echo.Context) error {
-	channels, err := services.ListChannels(c.Request().Context())
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	channels, err := services.ListChannels(c.Request().Context(), userID)
 	if err != nil {
 		utils.Errorf("request_id=%s falha ao listar canais: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)

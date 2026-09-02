@@ -13,6 +13,7 @@ const (
 	EventTypeMessage        EventType = "message"
 	EventTypeMessageEdit    EventType = "message_edit"
 	EventTypeMessageDelete  EventType = "message_delete"
+	EventTypeMessagePin     EventType = "message_pin"
 	EventTypeChannelCreate  EventType = "channel_create"
 	EventTypeChannelUpdate  EventType = "channel_update"
 	EventTypeChannelDelete  EventType = "channel_delete"
@@ -116,6 +117,16 @@ type ReactUpdateOutbound struct {
 	EmojiID   *string   `json:"emoji_id"`
 	Unicode   *string   `json:"unicode"`
 	Count     int       `json:"count"`
+}
+
+// MessagePinOutbound é o evento de fixação de mensagem (pin adicionado ou
+// removido), distribuído aos clientes que leem o canal. IsPinned é true
+// quando a mensagem passou a estar pinada e false quando a fixação foi
+// removida.
+type MessagePinOutbound struct {
+	Type      EventType `json:"type"`
+	MessageID string    `json:"message_id"`
+	IsPinned  bool      `json:"is_pinned"`
 }
 
 // ChannelCreateOutbound é o evento de criação de canal distribuído aos clientes.

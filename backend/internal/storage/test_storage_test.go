@@ -1419,7 +1419,7 @@ func TestListChannelSummaries(t *testing.T) {
 	}
 
 	// retorna todos os canais criados
-	summaries, err := ListChannelSummaries(testCtx())
+	summaries, err := ListChannelSummaries(testCtx(), author.ID)
 	if err != nil {
 		t.Fatalf("ListChannelSummaries retornou erro: %v", err)
 	}
@@ -1692,7 +1692,7 @@ func TestListRoleNames(t *testing.T) {
 	}
 
 	// ListChannelSummaries também expande os nomes
-	summaries, err := ListChannelSummaries(testCtx())
+	summaries, err := ListChannelSummaries(testCtx(), randUUID())
 	if err != nil {
 		t.Fatalf("ListChannelSummaries retornou erro: %v", err)
 	}
@@ -3837,6 +3837,220 @@ func TestPinMessageCascadeOnChannelDelete(t *testing.T) {
 	}
 	if count := countPinnedMessages(t, channel.ID); count != 0 {
 		t.Errorf("esperava 0 pins após excluir o canal, obtive %d", count)
+	}
+}
+
+func TestUnpinMessage(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	// mensagem não pinada: (false, nil)
+	removed, err := UnpinMessage(testCtx(), channel.ID, message.ID)
+	if err != nil {
+		t.Fatalf("UnpinMessage em mensagem não pinada retornou erro: %v", err)
+	}
+	if removed {
+		t.Error("esperava removed=false para mensagem não pinada")
+	}
+
+	if _, _, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil {
+		t.Fatalf("PinMessage retornou erro: %v", err)
+	}
+
+	removed, err = UnpinMessage(testCtx(), channel.ID, message.ID)
+	if err != nil {
+		t.Fatalf("UnpinMessage retornou erro: %v", err)
+	}
+	if !removed {
+		t.Error("esperava removed=true após fixar")
+	}
+	if count := countPinnedMessages(t, channel.ID); count != 0 {
+		t.Errorf("esperava 0 pins após remoção, obtive %d", count)
+	}
+
+	// segunda remoção: (false, nil)
+	removed, err = UnpinMessage(testCtx(), channel.ID, message.ID)
+	if err != nil {
+		t.Fatalf("segunda UnpinMessage retornou erro: %v", err)
+	}
+	if removed {
+		t.Error("esperava removed=false na segunda remoção")
+	}
+}
+
+func TestUnpinMessageWrongChannel(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	other := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	if _, _, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil {
+		t.Fatalf("PinMessage retornou erro: %v", err)
+	}
+
+	removed, err := UnpinMessage(testCtx(), other.ID, message.ID)
+	if err != nil {
+		t.Fatalf("UnpinMessage em canal divergente retornou erro: %v", err)
+	}
+	if removed {
+		t.Error("esperava removed=false para canal divergente")
+	}
+	if count := countPinnedMessages(t, channel.ID); count != 1 {
+		t.Errorf("esperava 1 pin intacto, obtive %d", count)
+	}
+}
+
+func TestListPinnedMessagesWithAttachmentsByChannel(t *testing.T) {
+	author := newTestUser(t)
+	_ = newTestServer(t, nil)
+	channel := newTestChannel(t)
+
+	m1, err := CreateMessage(testCtx(), channel.ID, author.ID, "uma", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (uma) retornou erro: %v", err)
+	}
+	attachment, err := CreateAttachment(testCtx(), models.Attachments{
+		OriginalFileName: "arquivo.txt",
+		MediaShaHash:     newTestMedia(t, []byte("1234567890")),
+		CreatedBy:        &author.ID,
+	})
+	if err != nil {
+		t.Fatalf("falha ao criar attachment de apoio: %v", err)
+	}
+	m2, err := CreateMessage(testCtx(), channel.ID, author.ID, "duas", "", []string{attachment.ID})
+	if err != nil {
+		t.Fatalf("CreateMessage (duas) retornou erro: %v", err)
+	}
+	m3, err := CreateMessage(testCtx(), channel.ID, author.ID, "três", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (três) retornou erro: %v", err)
+	}
+
+	// fixa na ordem m3, m1, m2 (com timestamps distintos)
+	for _, m := range []models.Message{m3, m1, m2} {
+		if _, _, err := PinMessage(testCtx(), channel.ID, m.ID, author.ID); err != nil {
+			t.Fatalf("PinMessage retornou erro: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	messages, err := ListPinnedMessagesWithAttachmentsByChannel(testCtx(), channel.ID)
+	if err != nil {
+		t.Fatalf("ListPinnedMessagesWithAttachmentsByChannel retornou erro: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("esperava 3 mensagens pinadas, obtive %d", len(messages))
+	}
+
+	// ordem pela fixação (pinned_at crescente)
+	want := []string{m3.ID, m1.ID, m2.ID}
+	for i, id := range want {
+		if messages[i].ID != id {
+			t.Errorf("posição %d: esperava mensagem %s, obtive %s", i, id, messages[i].ID)
+		}
+	}
+	if len(messages[0].Attachments) != 0 {
+		t.Errorf("m3: esperava 0 attachments, obtive %d", len(messages[0].Attachments))
+	}
+	if len(messages[1].Attachments) != 0 {
+		t.Errorf("m1: esperava 0 attachments, obtive %d", len(messages[1].Attachments))
+	}
+	if len(messages[2].Attachments) != 1 {
+		t.Fatalf("m2: esperava 1 attachment, obtive %d", len(messages[2].Attachments))
+	}
+	if messages[2].Attachments[0].ID != attachment.ID {
+		t.Errorf("m2: esperava attachment %s, obtive %s", attachment.ID, messages[2].Attachments[0].ID)
+	}
+
+	// canal sem pins: lista vazia (não nil)
+	empty := newTestChannel(t)
+	emptyMessages, err := ListPinnedMessagesWithAttachmentsByChannel(testCtx(), empty.ID)
+	if err != nil {
+		t.Fatalf("ListPinnedMessagesWithAttachmentsByChannel (vazio) retornou erro: %v", err)
+	}
+	if emptyMessages == nil || len(emptyMessages) != 0 {
+		t.Errorf("esperava lista vazia não nil, obtive %v", emptyMessages)
+	}
+}
+
+// --- channel summaries (last_read) ---
+
+func TestListChannelSummariesLastRead(t *testing.T) {
+	author := newTestUser(t)
+	_ = newTestServer(t, strPtr(author.ID))
+	channel := newTestChannel(t)
+
+	find := func(t *testing.T, summaries []models.ChannelSummary, id string) models.ChannelSummary {
+		t.Helper()
+		for _, s := range summaries {
+			if s.ID == id {
+				return s
+			}
+		}
+		t.Fatalf("canal %s não encontrado na listagem", id)
+		return models.ChannelSummary{}
+	}
+
+	// sem leitura registrada: last_read nulo
+	summaries, err := ListChannelSummaries(testCtx(), author.ID)
+	if err != nil {
+		t.Fatalf("ListChannelSummaries retornou erro: %v", err)
+	}
+	got := find(t, summaries, channel.ID)
+	if got.LastReadMessage != nil || got.LastReadAt != nil {
+		t.Errorf("esperava last_read nulo, obtive %v / %v", got.LastReadMessage, got.LastReadAt)
+	}
+
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "lida", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	if err := TouchLastReadMessage(testCtx(), author.ID, channel.ID, message); err != nil {
+		t.Fatalf("TouchLastReadMessage retornou erro: %v", err)
+	}
+
+	summaries, err = ListChannelSummaries(testCtx(), author.ID)
+	if err != nil {
+		t.Fatalf("ListChannelSummaries (após leitura) retornou erro: %v", err)
+	}
+	got = find(t, summaries, channel.ID)
+	if got.LastReadMessage == nil || *got.LastReadMessage != message.ID {
+		t.Errorf("esperava last_read_message %s, obtive %v", message.ID, got.LastReadMessage)
+	}
+	if got.LastReadAt == nil || got.LastReadAt.IsZero() {
+		t.Errorf("esperava last_read_at preenchido, obtive %v", got.LastReadAt)
+	}
+
+	// outro usuário: last_read nulo
+	summaries, err = ListChannelSummaries(testCtx(), randUUID())
+	if err != nil {
+		t.Fatalf("ListChannelSummaries (outro usuário) retornou erro: %v", err)
+	}
+	got = find(t, summaries, channel.ID)
+	if got.LastReadMessage != nil || got.LastReadAt != nil {
+		t.Errorf("esperava last_read nulo para outro usuário, obtive %v / %v", got.LastReadMessage, got.LastReadAt)
+	}
+}
+
+func TestGetChannelSummaryLastReadNull(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+
+	summary, err := GetChannelSummary(testCtx(), channel.ID)
+	if err != nil {
+		t.Fatalf("GetChannelSummary retornou erro: %v", err)
+	}
+	if summary.LastReadMessage != nil || summary.LastReadAt != nil {
+		t.Errorf("esperava last_read nulo em GetChannelSummary, obtive %v / %v", summary.LastReadMessage, summary.LastReadAt)
 	}
 }
 

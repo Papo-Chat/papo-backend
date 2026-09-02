@@ -44,15 +44,19 @@ type ChannelLastMessage struct {
 }
 
 // ChannelSummary é a visão de canal exposta pela API (GET /channels e
-// POST /channels): permissões expandidas por role e a última mensagem do
-// canal (null quando o canal não tem mensagens).
+// POST /channels): permissões expandidas por role, a última mensagem do
+// canal (null quando o canal não tem mensagens) e o último read do usuário
+// no canal (user_channel_state; null quando o usuário ainda não leu o canal
+// ou quando a visão não tem usuário de referência).
 type ChannelSummary struct {
-	ID          string                   `json:"id"`
-	Name        string                   `json:"name"`
-	Type        string                   `json:"type"`
-	Position    int                      `json:"position"`
-	Topic       *string                  `json:"topic"`
-	Permissions []ChannelPermissionEntry `json:"permissions"`
-	CreatedAt   time.Time                `json:"created_at"`
-	LastMessage *ChannelLastMessage      `json:"last_message"`
+	ID              string                   `json:"id"`
+	Name            string                   `json:"name"`
+	Type            string                   `json:"type"`
+	Position        int                      `json:"position"`
+	Topic           *string                  `json:"topic"`
+	Permissions     []ChannelPermissionEntry `json:"permissions"`
+	CreatedAt       time.Time                `json:"created_at"`
+	LastMessage     *ChannelLastMessage      `json:"last_message"`
+	LastReadMessage *string                  `json:"last_read_message"`
+	LastReadAt      *time.Time               `json:"last_read_at"`
 }

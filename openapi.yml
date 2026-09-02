@@ -1174,6 +1174,59 @@ paths:
                  $ref: '#/components/schemas/Error'
         '500':
           $ref: '#/components/responses/InternalError'
+     delete:
+       tags: [Messages]
+       summary: Remove a fixação da mensagem no canal
+       description: "Permission Check: `read_channel` do canal e `pin_message` (dono do servidor ou role com a permissão). Não é idempotente: mensagem não pinada retorna 404."
+       parameters:
+         - $ref: '#/components/parameters/ChannelId'
+         - $ref: '#/components/parameters/MessageId'
+       responses:
+         '204':
+           description: Fixação removida
+         '400':
+           description: Parâmetro ausente ou inválido
+           content:
+             application/problem+json:
+               schema:
+                 $ref: '#/components/schemas/Error'
+         '401':
+           $ref: '#/components/responses/Unauthorized'
+         '403':
+           $ref: '#/components/responses/Forbidden'
+         '404':
+           $ref: '#/components/responses/NotFound'
+         '500':
+           $ref: '#/components/responses/InternalError'
+
+  /channels/{channel_id}/pinned:
+    get:
+      tags: [Messages]
+      summary: Lista as mensagens pinadas do canal
+      description: "Permission Check: `read_channel` do canal. Retorna as mensagens pinadas com attachments, previews, thumbnails e reações, na ordem em que foram fixadas (pinned_at crescente)."
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      responses:
+        '200':
+          description: Mensagens pinadas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PinnedMessageList'
+        '400':
+          description: Parâmetro ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /channels/{channel_id}/messages/{message_id}/reactions:
     post:
@@ -1641,6 +1694,7 @@ paths:
         | `message`        | outbound  | `{ type: "message", id, channel_id, author_id, content, attachments, created_at }`         |
         | `message_edit`   | outbound  | `{ type: "message_edit", id, channel_id, content, edited_at }`                          |
         | `message_delete` | outbound  | `{ type: "message_delete", id, channel_id }`                                            |
+        | `message_pin`    | outbound  | `{ type: "message_pin", message_id, is_pinned }` (is_pinned: true quando a mensagem foi pinada, false quando a fixação foi removida) |
         | `react_update`   | outbound  | `{ type: "react_update", message_id, emoji_id, unicode, count }` (emoji_id/unicode: um é null; count = usuários que reagiram com aquele emoji, 0 quando a última foi removida) |
         | `channel_create` | outbound  | `{ type: "channel_create", channel_id, name, channel_type, position }`                 |
         | `channel_update` | outbound  | `{ type: "channel_update", channel_id, name, position }`                               |
@@ -2188,6 +2242,20 @@ components:
           format: date-time
         last_message:
           $ref: '#/components/schemas/Message'
+        last_read_message:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Última mensagem lida pelo usuário autenticado neste canal
+            (user_channel_state). Null quando o usuário ainda não leu o canal.
+        last_read_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Momento em que o usuário autenticado leu até last_read_message.
+            Null quando o usuário ainda não leu o canal.
 
     ChannelPermissionEntry:
       type: object
@@ -2339,6 +2407,21 @@ components:
         pinned_at:
           type: string
           format: date-time
+
+    PinnedMessageList:
+      type: object
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+        pinned:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageWithAttachment'
+          description: >
+            Mensagens pinadas do canal, na ordem em que foram fixadas
+            (pinned_at crescente). Vazio quando o canal não tem mensagens
+            pinadas.
 
     MessageListResponse:
       type: object

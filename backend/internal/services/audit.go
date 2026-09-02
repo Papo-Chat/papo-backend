@@ -37,6 +37,7 @@ const (
 	ActionMessageEdit         = "message.edit"
 	ActionMessageDelete       = "message.delete"
 	ActionMessagePin          = "message.pin"
+	ActionMessageUnpin        = "message.unpin"
 	ActionRoleCreate          = "role.create"
 	ActionRoleUpdate          = "role.update"
 	ActionRoleDelete          = "role.delete"

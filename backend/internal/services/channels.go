@@ -35,10 +35,10 @@ const maxChannelTopicLength = 512
 // maxChannels é o número máximo de canais (500, README).
 const maxChannels = 500
 
-// ListChannels lista os canais com permissões expandidas e a última mensagem
-// de cada um (README).
-func ListChannels(ctx context.Context) ([]models.ChannelSummary, error) {
-	return storage.ListChannelSummaries(ctx)
+// ListChannels lista os canais com permissões expandidas, a última mensagem
+// de cada um e o último read de userID em cada canal (README).
+func ListChannels(ctx context.Context, userID string) ([]models.ChannelSummary, error) {
+	return storage.ListChannelSummaries(ctx, userID)
 }
 
 // CreateChannel cria um novo canal
