@@ -8301,7 +8301,7 @@ func TestLoginServerHandlerSuccess(t *testing.T) {
 	createNonPublicServerTest(t, password)
 
 	body, _ := json.Marshal(map[string]string{"server_password": password})
-	c := newContext(t, http.MethodPost, "/auth/loginServer", body, newRandomIP())
+	c := newContext(t, http.MethodPost, "/auth/login_server", body, newRandomIP())
 	rec := recorder(c)
 
 	if err := LoginServerHandler(testBaseURL, c); err != nil {
@@ -8330,7 +8330,7 @@ func TestLoginServerHandlerPublicServer(t *testing.T) {
 	createPublicServerTest(t)
 
 	body, _ := json.Marshal(map[string]string{"server_password": "qualquer_senha"})
-	c := newContext(t, http.MethodPost, "/auth/loginServer", body, newRandomIP())
+	c := newContext(t, http.MethodPost, "/auth/login_server", body, newRandomIP())
 	rec := recorder(c)
 
 	if err := LoginServerHandler(testBaseURL, c); err != nil {
@@ -8342,7 +8342,7 @@ func TestLoginServerHandlerPublicServer(t *testing.T) {
 }
 
 func TestLoginServerHandlerInvalidJSON(t *testing.T) {
-	c := newContext(t, http.MethodPost, "/auth/loginServer", []byte("{invalido"), newRandomIP())
+	c := newContext(t, http.MethodPost, "/auth/login_server", []byte("{invalido"), newRandomIP())
 	rec := recorder(c)
 
 	if err := LoginServerHandler(testBaseURL, c); err != nil {
@@ -8353,7 +8353,7 @@ func TestLoginServerHandlerInvalidJSON(t *testing.T) {
 
 func TestLoginServerHandlerMissingPassword(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{})
-	c := newContext(t, http.MethodPost, "/auth/loginServer", body, newRandomIP())
+	c := newContext(t, http.MethodPost, "/auth/login_server", body, newRandomIP())
 	rec := recorder(c)
 
 	if err := LoginServerHandler(testBaseURL, c); err != nil {
@@ -8366,7 +8366,7 @@ func TestLoginServerHandlerPasswordTooLong(t *testing.T) {
 	cfg := config.LoadConfig()
 
 	body, _ := json.Marshal(map[string]string{"server_password": strings.Repeat("a", cfg.MaxPasswordLength+1)})
-	c := newContext(t, http.MethodPost, "/auth/loginServer", body, newRandomIP())
+	c := newContext(t, http.MethodPost, "/auth/login_server", body, newRandomIP())
 	rec := recorder(c)
 
 	if err := LoginServerHandler(testBaseURL, c); err != nil {
@@ -8381,7 +8381,7 @@ func TestLoginServerHandlerWrongPassword(t *testing.T) {
 	createNonPublicServerTest(t, "server_pw_"+randHex(4))
 
 	body, _ := json.Marshal(map[string]string{"server_password": "senha_incorreta_" + randHex(4)})
-	c := newContext(t, http.MethodPost, "/auth/loginServer", body, newRandomIP())
+	c := newContext(t, http.MethodPost, "/auth/login_server", body, newRandomIP())
 	rec := recorder(c)
 
 	if err := LoginServerHandler(testBaseURL, c); err != nil {
@@ -8394,7 +8394,7 @@ func TestLoginServerHandlerServerNotFound(t *testing.T) {
 	removeAllServersTest(t)
 
 	body, _ := json.Marshal(map[string]string{"server_password": "qualquer_senha"})
-	c := newContext(t, http.MethodPost, "/auth/loginServer", body, newRandomIP())
+	c := newContext(t, http.MethodPost, "/auth/login_server", body, newRandomIP())
 	rec := recorder(c)
 
 	if err := LoginServerHandler(testBaseURL, c); err != nil {
@@ -8414,7 +8414,7 @@ func TestLoginServerHandlerBannedIP(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string]string{"server_password": "qualquer_senha"})
-	c := newContext(t, http.MethodPost, "/auth/loginServer", body, ip)
+	c := newContext(t, http.MethodPost, "/auth/login_server", body, ip)
 	rec := recorder(c)
 
 	if err := LoginServerHandler(testBaseURL, c); err != nil {
@@ -8435,7 +8435,7 @@ func TestRegisterHandlerServerAccessRequired(t *testing.T) {
 		t.Fatalf("RegisterHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusUnauthorized, "server-access-required", "Acesso ao servidor negado",
-		"servidor não público: informe a senha do servidor em /auth/loginServer antes de continuar")
+		"servidor não público: informe a senha do servidor em /auth/login_server antes de continuar")
 }
 
 func TestLoginHandlerServerAccessRequired(t *testing.T) {
@@ -8450,7 +8450,7 @@ func TestLoginHandlerServerAccessRequired(t *testing.T) {
 		t.Fatalf("LoginHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusUnauthorized, "server-access-required", "Acesso ao servidor negado",
-		"servidor não público: informe a senha do servidor em /auth/loginServer antes de continuar")
+		"servidor não público: informe a senha do servidor em /auth/login_server antes de continuar")
 }
 
 func TestLoginHandlerSessionTokenNotAccepted(t *testing.T) {
@@ -8473,7 +8473,7 @@ func TestLoginHandlerSessionTokenNotAccepted(t *testing.T) {
 		t.Fatalf("LoginHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusUnauthorized, "server-access-required", "Acesso ao servidor negado",
-		"servidor não público: informe a senha do servidor em /auth/loginServer antes de continuar")
+		"servidor não público: informe a senha do servidor em /auth/login_server antes de continuar")
 }
 
 func TestRegisterHandlerWithTempToken(t *testing.T) {

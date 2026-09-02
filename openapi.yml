@@ -19,6 +19,7 @@ tags:
   - name: Servers
   - name: Channels
   - name: Messages
+  - name: Notifications
   - name: Roles
   - name: UserRoles
   - name: Emojis
@@ -70,7 +71,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '401':
-          description: Servidor não público sem autorização temporária (execute /auth/loginServer antes)
+          description: Servidor não público sem autorização temporária (execute /auth/login_server antes)
           content:
             application/problem+json:
               schema:
@@ -111,7 +112,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '401':
-          description: Credenciais inválidas ou servidor não público sem autorização temporária (execute /auth/loginServer antes)
+          description: Credenciais inválidas ou servidor não público sem autorização temporária (execute /auth/login_server antes)
           content:
             application/problem+json:
               schema:
@@ -121,7 +122,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /auth/loginServer:
+  /auth/login_server:
     post:
       tags: [Auth]
       summary: Valida a senha do servidor e define o cookie Auth com token temporário (30min)
@@ -597,10 +598,87 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /users/{user_id}/notifications:
+    get:
+      tags: [Notifications]
+      summary: Lista as notificações do usuário em ordem decrescente (Limite de 100 por requisição, use cursor com since + last_id para paginar)
+      description: "Permission Check: somente o próprio usuário (user_id autenticado)"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - name: since
+          in: query
+          required: false
+          description: Timestamp ISO 8601 para polling de novas notificações
+          schema:
+            type: string
+            format: date-time
+        - name: last_id
+          in: query
+          required: false
+          description: Id da última notificação da página anterior; usado com since como cursor exato (created_at, id)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Notificações do usuário
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationList'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{user_id}/read_notification:
+    put:
+      tags: [Notifications]
+      summary: Marca notificações do usuário como lidas (1 a 1000 ids)
+      description: "Permission Check: somente o próprio usuário (user_id autenticado)"
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarkNotificationsReadRequest'
+      responses:
+        '200':
+          description: Notificações marcadas como lidas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarkNotificationsReadResponse'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /server:
     get:
       tags: [Servers]
       summary: Detalhes do servidor
+      security: []
       responses:
         '200':
           description: Detalhes do servidor
@@ -1012,6 +1090,42 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /channels/{channel_id}/user/{user_id}/settings:
+    post:
+      tags: [Notifications]
+      summary: Define a configuração de notificação do usuário no canal
+      description: "Permission Check: somente o próprio usuário (user_id autenticado)"
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateChannelUserSettingRequest'
+      responses:
+        '200':
+          description: Configuração atualizada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelUserSetting'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /channels/{channel_id}/messages:
     get:
       tags: [Messages]
@@ -1174,30 +1288,30 @@ paths:
                  $ref: '#/components/schemas/Error'
         '500':
           $ref: '#/components/responses/InternalError'
-     delete:
-       tags: [Messages]
-       summary: Remove a fixação da mensagem no canal
-       description: "Permission Check: `read_channel` do canal e `pin_message` (dono do servidor ou role com a permissão). Não é idempotente: mensagem não pinada retorna 404."
-       parameters:
-         - $ref: '#/components/parameters/ChannelId'
-         - $ref: '#/components/parameters/MessageId'
-       responses:
-         '204':
-           description: Fixação removida
-         '400':
-           description: Parâmetro ausente ou inválido
-           content:
-             application/problem+json:
-               schema:
-                 $ref: '#/components/schemas/Error'
-         '401':
-           $ref: '#/components/responses/Unauthorized'
-         '403':
-           $ref: '#/components/responses/Forbidden'
-         '404':
-           $ref: '#/components/responses/NotFound'
-         '500':
-           $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Messages]
+      summary: Remove a fixação da mensagem no canal
+      description: "Permission Check: `read_channel` do canal e `pin_message` (dono do servidor ou role com a permissão). Não é idempotente: mensagem não pinada retorna 404."
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '204':
+          description: Fixação removida
+        '400':
+          description: Parâmetro ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /channels/{channel_id}/pinned:
     get:
@@ -1696,6 +1810,7 @@ paths:
         | `message_delete` | outbound  | `{ type: "message_delete", id, channel_id }`                                            |
         | `message_pin`    | outbound  | `{ type: "message_pin", message_id, is_pinned }` (is_pinned: true quando a mensagem foi pinada, false quando a fixação foi removida) |
         | `react_update`   | outbound  | `{ type: "react_update", message_id, emoji_id, unicode, count }` (emoji_id/unicode: um é null; count = usuários que reagiram com aquele emoji, 0 quando a última foi removida) |
+        | `new_notification` | unicast  | `{ type: "new_notification", id, user_id, message_id, message_content }` (id: row de notificação ou UUID efêmero quando a configuração all gera evento sem row; user_id: autor da mensagem; message_content: truncado a 512 caracteres) |
         | `channel_create` | outbound  | `{ type: "channel_create", channel_id, name, channel_type, position }`                 |
         | `channel_update` | outbound  | `{ type: "channel_update", channel_id, name, position }`                               |
         | `channel_delete` | outbound  | `{ type: "channel_delete", channel_id }`                                               |
@@ -2256,6 +2371,95 @@ components:
           description: >
             Momento em que o usuário autenticado leu até last_read_message.
             Null quando o usuário ainda não leu o canal.
+        notification_settings:
+          $ref: '#/components/schemas/NotificationSettings'
+    NotificationSettings:
+      type: string
+      enum: [off, only_mentions, all]
+      description: >
+       Configuração de notificação do usuário autenticado neste canal (channel_user_settings). Ausência de row equivale ao padrão only_mentions.
+        off: nenhuma notificação; only_mentions: notifica apenas quando o
+        usuário é mencionado diretamente, é o autor da mensagem respondida
+        (reply_to) ou o canal recebe @everyone; all: notifica toda mensagem
+        do canal.
+        
+
+    ChannelUserSetting:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        channel_id:
+          type: string
+          format: uuid
+        notification_settings:
+          $ref: '#/components/schemas/NotificationSettings'
+        updated_at:
+          type: string
+          format: date-time
+
+    UpdateChannelUserSettingRequest:
+      type: object
+      required: [notification_settings]
+      properties:
+        notification_settings:
+          $ref: '#/components/schemas/NotificationSettings'
+
+    Notification:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        message_id:
+          type: string
+          format: uuid
+        channel_id:
+          type: string
+          format: uuid
+        author_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Autor da mensagem notificada (null quando o autor foi removido)
+        message_content:
+          type: string
+          description: Conteúdo da mensagem notificada, truncado a 512 caracteres
+        read:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    NotificationList:
+      type: object
+      properties:
+        notifications:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+        has_more:
+          type: boolean
+
+    MarkNotificationsReadRequest:
+      type: object
+      required: [notification_ids]
+      properties:
+        notification_ids:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            type: string
+            format: uuid
+
+    MarkNotificationsReadResponse:
+      type: object
+      properties:
+        updated:
+          type: integer
+          description: Número de notificações marcadas como lidas
 
     ChannelPermissionEntry:
       type: object
@@ -2417,7 +2621,7 @@ components:
         pinned:
           type: array
           items:
-            $ref: '#/components/schemas/MessageWithAttachment'
+            $ref: '#/components/schemas/Message'
           description: >
             Mensagens pinadas do canal, na ordem em que foram fixadas
             (pinned_at crescente). Vazio quando o canal não tem mensagens

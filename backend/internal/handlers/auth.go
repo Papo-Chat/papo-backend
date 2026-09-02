@@ -206,7 +206,7 @@ type loginServerResponse struct {
 	TempToken string `json:"temp_token"`
 }
 
-// LoginServerHandler implementa POST /auth/loginServer.
+// LoginServerHandler implementa POST /auth/login_server.
 // Valida a senha do servidor (quando o servidor é não público) e emite a
 // autorização temporária: define o cookie Auth com um JWT de curta duração
 // (Max-Age 1800s) e retorna o token no corpo.
@@ -294,7 +294,7 @@ func checkServerAccess(baseURL string, c echo.Context) bool {
 	case errors.Is(err, services.ErrServerAccessRequired):
 		_ = utils.SendProblem(c, baseURL, http.StatusUnauthorized,
 			"server-access-required", "Acesso ao servidor negado",
-			"servidor não público: informe a senha do servidor em /auth/loginServer antes de continuar")
+			"servidor não público: informe a senha do servidor em /auth/login_server antes de continuar")
 	default:
 		utils.Errorf("request_id=%s falha ao verificar o acesso ao servidor: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)

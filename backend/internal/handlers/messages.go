@@ -156,6 +156,10 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 	requestID := c.Request().Header.Get(echo.HeaderXRequestID)
 	go processNewMessagePreviews(context.Background(), requestID, message.ChannelID, message.ID, userID, content)
 
+	// Dispara as notificações da mensagem em background (menções, replies e
+	// @everyone); as entregas chegam via WS new_notification (unicast).
+	go dispatchMessageNotifications(context.Background(), requestID, message.Message)
+
 	return c.JSON(http.StatusCreated, message)
 }
 

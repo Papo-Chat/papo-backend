@@ -164,7 +164,7 @@ func LoginServer(ctx context.Context, serverPassword, ip string) error {
 
 // RequireServerAccess aplica a regra de servidores não públicos: antes de
 // logar ou registrar, a requisição deve carregar uma autorização temporária
-// válida (emitida por /auth/loginServer) no cookie Auth.
+// válida (emitida por /auth/login_server) no cookie Auth.
 // Servidores públicos e o caso de bootstrap (servidor ainda não criado) não
 // têm essa exigência. authCookie é o valor bruto do cookie Auth ("" quando
 // ausente).

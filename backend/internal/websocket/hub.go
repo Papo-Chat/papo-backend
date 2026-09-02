@@ -195,6 +195,26 @@ func (h *Hub) BroadcastToUsers(event any, allowed map[string]bool) {
 	}
 }
 
+// SendToUser serializa o evento uma única vez e o envia em unicast a todas
+// as conexões do usuário informado (eventos privados por usuário, como
+// new_notification; usuário offline não recebe). Se o buffer de envio de um
+// cliente está cheio, a conexão dele é encerrada (mesma regra de
+// Client.sendEvent).
+func (h *Hub) SendToUser(userID string, event any) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		utils.Errorf("websocket: falha ao serializar evento de unicast: %v", err)
+		return
+	}
+
+	for c := range h.Clients() {
+		if c.userID != userID {
+			continue
+		}
+		c.sendRaw(data)
+	}
+}
+
 // broadcastExcept serializa o evento uma única vez e o envia a todos os
 // clientes registrados, exceto o informado.
 func (h *Hub) broadcastExcept(event any, exclude *Client) {

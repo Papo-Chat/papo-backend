@@ -19,7 +19,7 @@ func RegisterAuthRoutes(e *echo.Echo, cfg *config.Config) {
 	e.POST("/auth/login", func(c echo.Context) error {
 		return LoginHandler(cfg.BaseURL, c)
 	}, authRateLimit)
-	e.POST("/auth/loginServer", func(c echo.Context) error {
+	e.POST("/auth/login_server", func(c echo.Context) error {
 		return LoginServerHandler(cfg.BaseURL, c)
 	}, authRateLimit)
 	e.GET("/auth/whoami", func(c echo.Context) error {
@@ -47,6 +47,12 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware)
 	e.PUT("/users/:user_id/status", func(c echo.Context) error {
 		return UpdateStatusHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.GET("/users/:user_id/notifications", func(c echo.Context) error {
+		return ListUserNotificationsHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.PUT("/users/:user_id/read_notification", func(c echo.Context) error {
+		return ReadNotificationHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 	e.PUT("/users/:user_id/avatar", func(c echo.Context) error {
 		return UpdateAvatarHandler(cfg.BaseURL, c)
@@ -105,6 +111,9 @@ func RegisterChannelRoutes(e *echo.Echo, cfg *config.Config) {
 	e.PUT("/channels/:channel_id/permissions/:role_id", func(c echo.Context) error {
 		return UpdateChannelPermissionsHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware, middleware.RequireManageChannels())
+	e.POST("/channels/:channel_id/user/:user_id/settings", func(c echo.Context) error {
+		return UpdateChannelUserSettingHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
 }
 
 // RegisterMessageRoutes registra as rotas de mensagens.

@@ -10,24 +10,25 @@ import (
 type EventType string
 
 const (
-	EventTypeMessage        EventType = "message"
-	EventTypeMessageEdit    EventType = "message_edit"
-	EventTypeMessageDelete  EventType = "message_delete"
-	EventTypeMessagePin     EventType = "message_pin"
-	EventTypeChannelCreate  EventType = "channel_create"
-	EventTypeChannelUpdate  EventType = "channel_update"
-	EventTypeChannelDelete  EventType = "channel_delete"
-	EventTypeTyping         EventType = "typing"
-	EventTypeAvatarUpdate   EventType = "avatar_update"
-	EventTypePresenceUpdate EventType = "presence_update"
-	EventTypePresenceSync   EventType = "presence_sync"
-	EventTypeHeartbeat      EventType = "heartbeat"
-	EventTypeHeartbeatAck   EventType = "heartbeat_ack"
-	EventTypeError          EventType = "error"
-	EventTypeNewPreview     EventType = "new_preview"
-	EventTypeRemovePreview  EventType = "remove_preview"
-	EventTypeUserJoin       EventType = "user_join"
-	EventTypeReactUpdate    EventType = "react_update"
+	EventTypeMessage         EventType = "message"
+	EventTypeMessageEdit     EventType = "message_edit"
+	EventTypeMessageDelete   EventType = "message_delete"
+	EventTypeMessagePin      EventType = "message_pin"
+	EventTypeChannelCreate   EventType = "channel_create"
+	EventTypeChannelUpdate   EventType = "channel_update"
+	EventTypeChannelDelete   EventType = "channel_delete"
+	EventTypeTyping          EventType = "typing"
+	EventTypeAvatarUpdate    EventType = "avatar_update"
+	EventTypePresenceUpdate  EventType = "presence_update"
+	EventTypePresenceSync    EventType = "presence_sync"
+	EventTypeHeartbeat       EventType = "heartbeat"
+	EventTypeHeartbeatAck    EventType = "heartbeat_ack"
+	EventTypeError           EventType = "error"
+	EventTypeNewPreview      EventType = "new_preview"
+	EventTypeRemovePreview   EventType = "remove_preview"
+	EventTypeUserJoin        EventType = "user_join"
+	EventTypeReactUpdate     EventType = "react_update"
+	EventTypeNewNotification EventType = "new_notification"
 )
 
 // IsInbound indica se o tipo de evento é aceito no sentido cliente ->
@@ -206,4 +207,16 @@ type ErrorOutbound struct {
 	Type    EventType `json:"type"`
 	Message string    `json:"message"`
 	Code    *string   `json:"code,omitempty"`
+}
+
+// NewNotificationOutbound é o evento de nova notificação enviado em unicast
+// ao usuário notificado. ID é o id da row de notificação (ou um UUID efêmero
+// quando a configuração 'all' gera evento sem row); UserID é o autor da
+// mensagem; MessageContent é o conteúdo truncado a 512 caracteres.
+type NewNotificationOutbound struct {
+	Type           EventType `json:"type"`
+	ID             string    `json:"id"`
+	UserID         string    `json:"user_id"`
+	MessageID      string    `json:"message_id"`
+	MessageContent string    `json:"message_content"`
 }

@@ -11,7 +11,7 @@ import (
 const JWTExpiration = 24 * time.Hour
 
 // TempTokenExpiration é a validade do token temporário de acesso ao servidor
-// (30min, igual ao Max-Age do cookie Auth emitido por /auth/loginServer).
+// (30min, igual ao Max-Age do cookie Auth emitido por /auth/login_server).
 const TempTokenExpiration = 30 * time.Minute
 
 // tempTokenClaims estende os claims registrados com a marca "temp" que
@@ -52,7 +52,7 @@ func ValidateToken(tokenString, secret string) (string, error) {
 }
 
 // GenerateTempToken gera o JWT temporário de acesso ao servidor (HS256). Ele é
-// a pré-autenticação de servidores não públicos: após /auth/loginServer validar
+// a pré-autenticação de servidores não públicos: após /auth/login_server validar
 // a senha do servidor, o token permite que o usuário tente logar ou registrar
 // antes de consolidar o cookie de sessão.
 func GenerateTempToken(secret string) (string, error) {

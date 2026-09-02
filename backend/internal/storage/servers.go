@@ -94,7 +94,7 @@ func GetServer(ctx context.Context) (models.Server, error) {
 // GetServerWithPasswordHash busca o servidor do backend (1 backend = 1
 // servidor) incluindo o password_hash (nil para servidor público). É a única
 // forma de obter o hash sem o id e deve ser usada somente para validar a
-// senha do servidor em /auth/loginServer e para a regra de acesso de
+// senha do servidor em /auth/login_server e para a regra de acesso de
 // login/registro em servidores não públicos.
 func GetServerWithPasswordHash(ctx context.Context) (models.Server, error) {
 	row := GetDB().QueryRowContext(ctx,

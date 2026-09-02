@@ -326,9 +326,21 @@ const channelSummaryLastReadJoin = `
 // se aplica (GetChannelSummary, sem usuário de referência).
 const channelSummaryNullLastRead = `, NULL, NULL`
 
+// channelSummaryNotificationColumns/Join trazem a configuração de
+// notificação do usuário de referência em cada canal (channel_user_settings;
+// NULL quando não há row).
+const channelSummaryNotificationColumns = `, cus.notification_settings`
+const channelSummaryNotificationJoin = `
+	LEFT JOIN channel_user_settings cus ON cus.channel_id = c.id AND cus.user_id = $1`
+
+// channelSummaryNullNotification mantém a forma da visão quando não há
+// usuário de referência (GetChannelSummary).
+const channelSummaryNullNotification = `, NULL`
+
 // scanChannelSummary lê as colunas de channelSummaryBaseColumns + as colunas
 // de último read (channelSummaryLastReadColumns ou channelSummaryNullLastRead)
-// e monta o ChannelSummary.
+// + a configuração de notificação (channelSummaryNotificationColumns ou
+// channelSummaryNullNotification) e monta o ChannelSummary.
 func scanChannelSummary(row rowScanner, roleNames map[string]string) (models.ChannelSummary, error) {
 	var summary models.ChannelSummary
 	var permissions []byte
@@ -339,6 +351,7 @@ func scanChannelSummary(row rowScanner, roleNames map[string]string) (models.Cha
 	var lastMessageCreatedAt *time.Time
 	var lastReadMessageID *string
 	var lastReadAt *time.Time
+	var notificationSettings *string
 
 	err := row.Scan(
 		&summary.ID,
@@ -355,9 +368,16 @@ func scanChannelSummary(row rowScanner, roleNames map[string]string) (models.Cha
 		&lastMessageCreatedAt,
 		&lastReadMessageID,
 		&lastReadAt,
+		&notificationSettings,
 	)
 	if err != nil {
 		return models.ChannelSummary{}, err
+	}
+
+	if notificationSettings != nil {
+		summary.NotificationSettings = *notificationSettings
+	} else {
+		summary.NotificationSettings = models.NotificationTypeOnlyMentions
 	}
 
 	if lastMessageID != nil && lastMessageCreatedAt != nil {
@@ -426,8 +446,8 @@ func listRoleNames(ctx context.Context) (map[string]string, error) {
 // por posição (position), incluindo o último read de userID em cada canal
 // (NULL quando o usuário ainda não leu o canal).
 func ListChannelSummaries(ctx context.Context, userID string) ([]models.ChannelSummary, error) {
-	query := "SELECT " + channelSummaryBaseColumns + channelSummaryLastReadColumns + " " +
-		channelSummaryBaseJoins + channelSummaryLastReadJoin +
+	query := "SELECT " + channelSummaryBaseColumns + channelSummaryLastReadColumns + channelSummaryNotificationColumns + " " +
+		channelSummaryBaseJoins + channelSummaryLastReadJoin + channelSummaryNotificationJoin +
 		" ORDER BY c.position, c.created_at, c.id LIMIT 500"
 
 	rows, err := GetDB().QueryContext(ctx, query, userID)
@@ -460,7 +480,7 @@ func ListChannelSummaries(ctx context.Context, userID string) ([]models.ChannelS
 // tem usuário de referência, então as colunas de último read são NULL.
 func GetChannelSummary(ctx context.Context, id string) (models.ChannelSummary, error) {
 	row := GetDB().QueryRowContext(ctx,
-		"SELECT "+channelSummaryBaseColumns+channelSummaryNullLastRead+" "+channelSummaryBaseJoins+" WHERE c.id = $1",
+		"SELECT "+channelSummaryBaseColumns+channelSummaryNullLastRead+channelSummaryNullNotification+" "+channelSummaryBaseJoins+" WHERE c.id = $1",
 		id,
 	)
 
