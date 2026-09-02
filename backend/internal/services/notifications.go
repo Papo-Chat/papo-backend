@@ -144,6 +144,8 @@ type NotificationDelivery struct {
 // tem a permissão everyone_message; sem a permissão, @everyone não faz
 // nada). O autor da mensagem nunca é notificado. Configuração 'all' sem
 // trigger: só evento (id efêmero, sem row). Configuração 'off': nada.
+// Somente usuários que podem ler o canal (mesma regra do broadcast do
+// canal) são notificados.
 func DispatchMessageNotifications(ctx context.Context, requestID string, message models.Message) []NotificationDelivery {
 	authorID := ""
 	content := ""
@@ -189,6 +191,29 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 		utils.Errorf("request_id=%s notificações: falha ao listar os candidatos do canal %s: %v",
 			requestID, message.ChannelID, err)
 		return nil
+	}
+
+	// Filtra os candidatos pelos leitores do canal (mesma regra do
+	// broadcast): canal aberto permite todos; canal com permissões permite
+	// o dono do servidor e os usuários de roles com ReadChannel.
+	if len(candidates) > 0 {
+		candidateIDs := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			candidateIDs = append(candidateIDs, candidate.UserID)
+		}
+		allowed, err := ChannelReaders(ctx, message.ChannelID, candidateIDs)
+		if err != nil {
+			utils.Errorf("request_id=%s notificações: falha ao verificar a leitura do canal %s: %v",
+				requestID, message.ChannelID, err)
+			return nil
+		}
+		readable := make([]models.ChannelNotificationCandidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			if allowed[candidate.UserID] {
+				readable = append(readable, candidate)
+			}
+		}
+		candidates = readable
 	}
 
 	deliveries := make([]NotificationDelivery, 0, len(candidates))

@@ -2516,6 +2516,16 @@ func TestListMessagesByChannel(t *testing.T) {
 	if len(sinceMessages) != 1 || sinceMessages[0].ID != second.ID {
 		t.Errorf("esperava apenas a mensagem após o since, obtive %d", len(sinceMessages))
 	}
+
+	// since + last_id: cursor (created_at, id) na ordem decrescente — retorna
+	// as mensagens anteriores ao cursor
+	cursorMessages, err := ListMessagesByChannel(testCtx(), channel.ID, timePtr(second.CreatedAt), second.ID, nil)
+	if err != nil {
+		t.Fatalf("ListMessagesByChannel com cursor retornou erro: %v", err)
+	}
+	if len(cursorMessages) != 1 || cursorMessages[0].ID != first.ID {
+		t.Errorf("esperava apenas a mensagem anterior ao cursor, obtive %d", len(cursorMessages))
+	}
 }
 
 func TestListMessagesWithAttachmentsByChannel(t *testing.T) {
@@ -2591,6 +2601,16 @@ func TestListMessagesWithAttachmentsByChannel(t *testing.T) {
 	}
 	if len(sinceMessages) != 1 || sinceMessages[0].ID != withAttachments.ID {
 		t.Errorf("esperava apenas a mensagem após o since, obtive %d", len(sinceMessages))
+	}
+
+	// since + last_id: cursor (created_at, id) na ordem decrescente — retorna
+	// as mensagens anteriores ao cursor
+	cursorMessages, err := ListMessagesWithAttachmentsByChannel(testCtx(), channel.ID, timePtr(withAttachments.CreatedAt), withAttachments.ID, 100)
+	if err != nil {
+		t.Fatalf("ListMessagesWithAttachmentsByChannel com cursor retornou erro: %v", err)
+	}
+	if len(cursorMessages) != 1 || cursorMessages[0].ID != plain.ID {
+		t.Errorf("esperava apenas a mensagem anterior ao cursor, obtive %d", len(cursorMessages))
 	}
 }
 

@@ -102,7 +102,8 @@ func GetMessageByID(ctx context.Context, id string) (models.Message, error) {
 // ListMessagesByChannel lista as mensagens de um canal ordenadas por data de criação.
 // Se since for fornecido, retorna apenas mensagens criadas após esse timestamp;
 // se lastID for fornecido junto, o cursor é o par (created_at, id) e o filtro
-// inclui mensagens do mesmo timestamp com id menor que lastID (evita pular
+// retorna as mensagens anteriores ao cursor na ordem decrescente (created_at,
+// id), incluindo as do mesmo timestamp com id menor que lastID (evita pular
 // mensagens com timestamp igual).
 // limit usado para paginação via Cursor
 func ListMessagesByChannel(ctx context.Context, channelID string, since *time.Time, lastID string, limit *int) ([]models.Message, error) {
@@ -117,7 +118,7 @@ func ListMessagesByChannel(ctx context.Context, channelID string, since *time.Ti
 
 	if since != nil {
 		if lastID != "" {
-			query += " AND (created_at > $2 OR (created_at = $2 AND id < $3))"
+			query += " AND (created_at < $2 OR (created_at = $2 AND id < $3))"
 			args = append(args, *since, lastID)
 			query += " ORDER BY created_at DESC, id DESC LIMIT $4"
 		} else {
@@ -156,7 +157,8 @@ func ListMessagesByChannel(ctx context.Context, channelID string, since *time.Ti
 // ordem decrescente.
 // Se since for fornecido, retorna apenas mensagens criadas após esse
 // timestamp; se lastID for fornecido junto, o cursor é o par (created_at, id)
-// e o filtro inclui mensagens do mesmo timestamp com id menor que lastID
+// e o filtro retorna as mensagens anteriores ao cursor na ordem decrescente
+// (created_at, id), incluindo as do mesmo timestamp com id menor que lastID
 // (evita pular mensagens com timestamp igual).
 // limit é o número máximo de mensagens (padrão e máximo 100); para permitir
 // que o chamador determine has_more, é buscada uma mensagem a mais que o
@@ -175,7 +177,7 @@ func ListMessagesWithAttachmentsByChannel(ctx context.Context, channelID string,
 
 	if since != nil {
 		if lastID != "" {
-			query += " AND (created_at > $2 OR (created_at = $2 AND id < $3))"
+			query += " AND (created_at < $2 OR (created_at = $2 AND id < $3))"
 			args = append(args, *since, lastID)
 			query += " ORDER BY created_at DESC, id DESC LIMIT $4"
 		} else {

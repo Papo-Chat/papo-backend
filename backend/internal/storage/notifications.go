@@ -130,9 +130,10 @@ func CreateNotification(ctx context.Context, userID, messageID string) (models.N
 // mensagem via join) em ordem decrescente de criação. Se since for
 // fornecido, retorna apenas notificações criadas após esse timestamp; se
 // lastID for fornecido junto, o cursor é o par (created_at, id) e o filtro
-// inclui notificações do mesmo timestamp com id menor que lastID (evita
-// pular notificações com timestamp igual). É buscada 1 row a mais que o
-// limite para o chamador determinar has_more.
+// retorna as notificações anteriores ao cursor na ordem decrescente
+// (created_at, id), incluindo as do mesmo timestamp com id menor que lastID
+// (evita pular notificações com timestamp igual). É buscada 1 row a mais que
+// o limite para o chamador determinar has_more.
 func ListUserNotifications(ctx context.Context, userID string, since *time.Time, lastID string, limit int) ([]models.NotificationSummary, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
@@ -147,7 +148,7 @@ func ListUserNotifications(ctx context.Context, userID string, since *time.Time,
 
 	if since != nil {
 		if lastID != "" {
-			query += " AND (n.created_at > $2 OR (n.created_at = $2 AND n.id < $3))"
+			query += " AND (n.created_at < $2 OR (n.created_at = $2 AND n.id < $3))"
 			args = append(args, *since, lastID)
 			query += " ORDER BY n.created_at DESC, n.id DESC LIMIT $4"
 		} else {
