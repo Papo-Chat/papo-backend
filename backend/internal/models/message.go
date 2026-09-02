@@ -16,6 +16,15 @@ type Message struct {
 	ReplyTo   *string    `db:"reply_to" json:"reply_to"`
 }
 
+// PinnedMessage representa a tabela pinned_messages: uma mensagem fixada em um
+// canal. A PK (channel_id, message_id) torna a fixação idempotente.
+type PinnedMessage struct {
+	ChannelID string    `db:"channel_id" json:"channel_id"`
+	MessageID string    `db:"message_id" json:"message_id"`
+	PinnedBy  *string   `db:"pinned_by" json:"pinned_by"`
+	PinnedAt  time.Time `db:"pinned_at" json:"pinned_at"`
+}
+
 // MessageAttachment é a informação mínima do attachment exposta nas respostas
 // de mensagens (listagem, criação e edição).
 type MessageAttachment struct {

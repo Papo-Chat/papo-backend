@@ -32,10 +32,10 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Fixar código em single server
 - [x] Auditoria/Logs para Admins 
 - [x] Crons GC Attachments orfãos/tabela quebrada e limpeza de logs.
+- [x] Pin message /POST 
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
-- [ ] React Mensagens
-- [ ] Pin message /POST channels/:channel_id/messages/:message_id/pin permissão pin_message, criação de tabela pinned_messages x channel, delete cascade, máximo de 100 mensagens pinnadas por canal.
-- [ ] Notificações (persistentes)
+- [ ] React Mensagens (Computa Emojis personalizados do banco ou unicode), ws events: react_up e react_down. Guarda o numero totais de reações em uma mensagem, mas também a lista de pessoas que reagiram a determinada mensagem. /channel/:id/message/:id/reactions
+- [ ] Notificações, persistencia tabela notifications atrelada a user_id, notificações são mensagens que menciaonam o usuario, depois pode ter DM, Eventos
 - [ ] Refresh token rotation com detecção de reuse, tabela endpoint de dispositivos conectados, endpoint de derrubar todas as conexões (inclusive atual)
 - [ ] Detecção e moderação Automática (Contra conteúdo sensível)
 
@@ -44,6 +44,7 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [ ] Hashed Resync para conexão instável
 - [ ] Direct Messages
 - [ ] Bot API
+- [ ] Mais User Permissions
 - [ ] Mais User Settings
 - [ ] Threads
 - [ ] Favoritos (GIF, Emoji)

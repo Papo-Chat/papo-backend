@@ -121,6 +121,9 @@ func RegisterMessageRoutes(e *echo.Echo, cfg *config.Config) {
 	e.DELETE("/messages/:message_id", func(c echo.Context) error {
 		return DeleteMessageHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
+	e.POST("/channels/:channel_id/messages/:message_id/pin", func(c echo.Context) error {
+		return PinMessageHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
 }
 
 // RegisterAttachmentRoutes registra as rotas de attachments.

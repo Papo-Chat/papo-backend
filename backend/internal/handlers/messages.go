@@ -274,6 +274,56 @@ func DeleteMessageHandler(baseURL string, c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// PinMessageHandler implementa POST /channels/:channel_id/messages/:message_id/pin.
+// Permissão: pin_message (dono do servidor ou role com a permissão). Fixar uma
+// mensagem já pinada é idempotente (200); a primeira fixação retorna 201.
+func PinMessageHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	channelID := c.Param("channel_id")
+	messageID := c.Param("message_id")
+	if channelID == "" || messageID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido",
+			"channel_id e message_id são obrigatórios")
+	}
+
+	pinned, created, err := services.PinMessage(c.Request().Context(), channelID, messageID, userID)
+	switch {
+	case errors.Is(err, services.ErrInvalidInput):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido",
+			"channel_id e message_id são obrigatórios")
+	case errors.Is(err, services.ErrMessageNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado",
+			"mensagem não encontrada neste canal")
+	case errors.Is(err, services.ErrPermissionDenied):
+		return utils.SendProblem(c, baseURL, http.StatusForbidden,
+			"forbidden", "Acesso negado",
+			"usuário não tem permissão para fixar a mensagem")
+	case errors.Is(err, services.ErrTooManyPinnedMessages):
+		return utils.SendProblem(c, baseURL, http.StatusConflict,
+			"pinned-limit-reached", "Limite de mensagens pinadas atingido",
+			"o canal já tem o número máximo de 100 mensagens pinadas")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao fixar mensagem: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao fixar a mensagem")
+	}
+
+	if created {
+		return c.JSON(http.StatusCreated, pinned)
+	}
+	return c.JSON(http.StatusOK, pinned)
+}
+
 // broadcastChannelEvent envia um evento via WebSocket no contexto da
 // requisição (ver broadcastChannelEventCtx).
 func broadcastChannelEvent(c echo.Context, channelID string, event any) {

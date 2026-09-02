@@ -6,6 +6,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_author_id ON messages (author_id);
 CREATE INDEX IF NOT EXISTS idx_messages_tsv_content ON messages USING GIN (tsv_content);
 CREATE INDEX IF NOT EXISTS idx_messages_channel_created_id ON messages (channel_id, created_at DESC, id DESC);
 
+CREATE INDEX IF NOT EXISTS idx_pinned_messages_message_id ON pinned_messages (message_id);
+
 CREATE INDEX IF NOT EXISTS idx_attachments_messages_id ON attachments (messages_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_media_sha_hash ON attachments (media_sha_hash);
 
@@ -24,3 +26,4 @@ DROP INDEX IF EXISTS idx_attachments_messages_id;
 DROP INDEX IF EXISTS idx_messages_channel_created_id;
 DROP INDEX IF EXISTS idx_messages_tsv_content;
 DROP INDEX IF EXISTS idx_messages_author_id;
+DROP INDEX IF EXISTS idx_pinned_messages_message_id;

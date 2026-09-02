@@ -65,6 +65,14 @@ CREATE TABLE IF NOT EXISTS messages (
     tsv_content TSVECTOR GENERATED ALWAYS AS (to_tsvector('portuguese', content)) STORED
 );
 
+CREATE TABLE IF NOT EXISTS pinned_messages (
+    channel_id UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    pinned_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    pinned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (channel_id, message_id)
+);
+
 CREATE TABLE IF NOT EXISTS attachments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     original_file_name TEXT NOT NULL,
@@ -126,6 +134,7 @@ DROP TABLE IF EXISTS user_channel_state;
 DROP TABLE IF EXISTS user_settings;
 DROP TABLE IF EXISTS emojis;
 DROP TABLE IF EXISTS attachments;
+DROP TABLE IF EXISTS pinned_messages;
 DROP TABLE IF EXISTS messages;
 DROP TABLE IF EXISTS channels;
 DROP TABLE IF EXISTS servers;

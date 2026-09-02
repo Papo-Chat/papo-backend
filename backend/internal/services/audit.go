@@ -36,6 +36,7 @@ const (
 	ActionMediaUpload         = "media.upload"
 	ActionMessageEdit         = "message.edit"
 	ActionMessageDelete       = "message.delete"
+	ActionMessagePin          = "message.pin"
 	ActionRoleCreate          = "role.create"
 	ActionRoleUpdate          = "role.update"
 	ActionRoleDelete          = "role.delete"

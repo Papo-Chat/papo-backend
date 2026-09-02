@@ -1145,6 +1145,48 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
+           $ref: '#/components/responses/InternalError'
+
+  /channels/{channel_id}/messages/{message_id}/pin:
+    post:
+      tags: [Messages]
+      summary: Fixa mensagem no canal
+      description: "Permission Check: `pin_message` (dono do servidor ou role com a permissão). Idempotente: fixar uma mensagem já pinada retorna 200. Limite de 100 mensagens pinadas por canal."
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Mensagem já estava pinada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PinnedMessage'
+        '201':
+          description: Mensagem fixada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PinnedMessage'
+        '400':
+          description: Parâmetro ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Limite de 100 mensagens pinadas atingido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
           $ref: '#/components/responses/InternalError'
 
   /emojis:
@@ -2171,6 +2213,25 @@ components:
           description: >
             Link previews (OpenGraph/oEmbed) extraídos do content da mensagem
             (best-effort; vazio quando não há URL ou a extração falhou).
+
+    PinnedMessage:
+      type: object
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+        message_id:
+          type: string
+          format: uuid
+        pinned_by:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Usuário que fixou a mensagem. Null quando o usuário foi excluído.
+        pinned_at:
+          type: string
+          format: date-time
 
     MessageListResponse:
       type: object

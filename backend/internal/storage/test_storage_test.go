@@ -3694,3 +3694,147 @@ func TestGetLastReadMessage(t *testing.T) {
 		t.Errorf("esperava ErrNotFound para estado inexistente, obtive %v", err)
 	}
 }
+
+// --- pinned messages ---
+
+// countPinnedMessages conta os pins de um canal direto na tabela (não há
+// getter de listagem de pins).
+func countPinnedMessages(t *testing.T, channelID string) int {
+	t.Helper()
+	var count int
+	if err := GetDB().QueryRowContext(testCtx(),
+		"SELECT COUNT(*) FROM pinned_messages WHERE channel_id = $1", channelID,
+	).Scan(&count); err != nil {
+		t.Fatalf("falha ao contar pins: %v", err)
+	}
+	return count
+}
+
+func TestPinMessage(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	pinned, created, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("PinMessage retornou erro: %v", err)
+	}
+	if !created {
+		t.Error("esperava created=true na primeira fixação")
+	}
+	if pinned.ChannelID != channel.ID || pinned.MessageID != message.ID {
+		t.Errorf("pin não confere: %+v", pinned)
+	}
+	if pinned.PinnedBy == nil || *pinned.PinnedBy != owner.ID {
+		t.Errorf("esperava pinned_by %s, obtive %v", owner.ID, pinned.PinnedBy)
+	}
+	if count := countPinnedMessages(t, channel.ID); count != 1 {
+		t.Errorf("esperava 1 pin no banco, obtive %d", count)
+	}
+}
+
+func TestPinMessageIdempotent(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	first, created, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID)
+	if err != nil || !created {
+		t.Fatalf("primeira fixação falhou: created=%v err=%v", created, err)
+	}
+
+	second, created, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("segunda fixação retornou erro: %v", err)
+	}
+	if created {
+		t.Error("esperava created=false na segunda fixação")
+	}
+	if second.PinnedBy == nil || *second.PinnedBy != owner.ID {
+		t.Errorf("esperava pinned_by %s, obtive %v", owner.ID, second.PinnedBy)
+	}
+	if !second.PinnedAt.Equal(first.PinnedAt) {
+		t.Errorf("esperava pinned_at inalterado: %v != %v", second.PinnedAt, first.PinnedAt)
+	}
+	if count := countPinnedMessages(t, channel.ID); count != 1 {
+		t.Errorf("esperava 1 pin no banco, obtive %d", count)
+	}
+}
+
+func TestPinMessageLimit(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+
+	for i := 0; i < maxPinnedPerChannel; i++ {
+		message, err := CreateMessage(testCtx(), channel.ID, owner.ID, fmt.Sprintf("msg %d", i), "", nil)
+		if err != nil {
+			t.Fatalf("CreateMessage[%d] retornou erro: %v", i, err)
+		}
+		if _, created, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil || !created {
+			t.Fatalf("PinMessage[%d] falhou: created=%v err=%v", i, created, err)
+		}
+	}
+	if count := countPinnedMessages(t, channel.ID); count != maxPinnedPerChannel {
+		t.Fatalf("esperava %d pins, obtive %d", maxPinnedPerChannel, count)
+	}
+
+	overflow, err := CreateMessage(testCtx(), channel.ID, owner.ID, "estouro", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (estouro) retornou erro: %v", err)
+	}
+	if _, _, err := PinMessage(testCtx(), channel.ID, overflow.ID, owner.ID); !errors.Is(err, ErrPinnedLimitReached) {
+		t.Errorf("esperava ErrPinnedLimitReached, obtive %v", err)
+	}
+}
+
+func TestPinMessageCascadeOnMessageDelete(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	if _, _, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil {
+		t.Fatalf("PinMessage retornou erro: %v", err)
+	}
+	if count := countPinnedMessages(t, channel.ID); count != 1 {
+		t.Fatalf("esperava 1 pin antes da exclusão, obtive %d", count)
+	}
+
+	if err := DeleteMessage(testCtx(), message.ID); err != nil {
+		t.Fatalf("DeleteMessage retornou erro: %v", err)
+	}
+	if count := countPinnedMessages(t, channel.ID); count != 0 {
+		t.Errorf("esperava 0 pins após excluir a mensagem, obtive %d", count)
+	}
+}
+
+func TestPinMessageCascadeOnChannelDelete(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	if _, _, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil {
+		t.Fatalf("PinMessage retornou erro: %v", err)
+	}
+
+	if err := DeleteChannel(testCtx(), channel.ID); err != nil {
+		t.Fatalf("DeleteChannel retornou erro: %v", err)
+	}
+	if count := countPinnedMessages(t, channel.ID); count != 0 {
+		t.Errorf("esperava 0 pins após excluir o canal, obtive %d", count)
+	}
+}

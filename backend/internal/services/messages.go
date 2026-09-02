@@ -23,6 +23,10 @@ var ErrPermissionDenied = errors.New("permissão negada")
 // por mensagem (10, README).
 var ErrTooManyAttachments = errors.New("máximo de attachments por mensagem excedido")
 
+// ErrTooManyPinnedMessages indica que o canal atingiu o limite de mensagens
+// pinadas (100, README).
+var ErrTooManyPinnedMessages = errors.New("limite de mensagens pinadas por canal atingido")
+
 // maxMessageContentLength é o tamanho máximo do content de uma mensagem
 // (8192 caracteres, README).
 const maxMessageContentLength = 8192
@@ -547,6 +551,67 @@ func deleteMessage(ctx context.Context, messageID string) error {
 	}
 
 	return nil
+}
+
+// PinMessage fixa uma mensagem em um canal
+// (POST /channels/:channel_id/messages/:message_id/pin). A mensagem deve
+// existir e pertencer ao canal da URL. O usuário precisa da permissão
+// pin_message em ao menos uma das roles do servidor (o dono do servidor sempre
+// pode). A operação é idempotente: fixar uma mensagem já pinada retorna o
+// registro existente sem alterar nada.
+// Retorna ErrInvalidInput quando um parâmetro está ausente,
+// ErrMessageNotFound quando a mensagem não existe ou não pertence ao canal,
+// ErrPermissionDenied quando o usuário não tem pin_message e
+// ErrTooManyPinnedMessages quando o canal já tem 100 mensagens pinadas.
+// O segundo valor de retorno (created) indica se o pin foi criado agora
+// (true) ou se já existia (false).
+func PinMessage(ctx context.Context, channelID, messageID, userID string) (models.PinnedMessage, bool, error) {
+	if channelID == "" || messageID == "" || userID == "" {
+		return models.PinnedMessage{}, false, ErrInvalidInput
+	}
+
+	message, err := storage.GetMessageByID(ctx, messageID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return models.PinnedMessage{}, false, ErrMessageNotFound
+	}
+	if err != nil {
+		return models.PinnedMessage{}, false, err
+	}
+
+	// A mensagem deve pertencer ao canal da URL.
+	if message.ChannelID != channelID {
+		return models.PinnedMessage{}, false, ErrMessageNotFound
+	}
+
+	allowed, err := userHasRolePermission(ctx, userID, func(p models.RolePermissions) bool {
+		return p.PinMessage
+	})
+	if err != nil {
+		return models.PinnedMessage{}, false, err
+	}
+	if !allowed {
+		return models.PinnedMessage{}, false, ErrPermissionDenied
+	}
+
+	pinned, created, err := storage.PinMessage(ctx, channelID, messageID, userID)
+	if errors.Is(err, storage.ErrPinnedLimitReached) {
+		return models.PinnedMessage{}, false, ErrTooManyPinnedMessages
+	}
+	if err != nil {
+		return models.PinnedMessage{}, false, err
+	}
+
+	if created {
+		RecordAudit(ctx, AuditEntry{
+			ActorID:    userID,
+			Action:     ActionMessagePin,
+			EntityType: EntityMessage,
+			EntityID:   &messageID,
+			Metadata:   map[string]any{"channel_id": channelID},
+		})
+	}
+
+	return pinned, created, nil
 }
 
 // userHasChannelPermission verifica se o usuário possui a permissão de canal

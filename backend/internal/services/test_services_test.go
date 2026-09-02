@@ -7038,3 +7038,141 @@ func TestListMessagesWithThumbnailsAndPreviews(t *testing.T) {
 		t.Error("attachment deveria carregar o ThumbnailID")
 	}
 }
+
+// --- PinMessage ---
+
+func TestPinMessageOwner(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	pinned, created, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("PinMessage retornou erro: %v", err)
+	}
+	if !created {
+		t.Error("esperava created=true")
+	}
+	if pinned.ChannelID != channel.ID || pinned.MessageID != message.ID {
+		t.Errorf("pin não confere: %+v", pinned)
+	}
+	if pinned.PinnedBy == nil || *pinned.PinnedBy != owner.ID {
+		t.Errorf("esperava pinned_by %s, obtive %v", owner.ID, pinned.PinnedBy)
+	}
+}
+
+func TestPinMessageWithPermissionRole(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	role, err := storage.CreateRole(testCtx(), newRandomRoleName(), nil, models.RolePermissions{PinMessage: true})
+	if err != nil {
+		t.Fatalf("CreateRole retornou erro: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), actor.ID, role.ID); err != nil {
+		t.Fatalf("AssignUserRole retornou erro: %v", err)
+	}
+
+	if _, created, err := PinMessage(testCtx(), channel.ID, message.ID, actor.ID); err != nil || !created {
+		t.Fatalf("PinMessage com role falhou: created=%v err=%v", created, err)
+	}
+}
+
+func TestPinMessageWithoutPermission(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	if _, _, err := PinMessage(testCtx(), channel.ID, message.ID, actor.ID); !errors.Is(err, ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied, obtive %v", err)
+	}
+}
+
+func TestPinMessageNotFound(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+
+	// mensagem inexistente
+	if _, _, err := PinMessage(testCtx(), channel.ID, randUUID(), owner.ID); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para mensagem inexistente, obtive %v", err)
+	}
+
+	// mensagem de outro canal
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	other, err := storage.CreateChannel(testCtx(), "channel_"+randHex(8), "text", "")
+	if err != nil {
+		t.Fatalf("CreateChannel (outro) retornou erro: %v", err)
+	}
+	if _, _, err := PinMessage(testCtx(), other.ID, message.ID, owner.ID); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para canal divergente, obtive %v", err)
+	}
+}
+
+func TestPinMessageInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "fixar", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		channelID string
+		messageID string
+		userID    string
+	}{
+		{"canal vazio", "", message.ID, owner.ID},
+		{"mensagem vazia", channel.ID, "", owner.ID},
+		{"usuário vazio", channel.ID, message.ID, ""},
+	} {
+		if _, _, err := PinMessage(testCtx(), tc.channelID, tc.messageID, tc.userID); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("[%s] esperava ErrInvalidInput, obtive %v", tc.name, err)
+		}
+	}
+}
+
+func TestPinMessageLimit(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+
+	// limite documentado: 100 pins por canal
+	for i := 0; i < 100; i++ {
+		message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, fmt.Sprintf("msg %d", i), "", nil)
+		if err != nil {
+			t.Fatalf("CreateMessage[%d] retornou erro: %v", i, err)
+		}
+		if _, created, err := PinMessage(testCtx(), channel.ID, message.ID, owner.ID); err != nil || !created {
+			t.Fatalf("PinMessage[%d] falhou: created=%v err=%v", i, created, err)
+		}
+	}
+
+	overflow, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "estouro", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (estouro) retornou erro: %v", err)
+	}
+	if _, _, err := PinMessage(testCtx(), channel.ID, overflow.ID, owner.ID); !errors.Is(err, ErrTooManyPinnedMessages) {
+		t.Errorf("esperava ErrTooManyPinnedMessages, obtive %v", err)
+	}
+}
