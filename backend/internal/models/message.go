@@ -36,13 +36,14 @@ type MessageAttachment struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
-// MessageWithAttachment é a mensagem com seus attachments e link previews,
-// como exposta pela API (respostas de listagem, criação e edição de
-// mensagens).
+// MessageWithAttachment é a mensagem com seus attachments, link previews e
+// contagem de reações, como exposta pela API (respostas de listagem, criação
+// e edição de mensagens).
 type MessageWithAttachment struct {
 	Message
-	Attachments []MessageAttachment `json:"attachments"`
-	Previews    []LinkPreview       `json:"previews"`
+	Attachments []MessageAttachment      `json:"attachments"`
+	Previews    []LinkPreview            `json:"previews"`
+	Reactions   []MessageReactionSummary `json:"reactions"`
 }
 
 // MessageList é a resposta de GET /channels/:channel_id/messages.

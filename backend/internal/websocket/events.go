@@ -26,6 +26,7 @@ const (
 	EventTypeNewPreview     EventType = "new_preview"
 	EventTypeRemovePreview  EventType = "remove_preview"
 	EventTypeUserJoin       EventType = "user_join"
+	EventTypeReactUpdate    EventType = "react_update"
 )
 
 // IsInbound indica se o tipo de evento é aceito no sentido cliente ->
@@ -101,6 +102,20 @@ type RemovePreviewOutbound struct {
 	Type      EventType `json:"type"`
 	MessageID string    `json:"message_id"`
 	PreviewID string    `json:"preview_id"`
+}
+
+// ReactUpdateOutbound é o evento de atualização de reação em uma mensagem
+// (reação adicionada ou removida), distribuído aos clientes que leem o canal.
+// EmojiID é o id do emoji custom do banco (null para emoji unicode) e
+// Unicode é o emoji unicode (null para emoji custom). Count é o número de
+// usuários que reagiram com aquele emoji após a operação (0 quando a última
+// reação foi removida).
+type ReactUpdateOutbound struct {
+	Type      EventType `json:"type"`
+	MessageID string    `json:"message_id"`
+	EmojiID   *string   `json:"emoji_id"`
+	Unicode   *string   `json:"unicode"`
+	Count     int       `json:"count"`
 }
 
 // ChannelCreateOutbound é o evento de criação de canal distribuído aos clientes.

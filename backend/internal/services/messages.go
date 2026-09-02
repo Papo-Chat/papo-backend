@@ -101,8 +101,13 @@ func ListMessages(ctx context.Context, channelID, userID string, since *time.Tim
 	if err != nil {
 		return models.MessageList{}, err
 	}
+	reactionCounts, err := storage.ReactionCountsByMessages(ctx, messageIDs)
+	if err != nil {
+		return models.MessageList{}, err
+	}
 	for i := range messages {
 		messages[i].Previews = previewsByMessage[messages[i].ID]
+		messages[i].Reactions = reactionCounts[messages[i].ID]
 		setAttachmentThumbnails(&messages[i].Attachments, thumbnails)
 	}
 
@@ -452,6 +457,11 @@ func EditMessage(ctx context.Context, messageID, authorID, content string) (mode
 	// processados em background (ProcessEditedMessagePreviews, chamado por
 	// uma goroutine no handler) e as mudanças chegam via WS new_preview /
 	// remove_preview. A resposta retorna Previews nil.
+	reactionCounts, err := storage.ReactionCountsByMessages(ctx, []string{updated.ID})
+	if err != nil {
+		return models.MessageWithAttachment{}, err
+	}
+
 	RecordAudit(ctx, AuditEntry{
 		ActorID:    authorID,
 		Action:     ActionMessageEdit,
@@ -463,6 +473,7 @@ func EditMessage(ctx context.Context, messageID, authorID, content string) (mode
 	return models.MessageWithAttachment{
 		Message:     updated,
 		Attachments: messageAttachments,
+		Reactions:   reactionCounts[updated.ID],
 	}, nil
 }
 

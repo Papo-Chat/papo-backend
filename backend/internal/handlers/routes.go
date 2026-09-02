@@ -36,7 +36,7 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	e.GET("/users/:user_id/profile", func(c echo.Context) error {
 		return ProfileHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
-	e.POST("/users/profileBatch", func(c echo.Context) error {
+	e.POST("/users/profile_batch", func(c echo.Context) error {
 		return ProfileBatchHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 	e.PUT("/users/settings", func(c echo.Context) error {
@@ -120,6 +120,15 @@ func RegisterMessageRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware)
 	e.POST("/channels/:channel_id/messages/:message_id/pin", func(c echo.Context) error {
 		return PinMessageHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.POST("/channels/:channel_id/messages/:message_id/reactions", func(c echo.Context) error {
+		return AddReactionHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.GET("/channels/:channel_id/messages/:message_id/reactions", func(c echo.Context) error {
+		return ListReactionsHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.DELETE("/channels/:channel_id/messages/:message_id/reactions", func(c echo.Context) error {
+		return RemoveReactionHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 }
 

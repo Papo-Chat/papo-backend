@@ -203,7 +203,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /users/profileBatch:
+  /users/profile_batch:
     post:
       tags: [Users]
       summary: Perfis em lote (mesma forma do profile; máx. 50 ids; ids inexistentes são pulados)
@@ -1167,7 +1167,119 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Limite de 100 mensagens pinadas atingido
+           description: Limite de 100 mensagens pinadas atingido
+           content:
+             application/problem+json:
+               schema:
+                 $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /channels/{channel_id}/messages/{message_id}/reactions:
+    post:
+      tags: [Messages]
+      summary: Adiciona reação do usuário autenticado à mensagem
+      description: "Permission Check: `send_messages` do canal. Corpo: exatamente um de `emoji_id` (emoji custom do banco) ou `unicode` (emoji unicode, máx 16 caracteres). Idempotente: reagir de novo com o mesmo emoji retorna 200. Limite de 20 tipos de reação por mensagem."
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReactionRequest'
+      responses:
+        '200':
+          description: Usuário já havia reagido com este emoji
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageReaction'
+        '201':
+          description: Reação adicionada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageReaction'
+        '400':
+          description: Ambos ou nenhum de emoji_id/unicode informados, ou unicode inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Mensagem não pertence ao canal, canal não existe ou emoji não existe
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Limite de 20 tipos de reação por mensagem atingido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      tags: [Messages]
+      summary: Lista reações da mensagem com os usuários que reagiram
+      description: "Permission Check: `read_channel` do canal"
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Reações da mensagem
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageReactionList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Mensagem não pertence ao canal ou canal não existe
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Messages]
+      summary: Remove a própria reação do usuário autenticado da mensagem
+      description: "Permission Check: `read_channel` do canal. Corpo: exatamente um de `emoji_id` ou `unicode`."
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReactionRequest'
+      responses:
+        '204':
+          description: Reação removida
+        '400':
+          description: Ambos ou nenhum de emoji_id/unicode informados, ou unicode inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Mensagem não pertence ao canal, canal não existe, emoji não existe ou usuário não reagiu com este emoji
           content:
             application/problem+json:
               schema:
@@ -1529,6 +1641,7 @@ paths:
         | `message`        | outbound  | `{ type: "message", id, channel_id, author_id, content, attachments, created_at }`         |
         | `message_edit`   | outbound  | `{ type: "message_edit", id, channel_id, content, edited_at }`                          |
         | `message_delete` | outbound  | `{ type: "message_delete", id, channel_id }`                                            |
+        | `react_update`   | outbound  | `{ type: "react_update", message_id, emoji_id, unicode, count }` (emoji_id/unicode: um é null; count = usuários que reagiram com aquele emoji, 0 quando a última foi removida) |
         | `channel_create` | outbound  | `{ type: "channel_create", channel_id, name, channel_type, position }`                 |
         | `channel_update` | outbound  | `{ type: "channel_update", channel_id, name, position }`                               |
         | `channel_delete` | outbound  | `{ type: "channel_delete", channel_id }`                                               |
@@ -2199,6 +2312,14 @@ components:
           description: >
             Link previews (OpenGraph/oEmbed) extraídos do content da mensagem
             (best-effort; vazio quando não há URL ou a extração falhou).
+        reactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageReactionSummary'
+          description: >
+            Contagem de tipos de reação da mensagem (sem a lista de usuários;
+            use GET /channels/{channel_id}/messages/{message_id}/reactions).
+            Null quando a mensagem não tem reações.
 
     PinnedMessage:
       type: object
@@ -2231,6 +2352,94 @@ components:
             $ref: '#/components/schemas/Message'
         has_more:
           type: boolean
+
+    ReactionRequest:
+      type: object
+      properties:
+        emoji_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Id de um emoji custom do banco. Exatamente um de emoji_id ou
+            unicode deve ser informado.
+        unicode:
+          type: string
+          nullable: true
+          description: >
+            Emoji unicode (máx 16 caracteres). Exatamente um de emoji_id ou
+            unicode deve ser informado.
+
+    MessageReaction:
+      type: object
+      properties:
+        message_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        emoji_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Emoji custom do banco (null para emoji unicode)
+        unicode:
+          type: string
+          nullable: true
+          description: Emoji unicode (null para emoji custom)
+        created_at:
+          type: string
+          format: date-time
+
+    MessageReactionSummary:
+      type: object
+      properties:
+        emoji_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Emoji custom do banco (null para emoji unicode)
+        unicode:
+          type: string
+          nullable: true
+          description: Emoji unicode (null para emoji custom)
+        count:
+          type: integer
+          description: Número de usuários que reagiram com este emoji
+
+    MessageReactionGroup:
+      type: object
+      properties:
+        emoji_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Emoji custom do banco (null para emoji unicode)
+        unicode:
+          type: string
+          nullable: true
+          description: Emoji unicode (null para emoji custom)
+        count:
+          type: integer
+          description: Número de usuários que reagiram com este emoji
+        users:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Usuários que reagiram com este emoji
+
+    MessageReactionList:
+      type: object
+      properties:
+        message_id:
+          type: string
+          format: uuid
+        reactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageReactionGroup'
 
     CreateMessageRequest:
       type: object

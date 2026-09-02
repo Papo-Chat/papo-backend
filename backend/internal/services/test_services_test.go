@@ -120,6 +120,7 @@ func cleanServers(ctx context.Context) error {
 		"DELETE FROM roles",
 		"DELETE FROM attachment_thumbnails",
 		"DELETE FROM attachments",
+		"DELETE FROM message_reactions",
 		"DELETE FROM messages",
 		"DELETE FROM user_channel_state",
 		"DELETE FROM channels",
@@ -7175,4 +7176,315 @@ func TestPinMessageLimit(t *testing.T) {
 	if _, _, err := PinMessage(testCtx(), channel.ID, overflow.ID, owner.ID); !errors.Is(err, ErrTooManyPinnedMessages) {
 		t.Errorf("esperava ErrTooManyPinnedMessages, obtive %v", err)
 	}
+}
+
+// --- reactions ---
+
+func TestAddReactionToMessageOwner(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	unicode := "👍"
+	reaction, created, count, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, owner.ID, "", unicode)
+	if err != nil {
+		t.Fatalf("AddReactionToMessage retornou erro: %v", err)
+	}
+	if !created || count != 1 {
+		t.Fatalf("esperava created=true count=1, obtive created=%v count=%d", created, count)
+	}
+	if reaction.MessageID != message.ID || reaction.UserID != owner.ID {
+		t.Errorf("reação não confere: %+v", reaction)
+	}
+	if reaction.EmojiID != nil || reaction.Unicode == nil || *reaction.Unicode != unicode {
+		t.Errorf("esperava unicode %q e emoji_id null, obtive %+v", unicode, reaction)
+	}
+}
+
+func TestAddReactionToMessageWithSendRole(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	grantChannelPermission(t, channel, actor, models.ChannelPermission{SendMessages: true})
+
+	unicode := "👍"
+	if _, created, _, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, actor.ID, "", unicode); err != nil || !created {
+		t.Fatalf("AddReactionToMessage com role falhou: created=%v err=%v", created, err)
+	}
+}
+
+func TestAddReactionToMessageWithoutPermission(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	// Define uma permissão no canal para que ele deixe de ser "aberto" (em
+	// canais sem roles o envio é livre). O actor, sem role, é negado.
+	grantChannelPermission(t, channel, owner, models.ChannelPermission{SendMessages: true})
+
+	unicode := "👍"
+	if _, _, _, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, actor.ID, "", unicode); !errors.Is(err, ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied, obtive %v", err)
+	}
+}
+
+func TestAddReactionToMessageInvalidInput(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		emojiID string
+		unicode string
+	}{
+		{"nenhum emoji", "", ""},
+		{"ambos emojis", randUUID(), "👍"},
+		{"unicode com 17 caracteres", "", strings.Repeat("👍", 17)},
+	} {
+		if _, _, _, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, owner.ID, tc.emojiID, tc.unicode); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("[%s] esperava ErrInvalidInput, obtive %v", tc.name, err)
+		}
+	}
+
+	// 16 runes é o limite exato e deve ser aceito
+	if _, created, _, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, owner.ID, "", strings.Repeat("👍", 16)); err != nil || !created {
+		t.Errorf("unicode com 16 caracteres deveria ser aceita: created=%v err=%v", created, err)
+	}
+}
+
+func TestAddReactionToMessageNotFound(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	unicode := "👍"
+
+	// mensagem inexistente
+	if _, _, _, err := AddReactionToMessage(testCtx(), channel.ID, randUUID(), owner.ID, "", unicode); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para mensagem inexistente, obtive %v", err)
+	}
+
+	// mensagem de outro canal
+	other, err := storage.CreateChannel(testCtx(), "channel_"+randHex(8), "text", "")
+	if err != nil {
+		t.Fatalf("CreateChannel (outro) retornou erro: %v", err)
+	}
+	if _, _, _, err := AddReactionToMessage(testCtx(), other.ID, message.ID, owner.ID, "", unicode); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para canal divergente, obtive %v", err)
+	}
+
+	// canal da URL divergente do canal real da mensagem: a checagem de
+	// pertencimento da mensagem precede a de existência do canal.
+	if _, _, _, err := AddReactionToMessage(testCtx(), randUUID(), message.ID, owner.ID, "", unicode); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para canal divergente, obtive %v", err)
+	}
+}
+
+func TestAddReactionToMessageEmojiNotFound(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	if _, _, _, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, owner.ID, randUUID(), ""); !errors.Is(err, ErrEmojiNotFound) {
+		t.Errorf("esperava ErrEmojiNotFound, obtive %v", err)
+	}
+}
+
+func TestAddReactionToMessageLimit(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	// limite documentado: 20 tipos de reação por mensagem
+	types := []string{"👍", "👎", "😂", "😢", "😮", "😡", "🔥", "🎉", "💀", "❤️", "🙏", "👀", "✨", "🍕", "🚀", "🎯", "💯", "🥳", "🫡", "🤝"}
+	for i, unicode := range types {
+		if _, created, _, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, owner.ID, "", unicode); err != nil || !created {
+			t.Fatalf("AddReactionToMessage[%d] falhou: created=%v err=%v", i, created, err)
+		}
+	}
+
+	fresh := "🆕"
+	if _, _, _, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, owner.ID, "", fresh); !errors.Is(err, ErrTooManyReactions) {
+		t.Errorf("esperava ErrTooManyReactions, obtive %v", err)
+	}
+}
+
+func TestRemoveReactionFromMessage(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	unicode := "👍"
+	if _, _, _, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, owner.ID, "", unicode); err != nil {
+		t.Fatalf("AddReactionToMessage retornou erro: %v", err)
+	}
+
+	count, err := RemoveReactionFromMessage(testCtx(), channel.ID, message.ID, owner.ID, "", unicode)
+	if err != nil || count != 0 {
+		t.Fatalf("RemoveReactionFromMessage falhou: count=%d err=%v", count, err)
+	}
+	if _, err := RemoveReactionFromMessage(testCtx(), channel.ID, message.ID, owner.ID, "", unicode); !errors.Is(err, ErrReactionNotFound) {
+		t.Errorf("esperava ErrReactionNotFound removendo de novo, obtive %v", err)
+	}
+}
+
+func TestRemoveReactionFromMessageOnlyOwn(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	grantChannelPermission(t, channel, actor, models.ChannelPermission{ReadChannel: true})
+
+	unicode := "👍"
+	if _, _, _, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, owner.ID, "", unicode); err != nil {
+		t.Fatalf("AddReactionToMessage retornou erro: %v", err)
+	}
+
+	// actor lê o canal, mas a reação é do owner → ErrReactionNotFound
+	if _, err := RemoveReactionFromMessage(testCtx(), channel.ID, message.ID, actor.ID, "", unicode); !errors.Is(err, ErrReactionNotFound) {
+		t.Errorf("esperava ErrReactionNotFound para reação de outro usuário, obtive %v", err)
+	}
+}
+
+func TestRemoveReactionFromMessageWithoutPermission(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	// Torna o canal "fechado" para que o actor, sem read_channel, seja negado.
+	grantChannelPermission(t, channel, owner, models.ChannelPermission{ReadChannel: true})
+
+	unicode := "👍"
+	if _, err := RemoveReactionFromMessage(testCtx(), channel.ID, message.ID, actor.ID, "", unicode); !errors.Is(err, ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied, obtive %v", err)
+	}
+}
+
+func TestListMessageReactions(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	u1 := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	unicode := "👍"
+	if _, _, _, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, owner.ID, "", unicode); err != nil {
+		t.Fatalf("AddReactionToMessage (owner) retornou erro: %v", err)
+	}
+	if _, _, _, err := AddReactionToMessage(testCtx(), channel.ID, message.ID, u1.ID, "", unicode); err != nil {
+		t.Fatalf("AddReactionToMessage (u1) retornou erro: %v", err)
+	}
+
+	list, err := ListMessageReactions(testCtx(), channel.ID, message.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("ListMessageReactions retornou erro: %v", err)
+	}
+	if list.MessageID != message.ID {
+		t.Errorf("esperava message_id %s, obtive %s", message.ID, list.MessageID)
+	}
+	if len(list.Reactions) != 1 {
+		t.Fatalf("esperava 1 tipo de reação, obtive %d: %+v", len(list.Reactions), list.Reactions)
+	}
+	g := list.Reactions[0]
+	if g.EmojiID != nil || g.Unicode == nil || *g.Unicode != unicode || g.Count != 2 {
+		t.Errorf("esperava 👍 count=2, obtive %+v", g)
+	}
+	if len(g.Users) != 2 || !containsServiceReactionUser(g.Users, owner.ID) || !containsServiceReactionUser(g.Users, u1.ID) {
+		t.Errorf("esperava users owner e u1, obtive %v", g.Users)
+	}
+
+	// mensagem sem reações → lista vazia
+	empty, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "sem reações", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (vazia) retornou erro: %v", err)
+	}
+	list, err = ListMessageReactions(testCtx(), channel.ID, empty.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("ListMessageReactions (vazia) retornou erro: %v", err)
+	}
+	if len(list.Reactions) != 0 {
+		t.Errorf("esperava lista vazia, obtive %+v", list.Reactions)
+	}
+}
+
+func TestListMessageReactionsErrors(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	// Torna o canal "fechado" para que o actor, sem read_channel, seja negado.
+	grantChannelPermission(t, channel, owner, models.ChannelPermission{ReadChannel: true})
+
+	if _, err := ListMessageReactions(testCtx(), channel.ID, randUUID(), owner.ID); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound, obtive %v", err)
+	}
+	// canal da URL divergente do canal real da mensagem: a checagem de
+	// pertencimento da mensagem precede a de existência do canal.
+	if _, err := ListMessageReactions(testCtx(), randUUID(), message.ID, owner.ID); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound para canal divergente, obtive %v", err)
+	}
+	if _, err := ListMessageReactions(testCtx(), channel.ID, message.ID, actor.ID); !errors.Is(err, ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied, obtive %v", err)
+	}
+	if _, err := ListMessageReactions(testCtx(), "", message.ID, owner.ID); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+	}
+}
+
+func containsServiceReactionUser(users []string, id string) bool {
+	for _, u := range users {
+		if u == id {
+			return true
+		}
+	}
+	return false
 }

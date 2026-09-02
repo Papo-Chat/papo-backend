@@ -344,7 +344,7 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		{http.MethodGet, "/auth/whoami"},
 		{http.MethodGet, "/users"},
 		{http.MethodGet, "/users/" + userID + "/profile"},
-		{http.MethodPost, "/users/profileBatch"},
+		{http.MethodPost, "/users/profile_batch"},
 		{http.MethodPut, "/users/settings"},
 		{http.MethodPut, "/users/" + userID},
 		{http.MethodPut, "/users/" + userID + "/status"},
@@ -607,7 +607,7 @@ func TestProfileBatchRouteWithAuth(t *testing.T) {
 	userID, token := registerAndLogin(t, e)
 
 	body, _ := json.Marshal(map[string][]string{"ids": {userID, randUUID()}})
-	rec := do(t, e, http.MethodPost, "/users/profileBatch", body, authCookie(token))
+	rec := do(t, e, http.MethodPost, "/users/profile_batch", body, authCookie(token))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
@@ -634,7 +634,7 @@ func TestProfileBatchRouteUnauthorized(t *testing.T) {
 	e := newApp()
 
 	body, _ := json.Marshal(map[string][]string{"ids": {randUUID()}})
-	rec := do(t, e, http.MethodPost, "/users/profileBatch", body, nil)
+	rec := do(t, e, http.MethodPost, "/users/profile_batch", body, nil)
 
 	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
 		"token de autenticação ausente, inválido ou expirado")
@@ -3480,6 +3480,7 @@ func cleanServers(ctx context.Context) error {
 		"roles",
 		"attachment_thumbnails",
 		"attachments",
+		"message_reactions",
 		"messages",
 		"user_channel_state",
 		"channels",
@@ -4586,7 +4587,7 @@ func TestProfileBatchHandlerSuccess(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string][]string{"ids": {u2.ID, u1.ID}})
-	c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+	c := newContext(t, http.MethodPost, "/users/profile_batch", body, "")
 	c.Set(middleware.UserIDContextKey, u1.ID)
 	rec := recorder(c)
 
@@ -4624,7 +4625,7 @@ func TestProfileBatchHandlerSkipsMissingAndDedupes(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string][]string{"ids": {user.ID, randUUID(), user.ID}})
-	c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+	c := newContext(t, http.MethodPost, "/users/profile_batch", body, "")
 	c.Set(middleware.UserIDContextKey, user.ID)
 	rec := recorder(c)
 
@@ -4650,7 +4651,7 @@ func TestProfileBatchHandlerSkipsMissingAndDedupes(t *testing.T) {
 
 func TestProfileBatchHandlerEmptyIDs(t *testing.T) {
 	t.Run("chave ausente", func(t *testing.T) {
-		c := newContext(t, http.MethodPost, "/users/profileBatch", []byte("{}"), "")
+		c := newContext(t, http.MethodPost, "/users/profile_batch", []byte("{}"), "")
 		c.Set(middleware.UserIDContextKey, randUUID())
 		rec := recorder(c)
 
@@ -4663,7 +4664,7 @@ func TestProfileBatchHandlerEmptyIDs(t *testing.T) {
 
 	t.Run("lista vazia", func(t *testing.T) {
 		body, _ := json.Marshal(map[string][]string{"ids": {}})
-		c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+		c := newContext(t, http.MethodPost, "/users/profile_batch", body, "")
 		c.Set(middleware.UserIDContextKey, randUUID())
 		rec := recorder(c)
 
@@ -4677,7 +4678,7 @@ func TestProfileBatchHandlerEmptyIDs(t *testing.T) {
 
 func TestProfileBatchHandlerEmptyIDEntry(t *testing.T) {
 	body, _ := json.Marshal(map[string][]string{"ids": {""}})
-	c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+	c := newContext(t, http.MethodPost, "/users/profile_batch", body, "")
 	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
@@ -4694,7 +4695,7 @@ func TestProfileBatchHandlerTooManyIDs(t *testing.T) {
 		ids = append(ids, randUUID())
 	}
 	body, _ := json.Marshal(map[string][]string{"ids": ids})
-	c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+	c := newContext(t, http.MethodPost, "/users/profile_batch", body, "")
 	c.Set(middleware.UserIDContextKey, randUUID())
 	rec := recorder(c)
 
@@ -4707,7 +4708,7 @@ func TestProfileBatchHandlerTooManyIDs(t *testing.T) {
 
 func TestProfileBatchHandlerMissingUserAuth(t *testing.T) {
 	body, _ := json.Marshal(map[string][]string{"ids": {randUUID()}})
-	c := newContext(t, http.MethodPost, "/users/profileBatch", body, "")
+	c := newContext(t, http.MethodPost, "/users/profile_batch", body, "")
 	rec := recorder(c)
 
 	if err := ProfileBatchHandler(testBaseURL, c); err != nil {
@@ -10240,4 +10241,370 @@ func TestPinMessageHandlerWithPinRole(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
+}
+
+// reactionContext monta o contexto das rotas de reações com corpo JSON.
+func reactionContext(t *testing.T, method, channelID, messageID, userID, body string) echo.Context {
+	t.Helper()
+	c := newContext(t, method, "/channels/"+channelID+"/messages/"+messageID+"/reactions", []byte(body), "")
+	if userID != "" {
+		c.Set(middleware.UserIDContextKey, userID)
+	}
+	c.SetParamNames("channel_id", "message_id")
+	c.SetParamValues(channelID, messageID)
+	return c
+}
+
+func TestAddReactionHandlerCreated(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	c := reactionContext(t, http.MethodPost, channel.ID, message.ID, owner.ID, `{"unicode":"👍"}`)
+	rec := recorder(c)
+
+	if err := AddReactionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("AddReactionHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var reaction models.MessageReaction
+	if err := json.Unmarshal(rec.Body.Bytes(), &reaction); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if reaction.MessageID != message.ID || reaction.UserID != owner.ID {
+		t.Errorf("reação não confere: %+v", reaction)
+	}
+	if reaction.EmojiID != nil {
+		t.Errorf("esperava emoji_id null, obtive %v", *reaction.EmojiID)
+	}
+	if reaction.Unicode == nil || *reaction.Unicode != "👍" {
+		t.Errorf("esperava unicode 👍, obtive %v", reaction.Unicode)
+	}
+}
+
+func TestAddReactionHandlerIdempotent(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	do := func() *httptest.ResponseRecorder {
+		c := reactionContext(t, http.MethodPost, channel.ID, message.ID, owner.ID, `{"unicode":"👍"}`)
+		rec := recorder(c)
+		if err := AddReactionHandler(testBaseURL, c); err != nil {
+			t.Fatalf("AddReactionHandler retornou erro: %v", err)
+		}
+		return rec
+	}
+
+	if rec := do(); rec.Code != http.StatusCreated {
+		t.Fatalf("primeira reação: esperava 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if rec := do(); rec.Code != http.StatusOK {
+		t.Fatalf("segunda reação: esperava 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAddReactionHandlerCustomEmoji(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+	hash := newTestMediaHash(t, []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a})
+	emoji, err := storage.CreateEmoji(testCtx(), "emoji_"+randHex(8), hash, &owner.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar emoji: %v", err)
+	}
+
+	c := reactionContext(t, http.MethodPost, channel.ID, message.ID, owner.ID, fmt.Sprintf(`{"emoji_id":"%s"}`, emoji.ID))
+	rec := recorder(c)
+
+	if err := AddReactionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("AddReactionHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var reaction models.MessageReaction
+	if err := json.Unmarshal(rec.Body.Bytes(), &reaction); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if reaction.EmojiID == nil || *reaction.EmojiID != emoji.ID {
+		t.Errorf("esperava emoji_id %s, obtive %v", emoji.ID, reaction.EmojiID)
+	}
+	if reaction.Unicode != nil {
+		t.Errorf("esperava unicode null, obtive %q", *reaction.Unicode)
+	}
+}
+
+func TestAddReactionHandlerUnauthorized(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	c := reactionContext(t, http.MethodPost, channel.ID, message.ID, "", `{"unicode":"👍"}`)
+	rec := recorder(c)
+
+	if err := AddReactionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("AddReactionHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+func TestAddReactionHandlerMissingParam(t *testing.T) {
+	owner := newTestMessageUser(t)
+
+	c := reactionContext(t, http.MethodPost, "", "", owner.ID, `{"unicode":"👍"}`)
+	rec := recorder(c)
+
+	if err := AddReactionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("AddReactionHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"channel_id e message_id são obrigatórios")
+}
+
+func TestAddReactionHandlerInvalidBody(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	for _, body := range []string{`{}`, `{"emoji_id":"` + randUUID() + `","unicode":"👍"}`} {
+		c := reactionContext(t, http.MethodPost, channel.ID, message.ID, owner.ID, body)
+		rec := recorder(c)
+
+		if err := AddReactionHandler(testBaseURL, c); err != nil {
+			t.Fatalf("AddReactionHandler retornou erro: %v", err)
+		}
+		assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+			"informe exatamente um de emoji_id ou unicode; unicode tem no máximo 16 caracteres")
+	}
+}
+
+func TestAddReactionHandlerNotFound(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+
+	c := reactionContext(t, http.MethodPost, channel.ID, randUUID(), owner.ID, `{"unicode":"👍"}`)
+	rec := recorder(c)
+
+	if err := AddReactionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("AddReactionHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado",
+		"mensagem não encontrada neste canal")
+}
+
+func TestAddReactionHandlerForbidden(t *testing.T) {
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+	// Fecha o canal (define permissões) para que o actor, sem role, seja negado.
+	role := createRoleFor(t, models.RolePermissions{})
+	if _, err := storage.UpdateChannelPermissions(context.Background(), channel.ID, role.ID, models.ChannelPermission{SendMessages: true}); err != nil {
+		t.Fatalf("falha ao definir permissões do canal: %v", err)
+	}
+
+	c := reactionContext(t, http.MethodPost, channel.ID, message.ID, actor.ID, `{"unicode":"👍"}`)
+	rec := recorder(c)
+
+	if err := AddReactionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("AddReactionHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
+		"usuário não tem permissão para reagir neste canal")
+}
+
+func TestAddReactionHandlerLimit(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	types := []string{"👍", "👎", "😂", "😢", "😮", "😡", "🔥", "🎉", "💀", "❤️", "🙏", "👀", "✨", "🍕", "🚀", "🎯", "💯", "🥳", "🫡", "🤝"}
+	for i, unicode := range types {
+		c := reactionContext(t, http.MethodPost, channel.ID, message.ID, owner.ID, fmt.Sprintf(`{"unicode":"%s"}`, unicode))
+		rec := recorder(c)
+		if err := AddReactionHandler(testBaseURL, c); err != nil {
+			t.Fatalf("AddReactionHandler[%d] retornou erro: %v", i, err)
+		}
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("AddReactionHandler[%d]: esperava 201, obtive %d (corpo: %s)", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	c := reactionContext(t, http.MethodPost, channel.ID, message.ID, owner.ID, `{"unicode":"🆕"}`)
+	rec := recorder(c)
+
+	if err := AddReactionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("AddReactionHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusConflict, "reaction-limit-reached", "Limite de reações atingido",
+		"a mensagem já tem o número máximo de 20 tipos de reação")
+}
+
+func TestRemoveReactionHandler(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	add := reactionContext(t, http.MethodPost, channel.ID, message.ID, owner.ID, `{"unicode":"👍"}`)
+	rec := recorder(add)
+	if err := AddReactionHandler(testBaseURL, add); err != nil {
+		t.Fatalf("AddReactionHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("esperava 201 na criação, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	c := reactionContext(t, http.MethodDelete, channel.ID, message.ID, owner.ID, `{"unicode":"👍"}`)
+	rec = recorder(c)
+	if err := RemoveReactionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("RemoveReactionHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava status 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	// remover de novo → 404
+	c = reactionContext(t, http.MethodDelete, channel.ID, message.ID, owner.ID, `{"unicode":"👍"}`)
+	rec = recorder(c)
+	if err := RemoveReactionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("RemoveReactionHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado",
+		"usuário não reagiu à mensagem com este emoji")
+}
+
+func TestRemoveReactionHandlerForbidden(t *testing.T) {
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+	// Fecha o canal (define permissões) para que o actor, sem role, seja negado.
+	role := createRoleFor(t, models.RolePermissions{})
+	if _, err := storage.UpdateChannelPermissions(context.Background(), channel.ID, role.ID, models.ChannelPermission{ReadChannel: true}); err != nil {
+		t.Fatalf("falha ao definir permissões do canal: %v", err)
+	}
+
+	c := reactionContext(t, http.MethodDelete, channel.ID, message.ID, actor.ID, `{"unicode":"👍"}`)
+	rec := recorder(c)
+
+	if err := RemoveReactionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("RemoveReactionHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
+		"usuário não tem permissão para ler o canal")
+}
+
+func TestListReactionsHandler(t *testing.T) {
+	owner := newTestMessageUser(t)
+	u1 := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	for _, user := range []models.User{owner, u1} {
+		c := reactionContext(t, http.MethodPost, channel.ID, message.ID, user.ID, `{"unicode":"👍"}`)
+		rec := recorder(c)
+		if err := AddReactionHandler(testBaseURL, c); err != nil {
+			t.Fatalf("AddReactionHandler retornou erro: %v", err)
+		}
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("esperava 201 na criação, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+		}
+	}
+
+	c := reactionContext(t, http.MethodGet, channel.ID, message.ID, owner.ID, "")
+	rec := recorder(c)
+
+	if err := ListReactionsHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListReactionsHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var list models.MessageReactionList
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if list.MessageID != message.ID {
+		t.Errorf("esperava message_id %s, obtive %s", message.ID, list.MessageID)
+	}
+	if len(list.Reactions) != 1 {
+		t.Fatalf("esperava 1 tipo de reação, obtive %d: %+v", len(list.Reactions), list.Reactions)
+	}
+	g := list.Reactions[0]
+	if g.EmojiID != nil || g.Unicode == nil || *g.Unicode != "👍" || g.Count != 2 {
+		t.Errorf("esperava 👍 count=2, obtive %+v", g)
+	}
+	if len(g.Users) != 2 || !containsHandlerReactionUser(g.Users, owner.ID) || !containsHandlerReactionUser(g.Users, u1.ID) {
+		t.Errorf("esperava users owner e u1, obtive %v", g.Users)
+	}
+}
+
+func TestListReactionsHandlerForbidden(t *testing.T) {
+	owner := newTestMessageUser(t)
+	actor := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+	// Fecha o canal (define permissões) para que o actor, sem role, seja negado.
+	role := createRoleFor(t, models.RolePermissions{})
+	if _, err := storage.UpdateChannelPermissions(context.Background(), channel.ID, role.ID, models.ChannelPermission{ReadChannel: true}); err != nil {
+		t.Fatalf("falha ao definir permissões do canal: %v", err)
+	}
+
+	c := reactionContext(t, http.MethodGet, channel.ID, message.ID, actor.ID, "")
+	rec := recorder(c)
+
+	if err := ListReactionsHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListReactionsHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
+		"usuário não tem permissão para ler o canal")
+}
+
+func containsHandlerReactionUser(users []string, id string) bool {
+	for _, u := range users {
+		if u == id {
+			return true
+		}
+	}
+	return false
 }

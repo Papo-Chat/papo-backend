@@ -78,7 +78,7 @@ type profileBatchResponse struct {
 	Profiles []profileResponse `json:"profiles"`
 }
 
-// ProfileBatchHandler implementa POST /users/profileBatch.
+// ProfileBatchHandler implementa POST /users/profile_batch.
 // Retorna os perfis dos usuários solicitados (mesma forma do profile
 // individual), na ordem da requisição, pulando ids que não existem.
 // Máximo de 50 ids por requisição.

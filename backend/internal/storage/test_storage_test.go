@@ -279,6 +279,7 @@ func wipeAppTables(t *testing.T) {
 		"roles",
 		"attachment_thumbnails",
 		"attachments",
+		"message_reactions",
 		"messages",
 		"user_channel_state",
 		"channels",
@@ -3836,5 +3837,413 @@ func TestPinMessageCascadeOnChannelDelete(t *testing.T) {
 	}
 	if count := countPinnedMessages(t, channel.ID); count != 0 {
 		t.Errorf("esperava 0 pins após excluir o canal, obtive %d", count)
+	}
+}
+
+// --- message reactions ---
+
+// countMessageReactions conta as reações de uma mensagem direto na tabela.
+func countMessageReactions(t *testing.T, messageID string) int {
+	t.Helper()
+	var count int
+	if err := GetDB().QueryRowContext(testCtx(),
+		"SELECT COUNT(*) FROM message_reactions WHERE message_id = $1", messageID,
+	).Scan(&count); err != nil {
+		t.Fatalf("falha ao contar reações: %v", err)
+	}
+	return count
+}
+
+func containsReactionUser(users []string, id string) bool {
+	for _, u := range users {
+		if u == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAddReactionUnicode(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	unicode := "👍"
+	reaction, created, count, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &unicode)
+	if err != nil {
+		t.Fatalf("AddReaction retornou erro: %v", err)
+	}
+	if !created {
+		t.Error("esperava created=true na primeira reação")
+	}
+	if reaction.MessageID != message.ID || reaction.UserID != owner.ID {
+		t.Errorf("reação não confere: %+v", reaction)
+	}
+	if reaction.EmojiID != nil {
+		t.Errorf("esperava emoji_id null, obtive %v", *reaction.EmojiID)
+	}
+	if reaction.Unicode == nil || *reaction.Unicode != unicode {
+		t.Errorf("esperava unicode %q, obtive %v", unicode, reaction.Unicode)
+	}
+	if count != 1 {
+		t.Errorf("esperava count=1, obtive %d", count)
+	}
+	if n := countMessageReactions(t, message.ID); n != 1 {
+		t.Errorf("esperava 1 reação no banco, obtive %d", n)
+	}
+}
+
+func TestAddReactionIdempotent(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	unicode := "👍"
+	first, created, _, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &unicode)
+	if err != nil || !created {
+		t.Fatalf("primeira reação falhou: created=%v err=%v", created, err)
+	}
+
+	second, created, count, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &unicode)
+	if err != nil {
+		t.Fatalf("segunda reação retornou erro: %v", err)
+	}
+	if created {
+		t.Error("esperava created=false na segunda reação")
+	}
+	if count != 1 {
+		t.Errorf("esperava count=1, obtive %d", count)
+	}
+	if !second.CreatedAt.Equal(first.CreatedAt) {
+		t.Errorf("esperava created_at inalterado: %v != %v", second.CreatedAt, first.CreatedAt)
+	}
+	if n := countMessageReactions(t, message.ID); n != 1 {
+		t.Errorf("esperava 1 reação no banco, obtive %d", n)
+	}
+}
+
+func TestAddReactionCustomEmoji(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	hash := newTestMedia(t, []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a})
+	emoji, err := CreateEmoji(testCtx(), "emoji_"+randHex(8), hash, &owner.ID)
+	if err != nil {
+		t.Fatalf("CreateEmoji retornou erro: %v", err)
+	}
+
+	reaction, created, count, err := AddReaction(testCtx(), message.ID, owner.ID, &emoji.ID, nil)
+	if err != nil {
+		t.Fatalf("AddReaction retornou erro: %v", err)
+	}
+	if !created || count != 1 {
+		t.Fatalf("esperava created=true count=1, obtive created=%v count=%d", created, count)
+	}
+	if reaction.EmojiID == nil || *reaction.EmojiID != emoji.ID {
+		t.Errorf("esperava emoji_id %s, obtive %v", emoji.ID, reaction.EmojiID)
+	}
+	if reaction.Unicode != nil {
+		t.Errorf("esperava unicode null, obtive %q", *reaction.Unicode)
+	}
+}
+
+func TestAddReactionLimit(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	types := []string{"👍", "👎", "😂", "😢", "😮", "😡", "🔥", "🎉", "💀", "❤️", "🙏", "👀", "✨", "🍕", "🚀", "🎯", "💯", "🥳", "🫡", "🤝"}
+	for i, unicode := range types {
+		if _, created, _, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &unicode); err != nil || !created {
+			t.Fatalf("AddReaction[%d] falhou: created=%v err=%v", i, created, err)
+		}
+	}
+
+	// Reagir de novo com um tipo existente no limite continua permitido.
+	again := types[0]
+	if _, created, count, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &again); err != nil || created || count != 1 {
+		t.Fatalf("reagir com tipo existente no limite falhou: created=%v count=%d err=%v", created, count, err)
+	}
+
+	// Tipo novo no limite é rejeitado.
+	fresh := "🆕"
+	if _, _, _, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &fresh); !errors.Is(err, ErrReactionLimitReached) {
+		t.Errorf("esperava ErrReactionLimitReached, obtive %v", err)
+	}
+}
+
+func TestRemoveReaction(t *testing.T) {
+	owner := newTestUser(t)
+	other := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	unicode := "👍"
+	if _, _, _, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &unicode); err != nil {
+		t.Fatalf("AddReaction (owner) retornou erro: %v", err)
+	}
+	if _, _, count, err := AddReaction(testCtx(), message.ID, other.ID, nil, &unicode); err != nil || count != 2 {
+		t.Fatalf("AddReaction (other) falhou: count=%d err=%v", count, err)
+	}
+
+	count, err := RemoveReaction(testCtx(), message.ID, owner.ID, nil, &unicode)
+	if err != nil || count != 1 {
+		t.Fatalf("RemoveReaction (owner) falhou: count=%d err=%v", count, err)
+	}
+	if _, err := RemoveReaction(testCtx(), message.ID, owner.ID, nil, &unicode); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound reagindo de novo, obtive %v", err)
+	}
+	count, err = RemoveReaction(testCtx(), message.ID, other.ID, nil, &unicode)
+	if err != nil || count != 0 {
+		t.Fatalf("RemoveReaction (other) falhou: count=%d err=%v", count, err)
+	}
+	if n := countMessageReactions(t, message.ID); n != 0 {
+		t.Errorf("esperava 0 reações no banco, obtive %d", n)
+	}
+}
+
+func TestRemoveReactionOnlyOwn(t *testing.T) {
+	owner := newTestUser(t)
+	other := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	unicode := "👍"
+	if _, _, _, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &unicode); err != nil {
+		t.Fatalf("AddReaction retornou erro: %v", err)
+	}
+
+	// other não reagiu com esse emoji → não pode remover a reação do owner.
+	if _, err := RemoveReaction(testCtx(), message.ID, other.ID, nil, &unicode); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para reação de outro usuário, obtive %v", err)
+	}
+	if n := countMessageReactions(t, message.ID); n != 1 {
+		t.Errorf("esperava a reação do owner preservada, obtive %d reações", n)
+	}
+}
+
+func TestListReactionsByMessage(t *testing.T) {
+	owner := newTestUser(t)
+	u1 := newTestUser(t)
+	u2 := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	hash := newTestMedia(t, []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a})
+	emoji, err := CreateEmoji(testCtx(), "emoji_"+randHex(8), hash, &owner.ID)
+	if err != nil {
+		t.Fatalf("CreateEmoji retornou erro: %v", err)
+	}
+
+	thumb := "👍"
+	fire := "🎉"
+	if _, _, _, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &thumb); err != nil {
+		t.Fatalf("AddReaction (owner 👍) retornou erro: %v", err)
+	}
+	if _, _, _, err := AddReaction(testCtx(), message.ID, u1.ID, nil, &thumb); err != nil {
+		t.Fatalf("AddReaction (u1 👍) retornou erro: %v", err)
+	}
+	if _, _, _, err := AddReaction(testCtx(), message.ID, u2.ID, nil, &fire); err != nil {
+		t.Fatalf("AddReaction (u2 🎉) retornou erro: %v", err)
+	}
+	if _, _, _, err := AddReaction(testCtx(), message.ID, owner.ID, &emoji.ID, nil); err != nil {
+		t.Fatalf("AddReaction (owner custom) retornou erro: %v", err)
+	}
+
+	groups, err := ListReactionsByMessage(testCtx(), message.ID)
+	if err != nil {
+		t.Fatalf("ListReactionsByMessage retornou erro: %v", err)
+	}
+	if len(groups) != 3 {
+		t.Fatalf("esperava 3 tipos de reação, obtive %d: %+v", len(groups), groups)
+	}
+
+	for _, g := range groups {
+		switch {
+		case g.Unicode != nil && *g.Unicode == thumb:
+			if g.Count != 2 || !containsReactionUser(g.Users, owner.ID) || !containsReactionUser(g.Users, u1.ID) {
+				t.Errorf("esperava 👍 count=2 com owner e u1, obtive %+v", g)
+			}
+		case g.Unicode != nil && *g.Unicode == fire:
+			if g.Count != 1 || !containsReactionUser(g.Users, u2.ID) {
+				t.Errorf("esperava 🎉 count=1 com u2, obtive %+v", g)
+			}
+		case g.EmojiID != nil && *g.EmojiID == emoji.ID:
+			if g.Count != 1 || !containsReactionUser(g.Users, owner.ID) {
+				t.Errorf("esperava custom count=1 com owner, obtive %+v", g)
+			}
+		default:
+			t.Errorf("tipo de reação inesperado: %+v", g)
+		}
+	}
+
+	// mensagem sem reações retorna lista vazia
+	empty, err := CreateMessage(testCtx(), channel.ID, owner.ID, "sem reações", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (vazia) retornou erro: %v", err)
+	}
+	groups, err = ListReactionsByMessage(testCtx(), empty.ID)
+	if err != nil {
+		t.Fatalf("ListReactionsByMessage (vazia) retornou erro: %v", err)
+	}
+	if len(groups) != 0 {
+		t.Errorf("esperava lista vazia, obtive %+v", groups)
+	}
+}
+
+func TestReactionCountsByMessages(t *testing.T) {
+	owner := newTestUser(t)
+	u1 := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	m1, err := CreateMessage(testCtx(), channel.ID, owner.ID, "m1", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (m1) retornou erro: %v", err)
+	}
+	m2, err := CreateMessage(testCtx(), channel.ID, owner.ID, "m2", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (m2) retornou erro: %v", err)
+	}
+	m3, err := CreateMessage(testCtx(), channel.ID, owner.ID, "m3", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (m3) retornou erro: %v", err)
+	}
+
+	thumb := "👍"
+	fire := "🎉"
+	if _, _, _, err := AddReaction(testCtx(), m1.ID, owner.ID, nil, &thumb); err != nil {
+		t.Fatalf("AddReaction (m1 owner) retornou erro: %v", err)
+	}
+	if _, _, _, err := AddReaction(testCtx(), m1.ID, u1.ID, nil, &thumb); err != nil {
+		t.Fatalf("AddReaction (m1 u1) retornou erro: %v", err)
+	}
+	if _, _, _, err := AddReaction(testCtx(), m2.ID, owner.ID, nil, &fire); err != nil {
+		t.Fatalf("AddReaction (m2 owner) retornou erro: %v", err)
+	}
+
+	counts, err := ReactionCountsByMessages(testCtx(), []string{m1.ID, m2.ID, m3.ID})
+	if err != nil {
+		t.Fatalf("ReactionCountsByMessages retornou erro: %v", err)
+	}
+	if got := counts[m1.ID]; len(got) != 1 || got[0].Unicode == nil || *got[0].Unicode != thumb || got[0].Count != 2 {
+		t.Errorf("esperava m1 com 👍 count=2, obtive %+v", got)
+	}
+	if got := counts[m2.ID]; len(got) != 1 || got[0].Unicode == nil || *got[0].Unicode != fire || got[0].Count != 1 {
+		t.Errorf("esperava m2 com 🎉 count=1, obtive %+v", got)
+	}
+	if got, ok := counts[m3.ID]; ok {
+		t.Errorf("esperava m3 ausente do mapa, obtive %+v", got)
+	}
+
+	empty, err := ReactionCountsByMessages(testCtx(), nil)
+	if err != nil || len(empty) != 0 {
+		t.Errorf("esperava mapa vazio para input vazio, obtive %+v err=%v", empty, err)
+	}
+}
+
+func TestAddReactionUniqueIndexUnicode(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	unicode := "👍"
+	if _, _, _, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &unicode); err != nil {
+		t.Fatalf("AddReaction retornou erro: %v", err)
+	}
+
+	// INSERT direto (contornando a idempotência de AddReaction) deve ser
+	// rejeitado pelo unique index COALESCE: sem ele, reações unicode
+	// (emoji_id NULL) escapariam da unicidade.
+	_, rawErr := GetDB().ExecContext(testCtx(),
+		"INSERT INTO message_reactions (message_id, user_id, emoji_id, unicode) VALUES ($1, $2, NULL, $3)",
+		message.ID, owner.ID, unicode)
+	if !errors.Is(mapStorageError(rawErr), ErrUniqueViolation) {
+		t.Errorf("esperava ErrUniqueViolation, obtive %v", rawErr)
+	}
+}
+
+func TestAddReactionCascadeOnMessageDelete(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	unicode := "👍"
+	if _, _, _, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &unicode); err != nil {
+		t.Fatalf("AddReaction retornou erro: %v", err)
+	}
+
+	if err := DeleteMessage(testCtx(), message.ID); err != nil {
+		t.Fatalf("DeleteMessage retornou erro: %v", err)
+	}
+	if n := countMessageReactions(t, message.ID); n != 0 {
+		t.Errorf("esperava 0 reações após excluir a mensagem, obtive %d", n)
+	}
+}
+
+func TestAddReactionCascadeOnEmojiDelete(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	hash := newTestMedia(t, []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a})
+	emoji, err := CreateEmoji(testCtx(), "emoji_"+randHex(8), hash, &owner.ID)
+	if err != nil {
+		t.Fatalf("CreateEmoji retornou erro: %v", err)
+	}
+
+	unicode := "👍"
+	if _, _, _, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &unicode); err != nil {
+		t.Fatalf("AddReaction (unicode) retornou erro: %v", err)
+	}
+	if _, _, _, err := AddReaction(testCtx(), message.ID, owner.ID, &emoji.ID, nil); err != nil {
+		t.Fatalf("AddReaction (custom) retornou erro: %v", err)
+	}
+
+	if err := DeleteEmoji(testCtx(), emoji.ID); err != nil {
+		t.Fatalf("DeleteEmoji retornou erro: %v", err)
+	}
+	groups, err := ListReactionsByMessage(testCtx(), message.ID)
+	if err != nil {
+		t.Fatalf("ListReactionsByMessage retornou erro: %v", err)
+	}
+	if len(groups) != 1 || groups[0].EmojiID != nil || groups[0].Unicode == nil || *groups[0].Unicode != unicode {
+		t.Errorf("esperava apenas a reação unicode após excluir o emoji, obtive %+v", groups)
 	}
 }
