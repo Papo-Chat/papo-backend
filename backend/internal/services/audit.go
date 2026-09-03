@@ -15,6 +15,7 @@ const auditLogPageSize = 100
 
 // Ações auditáveis (valor da coluna action).
 const (
+	ActionAuthConnectionDrop  = "auth.connection_drop"
 	ActionUserRegister        = "user.register"
 	ActionUserUpdateSettings  = "user.update_settings"
 	ActionUserUpdateProfile   = "user.update_profile"

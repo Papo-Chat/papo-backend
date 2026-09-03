@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -109,6 +110,10 @@ type loginResponse struct {
 		Username string `json:"username"`
 	} `json:"user"`
 	Token string `json:"token"`
+	// ConnectionViolation indica que o reuso de um token de sessão foi
+	// detectado neste usuário (todas as conexões foram revogadas); o cliente
+	// usa a flag para avisar o usuário.
+	ConnectionViolation bool `json:"connection_violation"`
 }
 
 // LoginHandler implementa POST /auth/login.
@@ -168,12 +173,22 @@ func LoginHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao fazer login")
 	}
 
-	token, err := utils.GenerateToken(user.ID, cfg.JWTSecret)
+	// O token é uma função pura de (user_id, iat, segredo): o iat é guardado
+	// na conexão de sessão para re-derivação na janela de graça da rotação.
+	issuedAt := time.Now()
+	token, err := utils.GenerateSessionToken(user.ID, issuedAt, cfg.JWTSecret)
 	if err != nil {
 		utils.Errorf("request_id=%s falha ao gerar token JWT: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
 			"internal", "Erro interno", "falha ao gerar token de autenticação")
+	}
+
+	if err := services.CreateConnection(c.Request().Context(), user.ID, token, issuedAt); err != nil {
+		utils.Errorf("request_id=%s falha ao registrar a conexão de sessão: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao registrar a sessão")
 	}
 
 	sameSite := http.SameSiteStrictMode
@@ -191,7 +206,7 @@ func LoginHandler(baseURL string, c echo.Context) error {
 		MaxAge:   int(utils.JWTExpiration.Seconds()),
 	})
 
-	resp := loginResponse{Token: token}
+	resp := loginResponse{Token: token, ConnectionViolation: user.ConnectionViolation}
 	resp.User.ID = user.ID
 	resp.User.Username = user.Username
 
@@ -320,6 +335,10 @@ type whoamiResponse struct {
 	StatusUpdatedAt *time.Time     `json:"status_updated_at"`
 	CreatedAt       time.Time      `json:"created_at"`
 	Settings        whoamiSettings `json:"settings"`
+	// ConnectionViolation indica que o reuso de um token de sessão foi
+	// detectado neste usuário (todas as conexões foram revogadas); o cliente
+	// usa a flag para avisar o usuário.
+	ConnectionViolation bool `json:"connection_violation"`
 }
 
 // WhoamiHandler implementa GET /auth/whoami.
@@ -358,15 +377,30 @@ func WhoamiHandler(baseURL string, c echo.Context) error {
 			Version: settings.Version,
 			Config:  settings.Config,
 		},
+		ConnectionViolation: user.ConnectionViolation,
 	})
 }
 
-// LogoutHandler implementa POST /auth/logout.
-// A autenticação é stateless (JWT): o servidor não revoga o token, o logout
-// apenas remove o cookie Auth do cliente.
-func LogoutHandler(c echo.Context) error {
-	cfg := config.LoadConfig()
+// setAuthCookie define o cookie Auth com o token de sessão.
+func setAuthCookie(c echo.Context, cfg *config.Config, token string) {
+	sameSite := http.SameSiteStrictMode
+	if !cfg.SameSite {
+		sameSite = http.SameSiteNoneMode
+	}
 
+	c.SetCookie(&http.Cookie{
+		Name:     "Auth",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: sameSite,
+		MaxAge:   int(utils.JWTExpiration.Seconds()),
+	})
+}
+
+// clearAuthCookie remove o cookie Auth do cliente.
+func clearAuthCookie(c echo.Context, cfg *config.Config) {
 	sameSite := http.SameSiteStrictMode
 	if !cfg.SameSite {
 		sameSite = http.SameSiteNoneMode
@@ -381,6 +415,171 @@ func LogoutHandler(c echo.Context) error {
 		SameSite: sameSite,
 		Expires:  time.Unix(0, 0),
 	})
+}
 
+// authCookieValue retorna o valor do cookie Auth ("" quando ausente).
+func authCookieValue(c echo.Context) string {
+	cookie, err := c.Cookie("Auth")
+	if err != nil || cookie.Value == "" {
+		return ""
+	}
+	return cookie.Value
+}
+
+// LogoutHandler implementa POST /auth/logout.
+// A rota permanece pública (sem JWTMiddleware): lê o cookie Auth, valida o
+// JWT e revoga a conexão de sessão correspondente no banco (auth híbrida).
+// Reuso de token já substituído revoga todas as conexões e marca
+// users.connection_violation. O cookie Auth é removido do cliente em todos os
+// casos.
+func LogoutHandler(baseURL string, c echo.Context) error {
+	cfg := config.LoadConfig()
+	ctx := c.Request().Context()
+	requestID := c.Request().Header.Get(echo.HeaderXRequestID)
+
+	if token := authCookieValue(c); token != "" {
+		if userID, verr := utils.ValidateToken(token, cfg.JWTSecret); verr == nil && userID != "" {
+			if err := services.Logout(ctx, userID, token); err != nil {
+				utils.Errorf("request_id=%s falha ao revogar a conexão no logout: %v", requestID, err)
+			}
+		}
+	}
+
+	clearAuthCookie(c, cfg)
 	return c.NoContent(http.StatusNoContent)
+}
+
+type refreshResponse struct {
+	Token      string                  `json:"token"`
+	Connection services.ConnectionInfo `json:"connection"`
+}
+
+// RefreshHandler implementa POST /auth/refresh.
+// Rotaciona o token de sessão: a conexão atual (identificada pelo cookie Auth)
+// é substituída atomicamente por uma nova. O novo token é retornado no corpo e
+// definido no cookie Auth.
+func RefreshHandler(baseURL string, c echo.Context) error {
+	cfg := config.LoadConfig()
+	ctx := c.Request().Context()
+	requestID := c.Request().Header.Get(echo.HeaderXRequestID)
+
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	token := authCookieValue(c)
+	if token == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	newToken, conn, err := services.RefreshConnection(ctx, userID, token)
+	switch {
+	case errors.Is(err, services.ErrConnectionNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao rotacionar o token de sessão: %v", requestID, err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao rotacionar o token de sessão")
+	}
+
+	setAuthCookie(c, cfg, newToken)
+	return c.JSON(http.StatusOK, refreshResponse{Token: newToken, Connection: conn})
+}
+
+type connectedDevicesResponse struct {
+	Connections []services.ConnectionInfo `json:"connections"`
+}
+
+// ConnectedDevicesHandler implementa GET /auth/connected_devices.
+// Lista as conexões de sessão ativas do usuário autenticado.
+func ConnectedDevicesHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	conns, err := services.ListConnections(c.Request().Context(), userID)
+	if err != nil {
+		utils.Errorf("request_id=%s falha ao listar as conexões de sessão: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao listar as conexões de sessão")
+	}
+
+	return c.JSON(http.StatusOK, connectedDevicesResponse{Connections: conns})
+}
+
+type dropConnectionRequest struct {
+	ConnectionID string `json:"connection_id"`
+}
+
+type dropConnectionResponse struct {
+	Dropped int `json:"dropped"`
+}
+
+// DropConnectionHandler implementa POST /auth/drop_connection.
+// Revoga conexões de sessão do usuário autenticado: o corpo
+// {"connection_id": "<uuid>"} revoga uma conexão específica;
+// {"connection_id": "ALL"} (case-insensitive) revoga todas as conexões
+// ativas, incluindo a atual. Quando a conexão do cookie atual é revogada, o
+// cookie Auth é removido do cliente.
+func DropConnectionHandler(baseURL string, c echo.Context) error {
+	cfg := config.LoadConfig()
+	ctx := c.Request().Context()
+	requestID := c.Request().Header.Get(echo.HeaderXRequestID)
+
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	var req dropConnectionRequest
+	if err := c.Bind(&req); err != nil {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
+	}
+	if req.ConnectionID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "campo 'connection_id' é obrigatório")
+	}
+
+	token := authCookieValue(c)
+	currentID := ""
+	if token != "" {
+		if id, err := services.CurrentConnectionID(ctx, userID, token); err == nil {
+			currentID = id
+		}
+	}
+
+	dropped, err := services.DropConnection(ctx, userID, req.ConnectionID)
+	switch {
+	case errors.Is(err, services.ErrInvalidConnection):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido",
+			"campo 'connection_id' deve ser um UUID ou 'ALL'")
+	case errors.Is(err, services.ErrConnectionNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "conexão de sessão não encontrada")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao revogar a conexão de sessão: %v", requestID, err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao revogar a conexão de sessão")
+	}
+
+	if token != "" && (strings.EqualFold(req.ConnectionID, "ALL") || strings.EqualFold(currentID, req.ConnectionID)) {
+		clearAuthCookie(c, cfg)
+	}
+
+	return c.JSON(http.StatusOK, dropConnectionResponse{Dropped: dropped})
 }

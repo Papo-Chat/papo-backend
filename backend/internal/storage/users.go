@@ -12,11 +12,11 @@ import (
 
 // userColumns inclui password_hash e é usado somente por GetUserByUsername,
 // que é a única função autorizada a retornar o hash do banco.
-const userColumns = "id, username, nickname, password_hash, avatar_media, banner_media, description, banned, reset_password, last_ip, status, status_message, status_updated_at, created_at"
+const userColumns = "id, username, nickname, password_hash, avatar_media, banner_media, description, banned, reset_password, connection_violation, last_ip, status, status_message, status_updated_at, created_at"
 
 // userPublicColumns é a visão de usuário sem password_hash, usada por todas
 // as demais funções.
-const userPublicColumns = "id, username, nickname, avatar_media, banner_media, description, banned, reset_password, last_ip, status, status_message, status_updated_at, created_at"
+const userPublicColumns = "id, username, nickname, avatar_media, banner_media, description, banned, reset_password, connection_violation, last_ip, status, status_message, status_updated_at, created_at"
 
 // userSummaryColumns é a visão reduzida para listagens (GET /users).
 const userSummaryColumns = "id, username, nickname, status, status_message, status_updated_at, created_at"
@@ -33,6 +33,7 @@ func scanUser(row rowScanner) (models.User, error) {
 		&user.Description,
 		&user.Banned,
 		&user.ResetPassword,
+		&user.ConnectionViolation,
 		&user.LastIP,
 		&user.Status,
 		&user.StatusMessage,
@@ -57,6 +58,7 @@ func scanUserPublic(row rowScanner) (models.User, error) {
 		&user.Description,
 		&user.Banned,
 		&user.ResetPassword,
+		&user.ConnectionViolation,
 		&user.LastIP,
 		&user.Status,
 		&user.StatusMessage,
@@ -386,12 +388,21 @@ func SetUserBanned(ctx context.Context, id string, banned bool) (bool, error) {
 	return false, nil
 }
 
-// UpdateUserPassword substitui o hash de senha do usuário e reinicia a flag
-// de reset de senha (users.reset_password = FALSE).
+// UpdateUserPassword substitui o hash de senha do usuário, reinicia a flag de
+// reset de senha (users.reset_password = FALSE), limpa a flag de violação de
+// conexão (users.connection_violation = FALSE) e revoga todas as conexões de
+// autenticação ativas do usuário — tudo em uma única transação: a troca de
+// senha derruba as sessões existentes (proteção contra sequestro de cookie).
 // Retorna ErrNotFound quando o usuário não existe.
 func UpdateUserPassword(ctx context.Context, id, passwordHash string) error {
-	result, err := GetDB().ExecContext(ctx,
-		"UPDATE users SET password_hash = $2, reset_password = FALSE WHERE id = $1",
+	tx, err := GetDB().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("falha ao atualizar a senha do usuário: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx,
+		"UPDATE users SET password_hash = $2, reset_password = FALSE, connection_violation = FALSE WHERE id = $1",
 		id, passwordHash,
 	)
 	if err != nil {
@@ -400,6 +411,17 @@ func UpdateUserPassword(ctx context.Context, id, passwordHash string) error {
 
 	if n, _ := result.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE user_connections SET replaced_at = now() WHERE user_id = $1 AND replaced_at IS NULL",
+		id,
+	); err != nil {
+		return fmt.Errorf("falha ao revogar as conexões do usuário: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("falha ao atualizar a senha do usuário: %w", err)
 	}
 
 	return nil

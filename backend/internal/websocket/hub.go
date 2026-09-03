@@ -1,10 +1,12 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"time"
 
+	"papo/internal/storage"
 	"papo/internal/utils"
 )
 
@@ -44,12 +46,24 @@ func NewHub() *Hub {
 	}
 }
 
-// Run processa o registro e o desregistro de clientes e mantém o estado de
-// presença atualizado. Deve ser executado em sua própria goroutine e termina
-// quando Shutdown fecha o canal stop.
+// sessionRecheckInterval é o intervalo da revalidação das conexões de sessão
+// dos usuários conectados (auth híbrida): quem teve a sessão revogada no
+// banco (logout, drop de conexão, troca de senha, reuso de token) é
+// desconectado do WebSocket.
+const sessionRecheckInterval = 30 * time.Second
+
+// Run processa o registro e o desregistro de clientes, mantém o estado de
+// presença atualizado e revalida periodicamente as conexões de sessão. Deve
+// ser executado em sua própria goroutine e termina quando Shutdown fecha o
+// canal stop.
 func (h *Hub) Run() {
+	recheck := time.NewTicker(sessionRecheckInterval)
+	defer recheck.Stop()
+
 	for {
 		select {
+		case <-recheck.C:
+			h.disconnectRevokedUsers()
 		case c := <-h.register:
 			h.mu.Lock()
 			if h.shuttingDown {
@@ -80,6 +94,35 @@ func (h *Hub) Run() {
 		case <-h.stop:
 			return
 		}
+	}
+}
+
+// disconnectRevokedUsers encerra as conexões dos usuários online que não têm
+// mais nenhuma conexão de sessão ativa no banco (auth híbrida: a revogação no
+// banco também corta o WebSocket). Usuário com ao menos uma conexão ativa
+// (incluindo após uma rotação, que cria a conexão nova) permanece conectado.
+func (h *Hub) disconnectRevokedUsers() {
+	userIDs := h.OnlineUserIDs()
+	if len(userIDs) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	active, err := storage.ListUsersWithActiveConnections(ctx, userIDs)
+	if err != nil {
+		utils.Errorf("websocket: falha ao revalidar as conexões de sessão: %v", err)
+		return
+	}
+
+	for c := range h.Clients() {
+		if active[c.userID] {
+			continue
+		}
+		utils.Infof("websocket: conexão de sessão do usuário %s revogada, encerrando a conexão", c.userID)
+		c.sendCloseFrame()
+		c.conn.Close()
 	}
 }
 

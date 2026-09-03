@@ -36,6 +36,17 @@ const auditPurgeBatchSleep = 250 * time.Millisecond
 // travado não pode segurar o scheduler para sempre).
 const maintenanceRunTimeout = 30 * time.Minute
 
+// connectionArchiveDelay é o tempo após a substituição (replaced_at) que uma
+// conexão de sessão fica na tabela ativa antes de ser movida para a history.
+// Deve ser maior que a janela de graça da rotação (a row precisa continuar
+// consultável durante a janela).
+const connectionArchiveDelay = 12 * time.Hour
+
+// connectionHistoryRetention é o tempo máximo que uma conexão substituída fica
+// na history: após ele, o JWT correspondente já expirou (24h) e o histórico
+// não serve mais para detecção de reuso.
+const connectionHistoryRetention = 25 * time.Hour
+
 // RunMaintenance inicia a rotina de manutenção: roda os jobs imediatamente e
 // depois a cada maintenanceInterval, até o ctx ser cancelado. Os jobs são
 // sequenciais e independentes: a falha de um é logada e não bloqueia o outro.
@@ -49,6 +60,9 @@ func RunMaintenance(ctx context.Context, cfg *config.Config) {
 		}
 		if err := purgeAuditLogs(jobCtx, cfg.LogDuration); err != nil {
 			utils.Errorf("manutenção: purge de auditoria: %v", err)
+		}
+		if err := archiveUserConnections(jobCtx); err != nil {
+			utils.Errorf("manutenção: arquivamento de conexões de sessão: %v", err)
 		}
 	}
 
@@ -292,6 +306,27 @@ func purgeAuditLogs(ctx context.Context, retention time.Duration) error {
 
 	if total > 0 {
 		utils.Infof("manutenção: %d log(s) de auditoria expirado(s) removido(s)", total)
+	}
+	return nil
+}
+
+// archiveUserConnections move para a history as conexões de sessão
+// substituídas com replaced_at anterior a connectionArchiveDelay e purga da
+// history as conexões com replaced_at anterior a connectionHistoryRetention
+// (aí o JWT já expirou e o histórico não serve mais para detecção de reuso).
+func archiveUserConnections(ctx context.Context) error {
+	moved, err := storage.MoveUserConnectionsToHistory(ctx, time.Now().Add(-connectionArchiveDelay))
+	if err != nil {
+		return fmt.Errorf("arquivar: %w", err)
+	}
+
+	purged, err := storage.PurgeUserConnectionHistory(ctx, time.Now().Add(-connectionHistoryRetention))
+	if err != nil {
+		return fmt.Errorf("purgar: %w", err)
+	}
+
+	if moved > 0 || purged > 0 {
+		utils.Infof("manutenção: %d conexão(ões) de sessão arquivada(s) e %d removida(s) da history", moved, purged)
 	}
 	return nil
 }

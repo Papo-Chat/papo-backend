@@ -25,7 +25,18 @@ func RegisterAuthRoutes(e *echo.Echo, cfg *config.Config) {
 	e.GET("/auth/whoami", func(c echo.Context) error {
 		return WhoamiHandler(cfg.BaseURL, c)
 	}, authRateLimit, middleware.JWTMiddleware)
-	e.POST("/auth/logout", LogoutHandler, authRateLimit)
+	e.POST("/auth/logout", func(c echo.Context) error {
+		return LogoutHandler(cfg.BaseURL, c)
+	}, authRateLimit)
+	e.POST("/auth/refresh", func(c echo.Context) error {
+		return RefreshHandler(cfg.BaseURL, c)
+	}, authRateLimit, middleware.JWTMiddleware)
+	e.GET("/auth/connected_devices", func(c echo.Context) error {
+		return ConnectedDevicesHandler(cfg.BaseURL, c)
+	}, authRateLimit, middleware.JWTMiddleware)
+	e.POST("/auth/drop_connection", func(c echo.Context) error {
+		return DropConnectionHandler(cfg.BaseURL, c)
+	}, authRateLimit, middleware.JWTMiddleware)
 }
 
 // RegisterUserRoutes registra as rotas de usuários.

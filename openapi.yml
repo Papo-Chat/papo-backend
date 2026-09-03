@@ -178,11 +178,73 @@ paths:
   /auth/logout:
     post:
       tags: [Auth]
-      summary: Faz logout (remove o cookie Auth; JWT stateless)
+      summary: Faz logout (revoga a conexão de sessão no banco e remove o cookie Auth)
       security: []
       responses:
         '204':
           description: Logout bem-sucedido (Set-Cookie expira o Auth)
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotaciona o token de sessão (novo JWT + Set-Cookie) e retorna a conexão atual
+      responses:
+        '200':
+          description: "Sessão rotacionada (Set-Cookie: Auth=novo_jwt)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/connected_devices:
+    get:
+      tags: [Auth]
+      summary: Lista as conexões de sessão ativas do usuário
+      responses:
+        '200':
+          description: Conexões ativas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectedDevicesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/drop_connection:
+    post:
+      tags: [Auth]
+      summary: Revoga uma conexão de sessão (id específico ou ALL para todas)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DropConnectionRequest'
+      responses:
+        '200':
+          description: Conexão(ões) revogada(s)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DropConnectionResponse'
+        '400':
+          description: connection_id ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /users/{user_id}/profile:
     get:
@@ -1979,6 +2041,9 @@ components:
         token:
           type: string
           description: JWT (também definido no cookie Auth)
+        connection_violation:
+          type: boolean
+          description: Verdadeiro se houve detecção de reuso de token de sessão (todas as conexões foram revogadas)
 
     LoginServerRequest:
       type: object
@@ -2115,6 +2180,55 @@ components:
               type: integer
             config:
               $ref: '#/components/schemas/UserConfig'
+        connection_violation:
+          type: boolean
+          description: Verdadeiro se houve detecção de reuso de token de sessão (todas as conexões foram revogadas)
+
+    Connection:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: Expiração do JWT desta conexão (token_issued_at + 24h)
+
+    RefreshResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Novo JWT (também definido no cookie Auth)
+        connection:
+          $ref: '#/components/schemas/Connection'
+
+    ConnectedDevicesResponse:
+      type: object
+      properties:
+        connections:
+          type: array
+          items:
+            $ref: '#/components/schemas/Connection'
+
+    DropConnectionRequest:
+      type: object
+      required: [connection_id]
+      properties:
+        connection_id:
+          type: string
+          description: UUID da conexão a revogar, ou "ALL" para revogar todas
+
+    DropConnectionResponse:
+      type: object
+      properties:
+        dropped:
+          type: integer
+          description: Número de conexões revogadas
 
     UserSettings:
       type: object

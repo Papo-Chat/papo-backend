@@ -28,23 +28,25 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Status Ausente/Ocupado (novo field)
 - [x] Seek (HTTP206) para attachment de vídeos 
 - [x] Adições no User Profile (Descrição, banner), GET /media/:sha_hash e last_read_message
-- [x] Batch request para user profiles (POST /users/profileBatch com body com ids dos usuários), retorna o mesmo que profile mas array (máximo 50 usuários)
+- [x] Batch request para user profiles (POST /users/profile_batch com body com ids dos usuários), retorna o mesmo que profile mas array (máximo 50 usuários)
 - [x] Fixar código em single server
 - [x] Auditoria/Logs para Admins 
 - [x] Crons GC Attachments orfãos/tabela quebrada e limpeza de logs.
 - [x] Pin message /POST 
-- [ ] React Mensagens (Computa Emojis personalizados do banco ou unicode), ws events: outbound react_update(com message_id, emoji_id e count). A tabela guarda o numero totais de reações em uma mensagem e também a lista de pessoas que reagiram a determinada mensagem. POST/GET /channel/:id/message/:id/reactions. O GET vem com a lista de usuários.
-Já no endpoint de mensagem vai ter somente com um count de reações. Sem a lista de reações completas. 
-- [ ] Notificações, persistencia tabela notifications atrelada a user_id, notificações são mensagens que menciaonam o usuario, depois pode ter DM, Eventos
-- [ ] Refresh token rotation com detecção de reuse, tabela endpoint de dispositivos conectados, endpoint de derrubar todas as conexões (inclusive atual)
+- [x] React Mensagens
+- [x] Notificações
+- [x] Fortificar Auth (Refresh Token)
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
 - [ ] Detecção e moderação Automática (Contra conteúdo sensível)
+- [ ] Suporte Cloudflare (env CLOUDFLARE_PROXY que = true, ao invés de puxar o IP do context pra coisas tipo ratelimit), que valida se o ip é da cloudflare e se for, puxa o IP do header CF- correspondente.
 
 ### V2:
 
 - [ ] Hashed Resync para conexão instável
-- [ ] Direct Messages
+- [ ] 2P-Auth (Authenticator)
+- [ ] Direct Messages / Block User
 - [ ] Bot API
+- [ ] Mention Roles
 - [ ] Mais User Permissions
 - [ ] Mais User Settings
 - [ ] Threads
@@ -179,8 +181,8 @@ Esquema completo em [`openapi.yml`](./openapi.yml).
 
 | Recurso | Endpoints principais |
 |---|---|
-| Auth | `/auth/register`, `/auth/login`, `/auth/loginServer`, `/auth/whoami`, `/auth/logout` |
-| Users | `/users`, `/users/:id/profile`, `/users/profileBatch`, `/users/:id`, `/users/:id/banner`, `/users/:id/ban`, `/users/settings` |
+| Auth | `/auth/register`, `/auth/login`, `/auth/login_server`, `/auth/whoami`, `/auth/logout` |
+| Users | `/users`, `/users/:id/profile`, `/users/profile_batch`, `/users/:id`, `/users/:id/banner`, `/users/:id/ban`, `/users/settings` |
 | Servers | `/server` |
 | Channels | `/channels`, `/channels/:id`, `/channels/:id/change_position`, `/channels/:id/permissions` |
 | Messages | `/channels/:id/messages`, `/messages`, `/messages/:id` |
@@ -200,7 +202,7 @@ Autenticação via o mesmo cookie `Auth` da API REST, validado no handshake.
 
 | Evento | Direção |
 |---|---|
-| `message`, `message_edit`, `message_delete` | outbound |
+| `message`, `message_edit`, `message_delete`, `message_pin` | outbound |
 | `new_preview`, `remove_preview` | outbound |
 | `channel_create`, `channel_update`, `channel_delete` | outbound |
 | `typing` | inbound / outbound |
@@ -208,6 +210,7 @@ Autenticação via o mesmo cookie `Auth` da API REST, validado no handshake.
 | `presence_update` | outbound (delta) |
 | `user_join` | outbound |
 | `avatar_update` | outbound |
+| `reaction_update` | outbound |
 | `heartbeat` / `heartbeat_ack` | inbound / outbound |
 | `error` | outbound |
 

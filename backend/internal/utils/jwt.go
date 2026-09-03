@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -22,16 +24,33 @@ type tempTokenClaims struct {
 	Temp bool `json:"temp"`
 }
 
-// GenerateToken gera um JWT (HS256) para o usuário, com o ID do usuário como subject.
-func GenerateToken(userID, secret string) (string, error) {
-	now := time.Now()
+// GenerateSessionToken gera o JWT de sessão (HS256) do usuário de forma
+// determinística a partir de (userID, issuedAt): iat truncado a segundos e
+// exp = iat + JWTExpiration. O token é uma função pura de (user_id, iat,
+// segredo), então o servidor consegue re-derivá-lo a partir do
+// token_issued_at guardado no banco (janela de graça da rotação).
+func GenerateSessionToken(userID string, issuedAt time.Time, secret string) (string, error) {
+	iat := issuedAt.Truncate(time.Second)
 	claims := jwt.RegisteredClaims{
 		Subject:   userID,
-		IssuedAt:  jwt.NewNumericDate(now),
-		ExpiresAt: jwt.NewNumericDate(now.Add(JWTExpiration)),
+		IssuedAt:  jwt.NewNumericDate(iat),
+		ExpiresAt: jwt.NewNumericDate(iat.Add(JWTExpiration)),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))
+}
+
+// GenerateToken gera um JWT (HS256) de sessão para o usuário, com o ID do
+// usuário como subject e o horário atual como iat.
+func GenerateToken(userID, secret string) (string, error) {
+	return GenerateSessionToken(userID, time.Now(), secret)
+}
+
+// HashToken retorna o SHA-256 hex do token: é a única forma em que o token é
+// guardado no banco (user_connections.token_hash).
+func HashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // ValidateToken valida o JWT e retorna o ID do usuário (subject).
