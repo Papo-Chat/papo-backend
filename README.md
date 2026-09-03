@@ -43,17 +43,20 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 ### V2:
 
 - [ ] Hashed Resync para conexão instável
+- [ ] Mais informação no endpoint conexão
+- [ ] Refactor endpoints (organizar melhor /admin, /messages)
 - [ ] 2P-Auth (Authenticator)
 - [ ] Direct Messages / Block User
 - [ ] Bot API
 - [ ] Mention Roles
 - [ ] Mais User Permissions
 - [ ] Mais User Settings
-- [ ] Threads
 - [ ] Favoritos (GIF, Emoji)
-- [ ] Events Scheduling
+- [ ] Threads
+- [ ] Eventos
 - [ ] Estudo viabilidade WebTransport 
-- [ ] Suporte NoSQL (intercambeavel nas settings) ou particionamento postgresql
+- [ ] Estudo viabilidade E2EE WebRTC
+- [ ] Suporte NoSQL ou particionamento pg
 
 ## Arquitetura
 
