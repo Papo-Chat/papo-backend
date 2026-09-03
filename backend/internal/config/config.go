@@ -25,6 +25,7 @@ type Config struct {
 	RateBurst         int
 	CORSOrigins       []string
 	SameSite          bool
+	CloudflareProxy   bool
 
 	// Thumbnails de imagens (attachment e preview)
 	ThumbnailEnabled   bool
@@ -81,6 +82,11 @@ func LoadConfig() *Config {
 		CORSOrigins: getEnvList("CORS_ORIGINS",
 			[]string{"http://localhost:5173", "https://localhost:5173"}),
 		SameSite: getEnvBool("SAME_SITE", true),
+
+		// CLOUDFLARE_PROXY: servidor atrás do proxy do Cloudflare. Só conexões
+		// vindas de IPs do Cloudflare são aceitas e o IP real do cliente vem do
+		// header CF-Connecting-IP (ver middleware.CloudflareProxy).
+		CloudflareProxy: getEnvBool("CLOUDFLARE_PROXY", false),
 
 		ThumbnailEnabled:   getEnvBool("THUMBNAIL_ENABLED", true),
 		ThumbnailMaxDim:    getEnvInt("THUMBNAIL_MAX_DIM", 1024),

@@ -36,12 +36,14 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] React Mensagens
 - [x] Notificações
 - [x] Fortificar Auth (Refresh Token)
+- [x] Suporte Cloudflare
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
 - [ ] Detecção e moderação Automática (Contra conteúdo sensível)
-- [ ] Suporte Cloudflare (env CLOUDFLARE_PROXY que = true, ao invés de puxar o IP do context pra coisas tipo ratelimit), que valida se o ip é da cloudflare e se for, puxa o IP do header CF- correspondente.
+
 
 ### V2:
 
+- [ ] Atualizar Pacotes
 - [ ] Hashed Resync para conexão instável
 - [ ] Mais informação no endpoint conexão
 - [ ] Refactor endpoints (organizar melhor /admin, /messages)
@@ -176,6 +178,9 @@ SAME_ORIGIN=true
 
 # Desative para reduzir consumo de RAM, mas processamento de imagens será desativado
 THUMBNAIL_ENABLED=true
+
+# Ative para a aplicação reconhecer o routing de IPs e Proxy do CloudFlare, recomendado que o operador use CloudFlare proxy (a nuvem laranja) e ative o CSAM interno do mesmo
+CLOUDFLARE_PROXY=false
 ```
 
 ## API
@@ -226,6 +231,8 @@ Presença e digitação são estado efêmero, mantido só em memória — nunca 
 - Permission checks por role em cada endpoint sensível
 - Proteção contra SSRF em qualquer request de saída (link preview)
 - Hook plugável para verificação de CSAM (recomendação padrão: Cloudflare CSAM Scanning Tool)
+- Proteção contra sequestro de cookies (Refresh Token)
+- Suporte a Cloudflare Proxy
 
 ## Testes
 

@@ -63,6 +63,26 @@ func main() {
 
 	e := echo.New()
 
+	// IP do cliente (echo.Echo.IPExtractor): o fallback legacy do Echo confia
+	// em X-Forwarded-For/X-Real-IP sem validação de proxy confiável (spoofing
+	// de IP), então o extractor é sempre explícito.
+	var cfIPs *utils.CloudflareIPs
+	if cfg.CloudflareProxy {
+		// Lista de IPs do Cloudflare: busca no boot e a cada 12h via API
+		// (falha mantém a última lista válida; no boot, o fallback hardcoded).
+		cfIPs = utils.NewCloudflareIPs()
+		cfCtx, stopCF := context.WithCancel(context.Background())
+		defer stopCF()
+		go cfIPs.Run(cfCtx)
+
+		// IP real = header CF-Connecting-IP (confiável porque o middleware
+		// abaixo só deixa passar conexões vindas de IPs do Cloudflare).
+		e.IPExtractor = middleware.CloudflareIPExtractor(cfIPs)
+	} else {
+		// Sem proxy: IP da conexão direta (nunca de headers).
+		e.IPExtractor = middleware.DirectIPExtractor
+	}
+
 	// CORS antes dos demais middlewares: os preflights OPTIONS recebem os
 	// cabeçalhos CORS mesmo quando as demais rotas respondem erro.
 	e.Use(middleware.CORS(cfg.CORSOrigins))
@@ -70,6 +90,12 @@ func main() {
 	e.Use(echoMiddleware.Recover())
 	e.Use(echoMiddleware.RequestID())
 	e.Use(middleware.RequestIDMiddleware)
+	// CLOUDFLARE_PROXY: barra conexões que não vêm de um IP do Cloudflare e
+	// exige o header CF-Connecting-IP (IP real do cliente). Antes de
+	// AuditContext/RateLimit, que usam o IP real.
+	if cfIPs != nil {
+		e.Use(middleware.CloudflareProxy(cfIPs))
+	}
 	// Injeta IP real e User-Agent no request context para a auditoria (a
 	// camada de service só recebe o request context, sem o echo.Context).
 	e.Use(middleware.AuditContext)
