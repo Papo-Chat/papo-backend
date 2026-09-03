@@ -9,8 +9,10 @@ import (
 )
 
 // attachmentColumns inclui mime_type e size_bytes da tabela media (join):
-// o attachment só guarda a referência content-addressable do blob.
-const attachmentColumns = "a.id, a.original_file_name, m.mime_type, a.media_sha_hash, a.messages_id, m.size_bytes, a.created_by, a.created_at"
+// o attachment só guarda a referência content-addressable do blob. As
+// colunas moderation_* são o estado da moderação assíncrona de imagens
+// (migrations/008_moderation.sql).
+const attachmentColumns = "a.id, a.original_file_name, m.mime_type, a.media_sha_hash, a.messages_id, m.size_bytes, a.created_by, a.created_at, a.moderation_status, a.moderation_attempts, a.moderation_checked_at, a.moderation_updated_at, a.moderation_model_version, a.moderation_sfw_score, a.moderation_nudity_score, a.moderation_gore_score"
 const attachmentFrom = "FROM attachments a JOIN media m ON m.sha_hash = a.media_sha_hash"
 
 func scanAttachment(row rowScanner) (models.Attachments, error) {
@@ -24,6 +26,14 @@ func scanAttachment(row rowScanner) (models.Attachments, error) {
 		&attachment.SizeBytes,
 		&attachment.CreatedBy,
 		&attachment.CreatedAt,
+		&attachment.ModerationStatus,
+		&attachment.ModerationAttempts,
+		&attachment.ModerationCheckedAt,
+		&attachment.ModerationUpdatedAt,
+		&attachment.ModerationModelVersion,
+		&attachment.ModerationSFWScore,
+		&attachment.ModerationNudityScore,
+		&attachment.ModerationGoreScore,
 	)
 	if err != nil {
 		return models.Attachments{}, err
@@ -42,9 +52,13 @@ func CreateAttachment(ctx context.Context, a models.Attachments) (models.Attachm
 	row := GetDB().QueryRowContext(ctx,
 		`WITH inserted AS (
 			INSERT INTO attachments (original_file_name, media_sha_hash, created_by) VALUES ($1, $2, $3)
-			RETURNING id, original_file_name, media_sha_hash, messages_id, created_by, created_at
+			RETURNING id, original_file_name, media_sha_hash, messages_id, created_by, created_at,
+			          moderation_status, moderation_attempts, moderation_checked_at, moderation_updated_at,
+			          moderation_model_version, moderation_sfw_score, moderation_nudity_score, moderation_gore_score
 		 )
-		 SELECT i.id, i.original_file_name, m.mime_type, i.media_sha_hash, i.messages_id, m.size_bytes, i.created_by, i.created_at
+		 SELECT i.id, i.original_file_name, m.mime_type, i.media_sha_hash, i.messages_id, m.size_bytes, i.created_by, i.created_at,
+		        i.moderation_status, i.moderation_attempts, i.moderation_checked_at, i.moderation_updated_at,
+		        i.moderation_model_version, i.moderation_sfw_score, i.moderation_nudity_score, i.moderation_gore_score
 		 FROM inserted i JOIN media m ON m.sha_hash = i.media_sha_hash`,
 		a.OriginalFileName, a.MediaShaHash, a.CreatedBy,
 	)
@@ -197,4 +211,103 @@ func ListAttachmentsByMessage(ctx context.Context, messageID string) ([]models.A
 	}
 
 	return attachments, nil
+}
+
+// ClaimAttachmentForModeration marca um attachment como 'processing' de
+// forma atômica (transição condicional: evita processamento duplicado quando
+// o reconciler e o enqueue correm em paralelo). Aceita 'pending' e
+// 'processing' órfãos com mais de staleAfter (crash em pleno
+// processamento). Retorna true quando a transição aconteceu.
+func ClaimAttachmentForModeration(ctx context.Context, id string, staleAfter time.Duration) (bool, error) {
+	res, err := GetDB().ExecContext(ctx,
+		`UPDATE attachments
+		 SET moderation_status = 'processing', moderation_updated_at = now()
+		 WHERE id = $1
+		   AND (moderation_status = 'pending'
+		        OR (moderation_status = 'processing' AND moderation_updated_at < now() - $2::interval))`,
+		id, fmt.Sprintf("%d seconds", int(staleAfter.Seconds())),
+	)
+	if err != nil {
+		return false, fmt.Errorf("falha ao marcar attachment para moderação: %w", err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("falha ao marcar attachment para moderação: %w", err)
+	}
+
+	return affected == 1, nil
+}
+
+// FinishAttachmentModeration grava o resultado final da moderação
+// (clean/sensitive/blocked) com os scores e a versão do modelo usado.
+func FinishAttachmentModeration(ctx context.Context, id, status string, modelVersion *string, sfw, nudity, gore *float64) error {
+	_, err := GetDB().ExecContext(ctx,
+		`UPDATE attachments
+		 SET moderation_status = $2,
+		     moderation_checked_at = now(),
+		     moderation_updated_at = now(),
+		     moderation_model_version = $3,
+		     moderation_sfw_score = $4,
+		     moderation_nudity_score = $5,
+		     moderation_gore_score = $6
+		 WHERE id = $1`,
+		id, status, modelVersion, sfw, nudity, gore,
+	)
+	if err != nil {
+		return fmt.Errorf("falha ao gravar resultado da moderação: %w", err)
+	}
+
+	return nil
+}
+
+// FailAttachmentModeration incrementa as tentativas de moderação e grava o
+// novo estado: 'pending' (nova tentativa, o reconciler recoloca) ou 'failed'
+// (tentativas esgotadas).
+func FailAttachmentModeration(ctx context.Context, id, status string) error {
+	_, err := GetDB().ExecContext(ctx,
+		"UPDATE attachments SET moderation_attempts = moderation_attempts + 1, moderation_status = $2, moderation_updated_at = now() WHERE id = $1",
+		id, status,
+	)
+	if err != nil {
+		return fmt.Errorf("falha ao registrar falha de moderação: %w", err)
+	}
+
+	return nil
+}
+
+// ListModerationPending lista os ids de attachments pendentes de moderação:
+// 'pending' (fila normal) e 'processing' órfãos com mais de staleAfter
+// (crash do processo em pleno processamento), na ordem de criação.
+func ListModerationPending(ctx context.Context, staleAfter time.Duration, limit int) ([]string, error) {
+	if limit <= 0 {
+		return []string{}, nil
+	}
+
+	rows, err := GetDB().QueryContext(ctx,
+		`SELECT a.id FROM attachments a
+		 WHERE a.moderation_status = 'pending'
+		    OR (a.moderation_status = 'processing' AND a.moderation_updated_at < now() - $2::interval)
+		 ORDER BY a.created_at
+		 LIMIT $1`,
+		limit, fmt.Sprintf("%d seconds", int(staleAfter.Seconds())),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar pendentes de moderação: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("falha ao ler pendente de moderação: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao listar pendentes de moderação: %w", err)
+	}
+
+	return ids, nil
 }

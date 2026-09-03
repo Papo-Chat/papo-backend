@@ -12,6 +12,7 @@ import (
 	"papo/internal/config"
 	"papo/internal/handlers"
 	"papo/internal/middleware"
+	"papo/internal/moderation"
 	"papo/internal/services"
 	"papo/internal/storage"
 	"papo/internal/utils"
@@ -60,6 +61,13 @@ func main() {
 	maintenanceCtx, stopMaintenance := context.WithCancel(context.Background())
 	defer stopMaintenance()
 	go services.RunMaintenance(maintenanceCtx, cfg)
+
+	// Moderação assíncrona de imagens (nudez/gore): fila limitada + worker
+	// Python supervisionado por este processo (no-op quando
+	// MODERATION_ENABLED=false); nunca bloqueia o envio de mensagem.
+	moderationCtx, stopModeration := context.WithCancel(context.Background())
+	defer stopModeration()
+	moderation.Init(cfg, moderationCtx)
 
 	e := echo.New()
 
@@ -136,6 +144,9 @@ func main() {
 	if err := e.Shutdown(ctx); err != nil {
 		utils.Fatal("Falha ao desligar o servidor: " + err.Error())
 	}
+
+	// Encerra a moderação de imagens (workers da fila + processo Python).
+	moderation.Shutdown()
 
 	// Encerra as conexões WebSocket ativas (close frame) e para o Hub.
 	websocket.GetHub().Shutdown()

@@ -26,7 +26,9 @@ type PinnedMessage struct {
 }
 
 // MessageAttachment é a informação mínima do attachment exposta nas respostas
-// de mensagens (listagem, criação e edição).
+// de mensagens (listagem, criação e edição). ModerationStatus é o estado da
+// moderação assíncrona de imagens (nudez/gore): pending/processing/
+// clean/sensitive/blocked/failed (ver migrations/008_moderation.sql).
 type MessageAttachment struct {
 	ID               string    `json:"id"`
 	MimeType         string    `json:"mime_type"`
@@ -34,6 +36,7 @@ type MessageAttachment struct {
 	SizeBytes        int64     `json:"size_bytes"`
 	ThumbnailID      *string   `json:"thumbnail_id"`
 	CreatedAt        time.Time `json:"created_at"`
+	ModerationStatus string    `json:"moderation_status"`
 }
 
 // MessageWithAttachment é a mensagem com seus attachments, link previews e

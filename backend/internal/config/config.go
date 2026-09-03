@@ -52,6 +52,23 @@ type Config struct {
 	// pela rotina de manutenção (services.RunMaintenance), que roda no boot e
 	// a cada 12h.
 	LogDuration time.Duration
+
+	// Moderação de imagens (nudez/gore): worker Python supervisionado pelo
+	// processo Go, inferência assíncrona fora do caminho crítico do envio de
+	// mensagem. MODERATION_ENABLED=false desativa tudo (nenhum processo
+	// extra; os attachments ficam 'pending' sem classificação).
+	ModerationEnabled         bool
+	ModerationWorkerCommand   string
+	ModerationWorkerPath      string
+	ModerationSocketPath      string
+	ModerationModelsDir       string
+	ModerationQueueSize       int
+	ModerationConcurrency     int
+	ModerationTimeout         time.Duration
+	ModerationNudityMode      string
+	ModerationGoreMode        string
+	ModerationNudityThreshold float64
+	ModerationGoreThreshold   float64
 }
 
 var (
@@ -108,6 +125,19 @@ func LoadConfig() *Config {
 		PreviewDescriptionMax: getEnvInt("PREVIEW_DESCRIPTION_MAX", 300),
 
 		LogDuration: time.Duration(getEnvInt("LOG_DURATION", 90)) * 24 * time.Hour,
+
+		ModerationEnabled:         getEnvBool("MODERATION_ENABLED", false),
+		ModerationWorkerCommand:   getEnv("MODERATION_WORKER_COMMAND", "python3"),
+		ModerationWorkerPath:      getEnv("MODERATION_WORKER_PATH", "moderation_worker/worker.py"),
+		ModerationSocketPath:      getEnv("MODERATION_SOCKET_PATH", "data/moderation.sock"),
+		ModerationModelsDir:       getEnv("MODERATION_MODELS_DIR", "data/models"),
+		ModerationQueueSize:       getEnvInt("MODERATION_QUEUE_SIZE", 256),
+		ModerationConcurrency:     getEnvInt("MODERATION_CONCURRENCY", 1),
+		ModerationTimeout:         time.Duration(getEnvInt("MODERATION_TIMEOUT_SECONDS", 10)) * time.Second,
+		ModerationNudityMode:      getEnv("MODERATION_NUDITY_MODE", "off"),
+		ModerationGoreMode:        getEnv("MODERATION_GORE_MODE", "off"),
+		ModerationNudityThreshold: getEnvFloat("MODERATION_NUDITY_THRESHOLD", 0.8),
+		ModerationGoreThreshold:   getEnvFloat("MODERATION_GORE_THRESHOLD", 0.8),
 	}
 
 	return configInstance
@@ -143,6 +173,19 @@ func getEnvBool(key string, defaultValue bool) bool {
 			return parsed
 		}
 		logrus.Info("Valor inválido para " + key + ", usando padrão " + strconv.FormatBool(defaultValue))
+	}
+
+	return defaultValue
+}
+
+// getEnvFloat lê uma variável de ambiente float. Valores ausentes, inválidos
+// ou fora de [0,1] usam o padrão.
+func getEnvFloat(key string, defaultValue float64) float64 {
+	if value, exists := os.LookupEnv(key); exists {
+		if parsed, err := strconv.ParseFloat(value, 64); err == nil && parsed >= 0 && parsed <= 1 {
+			return parsed
+		}
+		logrus.Info("Valor inválido para " + key + ", usando padrão " + strconv.FormatFloat(defaultValue, 'f', -1, 64))
 	}
 
 	return defaultValue

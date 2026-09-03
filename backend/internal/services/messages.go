@@ -492,6 +492,7 @@ func toMessageAttachments(attachments []models.Attachments) []models.MessageAtta
 			OriginalFileName: attachment.OriginalFileName,
 			SizeBytes:        attachment.SizeBytes,
 			CreatedAt:        attachment.CreatedAt,
+			ModerationStatus: attachment.ModerationStatus,
 		})
 	}
 	return converted

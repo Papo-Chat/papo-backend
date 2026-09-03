@@ -30,6 +30,13 @@ func mediaBlobPath(shaHash string) string {
 	return filepath.Join(mediaBaseDir, shaHash[:2], shaHash[2:4], shaHash)
 }
 
+// MediaBaseDir retorna a pasta base do content-addressable storage (relativa
+// ao diretório de trabalho do backend). Usada pelo worker de moderação para
+// restringir o acesso a arquivos a esta pasta.
+func MediaBaseDir() string {
+	return mediaBaseDir
+}
+
 // StoreMediaFromBytes grava o conteúdo em content-addressable storage e
 // registra a mídia na tabela media (deduplicação pelo hmac-sha256 do conteúdo).
 // Retorna o hmac-sha256 (hex) e o registro de mídia. Se o conteúdo já existe, o

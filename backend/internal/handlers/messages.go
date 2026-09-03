@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"papo/internal/middleware"
+	"papo/internal/moderation"
 	"papo/internal/services"
 	"papo/internal/utils"
 	"papo/internal/websocket"
@@ -150,6 +151,13 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 		ReplyTo:     message.ReplyTo,
 		Attachments: message.Attachments,
 	})
+
+	// Enfileira os attachments na moderação assíncrona de imagens
+	// (nudez/gore): o worker processa em background e, se blocked, exclui a
+	// mensagem e distribui message_delete.
+	for _, attachment := range message.Attachments {
+		moderation.Enqueue(attachment.ID)
+	}
 
 	// Processa os link previews em background (o crawl não bloqueia a
 	// resposta); os previews chegam via WS new_preview.

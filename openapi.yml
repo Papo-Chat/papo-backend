@@ -1870,6 +1870,7 @@ paths:
         | `message`        | outbound  | `{ type: "message", id, channel_id, author_id, content, attachments, created_at }`         |
         | `message_edit`   | outbound  | `{ type: "message_edit", id, channel_id, content, edited_at }`                          |
         | `message_delete` | outbound  | `{ type: "message_delete", id, channel_id }`                                            |
+        | `attachment_moderation_update` | outbound  | `{ type: "attachment_moderation_update", channel_id, message_id, attachment_id, status }` (status: sensitive; o blocked exclui a mensagem e chega como `message_delete`) |
         | `message_pin`    | outbound  | `{ type: "message_pin", message_id, is_pinned }` (is_pinned: true quando a mensagem foi pinada, false quando a fixação foi removida) |
         | `react_update`   | outbound  | `{ type: "react_update", message_id, emoji_id, unicode, count }` (emoji_id/unicode: um é null; count = usuários que reagiram com aquele emoji, 0 quando a última foi removida) |
         | `new_notification` | unicast  | `{ type: "new_notification", id, user_id, message_id, message_content }` (id: row de notificação ou UUID efêmero quando a configuração all gera evento sem row; user_id: autor da mensagem; message_content: truncado a 512 caracteres) |
@@ -2897,6 +2898,12 @@ components:
         created_at:
           type: string
           format: date-time
+        moderation_status:
+          type: string
+          description: >
+            Estado da moderação assíncrona de imagens (nudez/gore):
+            pending/processing/clean/sensitive/blocked/failed
+            (pending quando a moderação está desativada).
 
     LinkPreview:
       type: object

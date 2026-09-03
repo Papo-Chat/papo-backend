@@ -29,6 +29,10 @@ const (
 	EventTypeUserJoin        EventType = "user_join"
 	EventTypeReactUpdate     EventType = "react_update"
 	EventTypeNewNotification EventType = "new_notification"
+	// EventTypeAttachmentModerationUpdate é o evento de mudança de estado da
+	// moderação assíncrona de um attachment de imagem (sensitive; o blocked
+	// chega como message_delete, pois a mensagem inteira é excluída).
+	EventTypeAttachmentModerationUpdate EventType = "attachment_moderation_update"
 )
 
 // IsInbound indica se o tipo de evento é aceito no sentido cliente ->
@@ -86,6 +90,18 @@ type MessageDeleteOutbound struct {
 	Type      EventType `json:"type"`
 	ID        string    `json:"id"`
 	ChannelID string    `json:"channel_id"`
+}
+
+// AttachmentModerationUpdateOutbound é o evento de mudança de estado da
+// moderação assíncrona de um attachment de imagem (nudez/gore), distribuído
+// aos leitores do canal após a inferência. Status: sensitive (clean não
+// gera evento; blocked exclui a mensagem e gera message_delete).
+type AttachmentModerationUpdateOutbound struct {
+	Type         EventType `json:"type"`
+	ChannelID    string    `json:"channel_id"`
+	MessageID    string    `json:"message_id"`
+	AttachmentID string    `json:"attachment_id"`
+	Status       string    `json:"status"`
 }
 
 // NewPreviewOutbound é o evento de link preview vinculado a uma mensagem,

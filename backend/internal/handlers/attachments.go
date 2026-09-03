@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"papo/internal/middleware"
+	"papo/internal/moderation"
 	"papo/internal/services"
 	"papo/internal/utils"
 
@@ -44,6 +45,15 @@ func DownloadAttachmentHandler(baseURL string, c echo.Context) error {
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
 			"internal", "Erro interno", "falha ao baixar o arquivo")
+	}
+
+	// Attachment bloqueado pela moderação de imagens: o blob fica
+	// indisponível mesmo que a exclusão da mensagem ainda não tenha
+	// acontecido (janela entre as duas escritas).
+	if attachment.ModerationStatus == string(moderation.StatusBlocked) {
+		return utils.SendProblem(c, baseURL, http.StatusGone,
+			"gone", "Recurso indisponível",
+			"arquivo removido pela moderação de imagens")
 	}
 
 	file, err := os.Open(attachment.FilePath)

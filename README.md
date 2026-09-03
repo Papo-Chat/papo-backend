@@ -37,8 +37,10 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Notificações
 - [x] Fortificar Auth (Refresh Token)
 - [x] Suporte Cloudflare
+- [x] Detecção e moderação de imagens com conteúdo sensível
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
-- [ ] Detecção e moderação Automática (Contra conteúdo sensível)
+
+- [ ] Otimizações de segurança
 
 
 ### V2:
@@ -54,6 +56,7 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [ ] Mais User Permissions
 - [ ] Mais User Settings
 - [ ] Favoritos (GIF, Emoji)
+- [ ] Moderação de vídeos
 - [ ] Threads
 - [ ] Eventos
 - [ ] Estudo viabilidade WebTransport 
@@ -106,9 +109,11 @@ backend/
 - **Roles** Sistema de roles simplificado com permissões para acessar canal, moderação e administração.
 - **Manutenção Automática** Crons autônomas que visam limpar e corrigir estados inválidos do servidor.
 - **Logging** Logs de interações dos usuários que visa cumprir LGPD e GDRP, sem log explicito de IP e com limpeza frequente. 
+- **Moderação Automática Robusta** Bloqueio de conteúdo inaquado usando state-of-art reconhecimento de imagens com IA local.
 
 ## Pré-requisitos:
 * Go 1.21+, Docker (para o Postgres), [Goose](https://github.com/pressly/goose).
+* Python 3.10+ (moderação de imagens)
 * ~3GB RAM para processamento de thumbnails e links.
 
 Versão leve: 
@@ -181,6 +186,15 @@ THUMBNAIL_ENABLED=true
 
 # Ative para a aplicação reconhecer o routing de IPs e Proxy do CloudFlare, recomendado que o operador use CloudFlare proxy (a nuvem laranja) e ative o CSAM interno do mesmo
 CLOUDFLARE_PROXY=false
+
+# Moderação assíncrona de imagens. Desativada por padrão;
+# requer Python 3.10+ com `pip install -r moderation_worker/requirements.txt`.
+# off | flag | blur | block (block exclui a mensagem).
+MODERATION_ENABLED=true
+MODERATION_NUDITY_MODE=block
+MODERATION_GORE_MODE=block
+MODERATION_NUDITY_THRESHOLD=0.8
+MODERATION_GORE_THRESHOLD=0.8
 ```
 
 ## API

@@ -15,37 +15,38 @@ const auditLogPageSize = 100
 
 // Ações auditáveis (valor da coluna action).
 const (
-	ActionAuthConnectionDrop  = "auth.connection_drop"
-	ActionUserRegister        = "user.register"
-	ActionUserUpdateSettings  = "user.update_settings"
-	ActionUserUpdateProfile   = "user.update_profile"
-	ActionUserUpdateStatus    = "user.update_status"
-	ActionUserUpdateAvatar    = "user.update_avatar"
-	ActionUserUpdateBanner    = "user.update_banner"
-	ActionUserChangePassword  = "user.change_password"
-	ActionUserBan             = "user.ban"
-	ActionUserUnban           = "user.unban"
-	ActionUserResetPassword   = "user.reset_password"
-	ActionServerCreate        = "server.create"
-	ActionServerUpdate        = "server.update"
-	ActionChannelCreate       = "channel.create"
-	ActionChannelUpdate       = "channel.update"
-	ActionChannelMovePosition = "channel.move_position"
-	ActionChannelDelete       = "channel.delete"
-	ActionChannelPermUpdate   = "channel.permissions_update"
-	ActionMessageCreate       = "message.create"
-	ActionMediaUpload         = "media.upload"
-	ActionMessageEdit         = "message.edit"
-	ActionMessageDelete       = "message.delete"
-	ActionMessagePin          = "message.pin"
-	ActionMessageUnpin        = "message.unpin"
-	ActionRoleCreate          = "role.create"
-	ActionRoleUpdate          = "role.update"
-	ActionRoleDelete          = "role.delete"
-	ActionUserRoleAssign      = "user_role.assign"
-	ActionUserRoleRemove      = "user_role.remove"
-	ActionEmojiCreate         = "emoji.create"
-	ActionEmojiDelete         = "emoji.delete"
+	ActionAuthConnectionDrop       = "auth.connection_drop"
+	ActionUserRegister             = "user.register"
+	ActionUserUpdateSettings       = "user.update_settings"
+	ActionUserUpdateProfile        = "user.update_profile"
+	ActionUserUpdateStatus         = "user.update_status"
+	ActionUserUpdateAvatar         = "user.update_avatar"
+	ActionUserUpdateBanner         = "user.update_banner"
+	ActionUserChangePassword       = "user.change_password"
+	ActionUserBan                  = "user.ban"
+	ActionUserUnban                = "user.unban"
+	ActionUserResetPassword        = "user.reset_password"
+	ActionServerCreate             = "server.create"
+	ActionServerUpdate             = "server.update"
+	ActionChannelCreate            = "channel.create"
+	ActionChannelUpdate            = "channel.update"
+	ActionChannelMovePosition      = "channel.move_position"
+	ActionChannelDelete            = "channel.delete"
+	ActionChannelPermUpdate        = "channel.permissions_update"
+	ActionMessageCreate            = "message.create"
+	ActionMediaUpload              = "media.upload"
+	ActionMessageEdit              = "message.edit"
+	ActionMessageDelete            = "message.delete"
+	ActionMessagePin               = "message.pin"
+	ActionMessageUnpin             = "message.unpin"
+	ActionMessageModerationBlocked = "message.moderation_blocked"
+	ActionRoleCreate               = "role.create"
+	ActionRoleUpdate               = "role.update"
+	ActionRoleDelete               = "role.delete"
+	ActionUserRoleAssign           = "user_role.assign"
+	ActionUserRoleRemove           = "user_role.remove"
+	ActionEmojiCreate              = "emoji.create"
+	ActionEmojiDelete              = "emoji.delete"
 )
 
 // Tipos de entidade auditáveis (valor da coluna entity_type).
@@ -74,11 +75,19 @@ type AuditEntry struct {
 // acontece após a operação principal ter sucesso; falhas são logadas, mas não
 // propagam para a requisição (a auditoria não pode quebrar a operação).
 // O actor_username é um snapshot do username do ator no momento do evento.
+// ActorID vazio é uma ação de sistema (ex.: moderação de imagens): actor_id
+// fica NULL e actor_username vira "sistema".
 func RecordAudit(ctx context.Context, e AuditEntry) {
-	username, err := storage.GetUsernameByID(ctx, e.ActorID)
-	if err != nil {
-		utils.Warnf("auditoria: falha ao resolver actor_username (actor_id=%s): %v", e.ActorID, err)
-		username = "desconhecido"
+	var actorID *string
+	username := "sistema"
+	if e.ActorID != "" {
+		actorID = &e.ActorID
+		var err error
+		username, err = storage.GetUsernameByID(ctx, e.ActorID)
+		if err != nil {
+			utils.Warnf("auditoria: falha ao resolver actor_username (actor_id=%s): %v", e.ActorID, err)
+			username = "desconhecido"
+		}
 	}
 
 	metadata := e.Metadata
@@ -87,7 +96,7 @@ func RecordAudit(ctx context.Context, e AuditEntry) {
 	}
 
 	log := models.AuditLog{
-		ActorID:       &e.ActorID,
+		ActorID:       actorID,
 		ActorUsername: username,
 		Action:        e.Action,
 		EntityType:    e.EntityType,
