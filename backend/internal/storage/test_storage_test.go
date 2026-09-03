@@ -4481,3 +4481,309 @@ func TestAddReactionCascadeOnEmojiDelete(t *testing.T) {
 		t.Errorf("esperava apenas a reação unicode após excluir o emoji, obtive %+v", groups)
 	}
 }
+
+// --- user_connections (auth híbrida) ---
+
+func TestCreateUserConnection(t *testing.T) {
+	user := newTestUser(t)
+	issuedAt := time.Now()
+	token, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token: %v", err)
+	}
+
+	conn, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(token), issuedAt)
+	if err != nil {
+		t.Fatalf("CreateUserConnection retornou erro: %v", err)
+	}
+	if conn.UserID != user.ID {
+		t.Errorf("esperava user_id %s, obtive %s", user.ID, conn.UserID)
+	}
+	if conn.TokenHash != utils.HashToken(token) {
+		t.Error("esperava token_hash preenchido com o hash do token")
+	}
+	if conn.ReplacedAt != nil {
+		t.Error("esperava replaced_at nil para conexão ativa")
+	}
+	if conn.ReplacedBy != nil {
+		t.Error("esperava replaced_by nil para conexão ativa")
+	}
+}
+
+// TestCreateUserConnectionCollision garante que o mesmo token (mesmo iat)
+// colide na UNIQUE(user_id, token_hash) e retorna ErrConnectionExists.
+func TestCreateUserConnectionCollision(t *testing.T) {
+	user := newTestUser(t)
+	issuedAt := time.Now()
+	token, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token: %v", err)
+	}
+	hash := utils.HashToken(token)
+
+	if _, err := CreateUserConnection(testCtx(), user.ID, hash, issuedAt); err != nil {
+		t.Fatalf("falha na primeira criação: %v", err)
+	}
+	if _, err := CreateUserConnection(testCtx(), user.ID, hash, issuedAt); !errors.Is(err, ErrConnectionExists) {
+		t.Errorf("esperava ErrConnectionExists, obtive %v", err)
+	}
+}
+
+func TestCheckUserConnection(t *testing.T) {
+	user := newTestUser(t)
+	issuedAt := time.Now()
+	token, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token: %v", err)
+	}
+	hash := utils.HashToken(token)
+
+	// desconhecido
+	if err := CheckUserConnection(testCtx(), user.ID, utils.HashToken("token-inexistente")); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para token desconhecido, obtive %v", err)
+	}
+
+	conn, err := CreateUserConnection(testCtx(), user.ID, hash, issuedAt)
+	if err != nil {
+		t.Fatalf("falha ao criar a conexão: %v", err)
+	}
+
+	// ativo
+	if err := CheckUserConnection(testCtx(), user.ID, hash); err != nil {
+		t.Errorf("esperava conexão ativa, obtive %v", err)
+	}
+
+	// revogado (replaced_by nil) → ErrNotFound
+	if err := RevokeUserConnection(testCtx(), user.ID, conn.ID); err != nil {
+		t.Fatalf("falha ao revogar: %v", err)
+	}
+	if err := CheckUserConnection(testCtx(), user.ID, hash); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para conexão revogada, obtive %v", err)
+	}
+}
+
+// TestCheckUserConnectionReuse garante a distinção entre janela de graça
+// (aceito) e reuso (fora da janela, ErrConnectionReuse).
+func TestCheckUserConnectionReuse(t *testing.T) {
+	user := newTestUser(t)
+	issuedAt := time.Now()
+	tokenA, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token A: %v", err)
+	}
+	if _, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), issuedAt); err != nil {
+		t.Fatalf("falha ao criar a conexão A: %v", err)
+	}
+
+	newIssuedAt := time.Now().Add(time.Second)
+	tokenB, err := utils.GenerateSessionToken(user.ID, newIssuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token B: %v", err)
+	}
+	if _, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), utils.HashToken(tokenB), newIssuedAt); err != nil {
+		t.Fatalf("falha ao rotacionar: %v", err)
+	}
+
+	// dentro da janela de graça: A ainda é aceito
+	if err := CheckUserConnection(testCtx(), user.ID, utils.HashToken(tokenA)); err != nil {
+		t.Errorf("esperava A na janela de graça, obtive %v", err)
+	}
+
+	// fora da janela de graça: A é reuso
+	if _, err := GetDB().ExecContext(testCtx(),
+		"UPDATE user_connections SET replaced_at = now() - interval '2 minutes' WHERE token_hash = $1",
+		utils.HashToken(tokenA)); err != nil {
+		t.Fatalf("falha ao antecipar replaced_at: %v", err)
+	}
+	if err := CheckUserConnection(testCtx(), user.ID, utils.HashToken(tokenA)); !errors.Is(err, ErrConnectionReuse) {
+		t.Errorf("esperava ErrConnectionReuse, obtive %v", err)
+	}
+}
+
+func TestRotateUserConnection(t *testing.T) {
+	user := newTestUser(t)
+	issuedAt := time.Now()
+	tokenA, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token A: %v", err)
+	}
+	connA, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), issuedAt)
+	if err != nil {
+		t.Fatalf("falha ao criar a conexão A: %v", err)
+	}
+
+	newIssuedAt := time.Now().Add(time.Second)
+	tokenB, err := utils.GenerateSessionToken(user.ID, newIssuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token B: %v", err)
+	}
+	connB, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), utils.HashToken(tokenB), newIssuedAt)
+	if err != nil {
+		t.Fatalf("falha ao rotacionar: %v", err)
+	}
+
+	// A foi substituído por B
+	storedA, err := GetUserConnectionByID(testCtx(), connA.ID)
+	if err != nil {
+		t.Fatalf("falha ao buscar A: %v", err)
+	}
+	if storedA.ReplacedAt == nil || storedA.ReplacedBy == nil || *storedA.ReplacedBy != connB.ID {
+		t.Errorf("esperava A substituído por B, obtive %+v", storedA)
+	}
+	// B é ativo
+	if connB.ReplacedAt != nil {
+		t.Error("esperava B ativo")
+	}
+	// rotacionar A de novo falha (já substituído)
+	if _, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), utils.HashToken(tokenB), newIssuedAt); !errors.Is(err, ErrConnectionReplaced) {
+		t.Errorf("esperava ErrConnectionReplaced, obtive %v", err)
+	}
+}
+
+func TestHandleConnectionReuse(t *testing.T) {
+	user := newTestUser(t)
+	issuedAt := time.Now()
+	token, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token: %v", err)
+	}
+	if _, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(token), issuedAt); err != nil {
+		t.Fatalf("falha ao criar a conexão: %v", err)
+	}
+
+	n, err := HandleConnectionReuse(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("HandleConnectionReuse retornou erro: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("esperava 1 conexão revogada, obtive %d", n)
+	}
+	if err := CheckUserConnection(testCtx(), user.ID, utils.HashToken(token)); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava ErrNotFound para conexão revogada, obtive %v", err)
+	}
+	var violation bool
+	if err := GetDB().QueryRowContext(testCtx(),
+		"SELECT connection_violation FROM users WHERE id = $1", user.ID).Scan(&violation); err != nil {
+		t.Fatalf("falha ao ler connection_violation: %v", err)
+	}
+	if !violation {
+		t.Error("esperava connection_violation = TRUE")
+	}
+}
+
+func TestListUserConnections(t *testing.T) {
+	user := newTestUser(t)
+	issuedAt := time.Now()
+	tokenA, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token A: %v", err)
+	}
+	if _, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), issuedAt); err != nil {
+		t.Fatalf("falha ao criar A: %v", err)
+	}
+	newIssuedAt := time.Now().Add(time.Second)
+	tokenB, err := utils.GenerateSessionToken(user.ID, newIssuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token B: %v", err)
+	}
+	if _, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(tokenB), newIssuedAt); err != nil {
+		t.Fatalf("falha ao criar B: %v", err)
+	}
+
+	conns, err := ListUserConnections(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("ListUserConnections retornou erro: %v", err)
+	}
+	if len(conns) != 2 {
+		t.Errorf("esperava 2 conexões ativas, obtive %d", len(conns))
+	}
+}
+
+func TestListUsersWithActiveConnections(t *testing.T) {
+	userA := newTestUser(t)
+	userB := newTestUser(t)
+	issuedAt := time.Now()
+	token, err := utils.GenerateSessionToken(userA.ID, issuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token: %v", err)
+	}
+	if _, err := CreateUserConnection(testCtx(), userA.ID, utils.HashToken(token), issuedAt); err != nil {
+		t.Fatalf("falha ao criar a conexão: %v", err)
+	}
+
+	active, err := ListUsersWithActiveConnections(testCtx(), []string{userA.ID, userB.ID})
+	if err != nil {
+		t.Fatalf("ListUsersWithActiveConnections retornou erro: %v", err)
+	}
+	if !active[userA.ID] {
+		t.Error("esperava userA com conexão ativa")
+	}
+	if active[userB.ID] {
+		t.Error("não esperava userB com conexão ativa")
+	}
+}
+
+// TestMoveUserConnectionsToHistory garante o arquivamento (history) e a
+// purga das conexões substituídas, preservando a detecção de reuso.
+func TestMoveUserConnectionsToHistory(t *testing.T) {
+	user := newTestUser(t)
+	issuedAt := time.Now()
+	tokenA, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token A: %v", err)
+	}
+	if _, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), issuedAt); err != nil {
+		t.Fatalf("falha ao criar a conexão A: %v", err)
+	}
+	newIssuedAt := time.Now().Add(time.Second)
+	tokenB, err := utils.GenerateSessionToken(user.ID, newIssuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token B: %v", err)
+	}
+	if _, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), utils.HashToken(tokenB), newIssuedAt); err != nil {
+		t.Fatalf("falha ao rotacionar: %v", err)
+	}
+	// empurra A para o passado (fora das janelas de arquivamento de 12h e de purga de 25h)
+	if _, err := GetDB().ExecContext(testCtx(),
+		"UPDATE user_connections SET replaced_at = now() - interval '26 hours' WHERE token_hash = $1",
+		utils.HashToken(tokenA)); err != nil {
+		t.Fatalf("falha ao antecipar replaced_at: %v", err)
+	}
+
+	n, err := MoveUserConnectionsToHistory(testCtx(), time.Now().Add(-12*time.Hour))
+	if err != nil {
+		t.Fatalf("MoveUserConnectionsToHistory retornou erro: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("esperava 1 conexão arquivada, obtive %d", n)
+	}
+	if _, err := GetUserConnectionByHash(testCtx(), user.ID, utils.HashToken(tokenA)); !errors.Is(err, ErrNotFound) {
+		t.Errorf("esperava A fora da tabela ativa, obtive %v", err)
+	}
+	inHistory, replacedBy, err := GetUserConnectionHistory(testCtx(), user.ID, utils.HashToken(tokenA))
+	if err != nil {
+		t.Fatalf("falha ao consultar history: %v", err)
+	}
+	if !inHistory || replacedBy == nil {
+		t.Errorf("esperava A na history com replaced_by, obtive inHistory=%v replacedBy=%v", inHistory, replacedBy)
+	}
+	// o reuso de A (na history, substituído) continua sendo detectado
+	if err := CheckUserConnection(testCtx(), user.ID, utils.HashToken(tokenA)); !errors.Is(err, ErrConnectionReuse) {
+		t.Errorf("esperava ErrConnectionReuse para A arquivado, obtive %v", err)
+	}
+
+	pn, err := PurgeUserConnectionHistory(testCtx(), time.Now().Add(-25*time.Hour))
+	if err != nil {
+		t.Fatalf("PurgeUserConnectionHistory retornou erro: %v", err)
+	}
+	if pn != 1 {
+		t.Errorf("esperava 1 conexão purgada, obtive %d", pn)
+	}
+	inHistory, _, err = GetUserConnectionHistory(testCtx(), user.ID, utils.HashToken(tokenA))
+	if err != nil {
+		t.Fatalf("falha ao consultar history: %v", err)
+	}
+	if inHistory {
+		t.Error("esperava A purgado da history")
+	}
+}

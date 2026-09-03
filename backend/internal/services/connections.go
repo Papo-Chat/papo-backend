@@ -37,16 +37,40 @@ func ConnectionInfoFrom(conn models.UserConnection) ConnectionInfo {
 	}
 }
 
-// CreateConnection registra a conexão de sessão do usuário em um login.
-// issuedAt é o iat do token emitido: como o token é uma função pura de
-// (user_id, iat, segredo), o banco guarda apenas o hash do token e o
-// token_issued_at.
-func CreateConnection(ctx context.Context, userID, token string, issuedAt time.Time) error {
-	if _, err := storage.CreateUserConnection(ctx, userID, utils.HashToken(token), issuedAt); err != nil {
-		return fmt.Errorf("falha ao registrar a conexão de sessão: %w", err)
+// maxSessionTokenAttempts limita as tentativas de emissão do token de sessão
+// em caso de colisão de iat (dois logins do mesmo usuário no mesmo segundo
+// produzem o mesmo JWT e colidem na UNIQUE(user_id, token_hash)).
+const maxSessionTokenAttempts = 5
+
+// CreateSessionConnection emite o token de sessão do login e registra a
+// conexão de sessão correspondente. O token é uma função pura de
+// (user_id, iat, segredo): dois logins no mesmo segundo produzem o mesmo
+// token e colidem. Ao colidir, o iat avança um segundo e o token é re-emitido
+// (o login "espera" um iat livre), garantindo que cada conexão tenha um token
+// único. Retorna o token emitido e a conexão registrada.
+func CreateSessionConnection(ctx context.Context, userID string) (string, ConnectionInfo, error) {
+	cfg := config.LoadConfig()
+	baseIssuedAt := time.Now()
+
+	for attempt := 0; attempt < maxSessionTokenAttempts; attempt++ {
+		issuedAt := baseIssuedAt.Add(time.Duration(attempt) * time.Second)
+		token, err := utils.GenerateSessionToken(userID, issuedAt, cfg.JWTSecret)
+		if err != nil {
+			return "", ConnectionInfo{}, fmt.Errorf("falha ao gerar o token de sessão: %w", err)
+		}
+
+		conn, err := storage.CreateUserConnection(ctx, userID, utils.HashToken(token), issuedAt)
+		if err != nil {
+			if errors.Is(err, storage.ErrConnectionExists) {
+				continue // iat colidiu: avança um segundo e tenta de novo
+			}
+			return "", ConnectionInfo{}, fmt.Errorf("falha ao registrar a conexão de sessão: %w", err)
+		}
+
+		return token, ConnectionInfoFrom(conn), nil
 	}
 
-	return nil
+	return "", ConnectionInfo{}, errors.New("falha ao registrar a conexão de sessão: colisões repetidas de token")
 }
 
 // RefreshConnection rotaciona o token de sessão do usuário: substitui
@@ -73,26 +97,41 @@ func RefreshConnection(ctx context.Context, userID, oldToken string) (string, Co
 		return tipConnection(ctx, conn, cfg.JWTSecret)
 	}
 
-	newIssuedAt := time.Now()
-	newToken, err := utils.GenerateSessionToken(userID, newIssuedAt, cfg.JWTSecret)
-	if err != nil {
-		return "", ConnectionInfo{}, fmt.Errorf("falha ao gerar o novo token: %w", err)
-	}
+	// O token novo é uma função pura de (user_id, iat): se cair no mesmo
+	// segundo do token antigo (ou de outra conexão), colide na UNIQUE e a
+	// rotação é abortada. Ao colidir, o iat avança um segundo e a rotação é
+	// tentada de novo — garantindo que o token novo seja sempre distinto.
+	baseIssuedAt := time.Now()
+	for attempt := 0; attempt < maxSessionTokenAttempts; attempt++ {
+		newIssuedAt := baseIssuedAt.Add(time.Duration(attempt) * time.Second)
+		newToken, err := utils.GenerateSessionToken(userID, newIssuedAt, cfg.JWTSecret)
+		if err != nil {
+			return "", ConnectionInfo{}, fmt.Errorf("falha ao gerar o novo token: %w", err)
+		}
 
-	newConn, err := storage.RotateUserConnection(ctx, userID, utils.HashToken(oldToken), utils.HashToken(newToken), newIssuedAt)
-	if errors.Is(err, storage.ErrConnectionReplaced) {
-		// Rotação concorrente ganhou a corrida: serve a ponta da cadeia.
+		newConn, err := storage.RotateUserConnection(ctx, userID, utils.HashToken(oldToken), utils.HashToken(newToken), newIssuedAt)
+		if err == nil {
+			return newToken, ConnectionInfoFrom(newConn), nil
+		}
+		if !errors.Is(err, storage.ErrConnectionReplaced) {
+			return "", ConnectionInfo{}, err
+		}
+
+		// ErrConnectionReplaced: ou a rotação concorrente ganhou (o token
+		// antigo já foi substituído) ou o token novo colidiu (mesma segunda,
+		// transação abortada). Distingue pelo estado atual do token antigo.
 		latest, lerr := storage.GetUserConnectionByHash(ctx, userID, utils.HashToken(oldToken))
 		if lerr != nil {
 			return "", ConnectionInfo{}, lerr
 		}
-		return tipConnection(ctx, latest, cfg.JWTSecret)
-	}
-	if err != nil {
-		return "", ConnectionInfo{}, err
+		if latest.ReplacedAt != nil {
+			// Rotação concorrente ganhou a corrida: serve a ponta da cadeia.
+			return tipConnection(ctx, latest, cfg.JWTSecret)
+		}
+		// Token novo colidiu (transação abortada): avança o iat e tenta de novo.
 	}
 
-	return newToken, ConnectionInfoFrom(newConn), nil
+	return "", ConnectionInfo{}, errors.New("falha ao rotacionar o token de sessão: colisões repetidas de token")
 }
 
 // tipConnection segue a cadeia de substituições de uma conexão substituída e

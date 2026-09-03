@@ -7782,3 +7782,290 @@ func containsServiceReactionUser(users []string, id string) bool {
 	}
 	return false
 }
+
+// --- Conexões de sessão (auth híbrida) ---
+
+func TestCreateSessionConnection(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	token, info, err := CreateSessionConnection(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("CreateSessionConnection retornou erro: %v", err)
+	}
+	if token == "" {
+		t.Error("esperava token preenchido")
+	}
+	if uid, verr := utils.ValidateToken(token, config.LoadConfig().JWTSecret); verr != nil || uid != user.ID {
+		t.Errorf("token não valida para o usuário: uid=%q err=%v", uid, verr)
+	}
+	if info.ID == "" {
+		t.Error("esperava connection.id preenchido")
+	}
+	if err := storage.CheckUserConnection(testCtx(), user.ID, utils.HashToken(token)); err != nil {
+		t.Errorf("esperava a conexão ativa, obtive %v", err)
+	}
+}
+
+// TestCreateSessionConnectionUniqueTokens garante que dois logins em sequência
+// (mesmo segundo) geram tokens distintos — o retry de iat evita a colisão na
+// UNIQUE(user_id, token_hash) que geraria falso reuso.
+func TestCreateSessionConnectionUniqueTokens(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	tokenA, infoA, err := CreateSessionConnection(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha na primeira conexão: %v", err)
+	}
+	tokenB, infoB, err := CreateSessionConnection(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha na segunda conexão: %v", err)
+	}
+	if tokenA == tokenB {
+		t.Error("esperava tokens distintos para conexões distintas")
+	}
+	if infoA.ID == infoB.ID {
+		t.Error("esperava ids de conexão distintos")
+	}
+	conns, err := storage.ListUserConnections(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha ao listar conexões: %v", err)
+	}
+	if len(conns) != 2 {
+		t.Errorf("esperava 2 conexões ativas, obtive %d", len(conns))
+	}
+}
+
+func TestRefreshConnection(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	oldToken, oldConn, err := CreateSessionConnection(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar a conexão: %v", err)
+	}
+
+	newToken, newConn, err := RefreshConnection(testCtx(), user.ID, oldToken)
+	if err != nil {
+		t.Fatalf("RefreshConnection retornou erro: %v", err)
+	}
+	if newToken == "" || newToken == oldToken {
+		t.Errorf("esperava um novo token distinto, obtive %q", newToken)
+	}
+	if newConn.ID == oldConn.ID {
+		t.Error("esperava uma nova conexão distinta")
+	}
+	// o token antigo está na janela de graça (ainda aceito)
+	if err := storage.CheckUserConnection(testCtx(), user.ID, utils.HashToken(oldToken)); err != nil {
+		t.Errorf("esperava o token antigo na janela de graça, obtive %v", err)
+	}
+	// o token novo está ativo
+	if err := storage.CheckUserConnection(testCtx(), user.ID, utils.HashToken(newToken)); err != nil {
+		t.Errorf("esperava o token novo ativo, obtive %v", err)
+	}
+}
+
+func TestRefreshConnectionUnknownToken(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	token, err := utils.GenerateSessionToken(user.ID, time.Now().Add(77*time.Second), config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token: %v", err)
+	}
+	if _, _, err := RefreshConnection(testCtx(), user.ID, token); !errors.Is(err, ErrConnectionNotFound) {
+		t.Errorf("esperava ErrConnectionNotFound, obtive %v", err)
+	}
+}
+
+// TestRefreshConnectionGracePeriod garante que reapresentar um token recém-
+// substituído dentro da janela de graça devolve a ponta da cadeia sem
+// rotacionar de novo (não gera segunda conexão).
+func TestRefreshConnectionGracePeriod(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	tokenA, _, err := CreateSessionConnection(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar a conexão: %v", err)
+	}
+	tokenB, _, err := RefreshConnection(testCtx(), user.ID, tokenA)
+	if err != nil {
+		t.Fatalf("falha na primeira rotação: %v", err)
+	}
+	tokenC, _, err := RefreshConnection(testCtx(), user.ID, tokenA)
+	if err != nil {
+		t.Fatalf("falha na segunda rotação: %v", err)
+	}
+	if tokenC != tokenB {
+		t.Errorf("esperava a ponta da cadeia %q, obtive %q", tokenB, tokenC)
+	}
+	conns, err := storage.ListUserConnections(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha ao listar conexões: %v", err)
+	}
+	if len(conns) != 1 {
+		t.Errorf("esperava 1 conexão ativa (a ponta), obtive %d", len(conns))
+	}
+}
+
+func TestLogoutRevokes(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	token, _, err := CreateSessionConnection(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar a conexão: %v", err)
+	}
+	if err := Logout(testCtx(), user.ID, token); err != nil {
+		t.Fatalf("Logout retornou erro: %v", err)
+	}
+	if err := storage.CheckUserConnection(testCtx(), user.ID, utils.HashToken(token)); err == nil {
+		t.Error("esperava a conexão revogada ser rejeitada")
+	}
+}
+
+func TestLogoutUnknownToken(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	token, err := utils.GenerateSessionToken(user.ID, time.Now().Add(77*time.Second), config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token: %v", err)
+	}
+	// token desconhecido: logout é no-op (o cliente só remove o cookie)
+	if err := Logout(testCtx(), user.ID, token); err != nil {
+		t.Errorf("esperava logout no-op para token desconhecido, obtive %v", err)
+	}
+}
+
+// TestLogoutReuse garante que reapresentar um token substituído FORA da janela
+// de graça é tratado como reuso: todas as conexões são revogadas e
+// users.connection_violation é marcado.
+func TestLogoutReuse(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	tokenA, _, err := CreateSessionConnection(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar a conexão: %v", err)
+	}
+	tokenB, _, err := RefreshConnection(testCtx(), user.ID, tokenA)
+	if err != nil {
+		t.Fatalf("falha na rotação: %v", err)
+	}
+	// simula que a substituição foi há mais de 1 minuto (fora da janela de graça)
+	if _, err := storage.GetDB().ExecContext(testCtx(),
+		"UPDATE user_connections SET replaced_at = now() - interval '2 minutes' WHERE token_hash = $1",
+		utils.HashToken(tokenA)); err != nil {
+		t.Fatalf("falha ao antecipar replaced_at: %v", err)
+	}
+	if err := Logout(testCtx(), user.ID, tokenA); err != nil {
+		t.Fatalf("Logout retornou erro: %v", err)
+	}
+	// todas as conexões foram revogadas (inclusive tokenB)
+	if err := storage.CheckUserConnection(testCtx(), user.ID, utils.HashToken(tokenB)); err == nil {
+		t.Error("esperava tokenB revogado após o reuso")
+	}
+	var violation bool
+	if err := storage.GetDB().QueryRowContext(testCtx(),
+		"SELECT connection_violation FROM users WHERE id = $1", user.ID).Scan(&violation); err != nil {
+		t.Fatalf("falha ao ler connection_violation: %v", err)
+	}
+	if !violation {
+		t.Error("esperava connection_violation = TRUE")
+	}
+}
+
+func TestListConnections(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	if _, _, err := CreateSessionConnection(testCtx(), user.ID); err != nil {
+		t.Fatalf("falha ao criar a 1ª conexão: %v", err)
+	}
+	if _, _, err := CreateSessionConnection(testCtx(), user.ID); err != nil {
+		t.Fatalf("falha ao criar a 2ª conexão: %v", err)
+	}
+	conns, err := ListConnections(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("ListConnections retornou erro: %v", err)
+	}
+	if len(conns) != 2 {
+		t.Errorf("esperava 2 conexões, obtive %d: %+v", len(conns), conns)
+	}
+}
+
+func TestDropConnection(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	tokenA, connA, err := CreateSessionConnection(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar a 1ª conexão: %v", err)
+	}
+	tokenB, _, err := CreateSessionConnection(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar a 2ª conexão: %v", err)
+	}
+
+	// revoga uma conexão específica
+	n, err := DropConnection(testCtx(), user.ID, connA.ID)
+	if err != nil {
+		t.Fatalf("DropConnection retornou erro: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("esperava dropped=1, obtive %d", n)
+	}
+	if err := storage.CheckUserConnection(testCtx(), user.ID, utils.HashToken(tokenA)); err == nil {
+		t.Error("esperava tokenA revogado")
+	}
+	if err := storage.CheckUserConnection(testCtx(), user.ID, utils.HashToken(tokenB)); err != nil {
+		t.Errorf("esperava tokenB ativo, obtive %v", err)
+	}
+
+	// revoga todas (case-insensitive)
+	n, err = DropConnection(testCtx(), user.ID, "all")
+	if err != nil {
+		t.Fatalf("DropConnection (ALL) retornou erro: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("esperava dropped=1 (só tokenB ativa), obtive %d", n)
+	}
+	if err := storage.CheckUserConnection(testCtx(), user.ID, utils.HashToken(tokenB)); err == nil {
+		t.Error("esperava tokenB revogado")
+	}
+}
+
+func TestDropConnectionInvalid(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	if _, err := DropConnection(testCtx(), user.ID, "nao-um-uuid"); !errors.Is(err, ErrInvalidConnection) {
+		t.Errorf("esperava ErrInvalidConnection, obtive %v", err)
+	}
+}
+
+func TestDropConnectionNotFound(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	if _, err := DropConnection(testCtx(), user.ID, randUUID()); !errors.Is(err, ErrConnectionNotFound) {
+		t.Errorf("esperava ErrConnectionNotFound, obtive %v", err)
+	}
+}

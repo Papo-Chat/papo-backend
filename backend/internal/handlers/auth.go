@@ -173,18 +173,11 @@ func LoginHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao fazer login")
 	}
 
-	// O token é uma função pura de (user_id, iat, segredo): o iat é guardado
-	// na conexão de sessão para re-derivação na janela de graça da rotação.
-	issuedAt := time.Now()
-	token, err := utils.GenerateSessionToken(user.ID, issuedAt, cfg.JWTSecret)
+	// O token é uma função pura de (user_id, iat, segredo): a emissão do token
+	// e o registro da conexão de sessão são atômicos (com retry de iat em caso
+	// de colisão), garantindo um token único por conexão.
+	token, _, err := services.CreateSessionConnection(c.Request().Context(), user.ID)
 	if err != nil {
-		utils.Errorf("request_id=%s falha ao gerar token JWT: %v",
-			c.Request().Header.Get(echo.HeaderXRequestID), err)
-		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
-			"internal", "Erro interno", "falha ao gerar token de autenticação")
-	}
-
-	if err := services.CreateConnection(c.Request().Context(), user.ID, token, issuedAt); err != nil {
 		utils.Errorf("request_id=%s falha ao registrar a conexão de sessão: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,

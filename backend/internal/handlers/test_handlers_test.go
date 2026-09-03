@@ -382,6 +382,9 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		{http.MethodPost, "/search"},
 		{http.MethodGet, "/admin/audit-logs"},
 		{http.MethodGet, "/ws"},
+		{http.MethodPost, "/auth/refresh"},
+		{http.MethodGet, "/auth/connected_devices"},
+		{http.MethodPost, "/auth/drop_connection"},
 	}
 
 	for _, tc := range cases {
@@ -4359,7 +4362,7 @@ func TestLogoutHandler(t *testing.T) {
 	c := newContext(t, http.MethodPost, "/auth/logout", nil, "")
 	rec := recorder(c)
 
-	if err := LogoutHandler(c); err != nil {
+	if err := LogoutHandler(testBaseURL, c); err != nil {
 		t.Fatalf("LogoutHandler retornou erro: %v", err)
 	}
 	if rec.Code != http.StatusNoContent {
@@ -10978,4 +10981,419 @@ func containsHandlerReactionUser(users []string, id string) bool {
 		}
 	}
 	return false
+}
+
+// --- Conexões de sessão (auth híbrida) ---
+
+// newContextWithCookie monta um echo.Context com o cookie Auth definido.
+func newContextWithCookie(t *testing.T, method, path string, body []byte, ip, token string) echo.Context {
+	t.Helper()
+	c := newContext(t, method, path, body, ip)
+	if token != "" {
+		c.Request().AddCookie(authCookie(token))
+	}
+	return c
+}
+
+// newSessionUser cria um usuário e uma conexão de sessão ativa, retornando o
+// ID do usuário, o token da sessão e a conexão registrada.
+func newSessionUser(t *testing.T) (string, string, services.ConnectionInfo) {
+	t.Helper()
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	token, info, err := services.CreateSessionConnection(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar a conexão de sessão: %v", err)
+	}
+	return user.ID, token, info
+}
+
+// --- RefreshHandler ---
+
+func TestRefreshHandlerSuccess(t *testing.T) {
+	userID, token, oldConn := newSessionUser(t)
+
+	c := newContextWithCookie(t, http.MethodPost, "/auth/refresh", nil, "", token)
+	c.Set(middleware.UserIDContextKey, userID)
+	rec := recorder(c)
+
+	if err := RefreshHandler(testBaseURL, c); err != nil {
+		t.Fatalf("RefreshHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Token      string `json:"token"`
+		Connection struct {
+			ID string `json:"id"`
+		} `json:"connection"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.Token == "" {
+		t.Error("esperava token preenchido")
+	}
+	if resp.Token == token {
+		t.Error("esperava um novo token diferente do antigo")
+	}
+	if _, err := utils.ValidateToken(resp.Token, config.LoadConfig().JWTSecret); err != nil {
+		t.Errorf("novo token não valida: %v", err)
+	}
+	if resp.Connection.ID == "" {
+		t.Error("esperava connection.id preenchido")
+	}
+	if resp.Connection.ID == oldConn.ID {
+		t.Errorf("esperava uma nova conexão, obtive a antiga %s", oldConn.ID)
+	}
+
+	// o cookie Auth deve ser atualizado com o novo token
+	setCookie := rec.Header().Get("Set-Cookie")
+	if !strings.Contains(setCookie, "Auth="+resp.Token) {
+		t.Errorf("esperava Set-Cookie com o novo token, obtive %q", setCookie)
+	}
+
+	// a conexão antiga foi substituída (dentro da janela de graça)
+	if err := storage.CheckUserConnection(testCtx(), userID, utils.HashToken(token)); err != nil {
+		t.Errorf("esperava a conexão antiga na janela de graça, obtive %v", err)
+	}
+	// a conexão nova está ativa
+	if err := storage.CheckUserConnection(testCtx(), userID, utils.HashToken(resp.Token)); err != nil {
+		t.Errorf("esperava a conexão nova ativa, obtive %v", err)
+	}
+}
+
+func TestRefreshHandlerMissingUserID(t *testing.T) {
+	_, token, _ := newSessionUser(t)
+	c := newContextWithCookie(t, http.MethodPost, "/auth/refresh", nil, "", token)
+	rec := recorder(c)
+
+	if err := RefreshHandler(testBaseURL, c); err != nil {
+		t.Fatalf("RefreshHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+func TestRefreshHandlerMissingCookie(t *testing.T) {
+	userID, _, _ := newSessionUser(t)
+	c := newContext(t, http.MethodPost, "/auth/refresh", nil, "")
+	c.Set(middleware.UserIDContextKey, userID)
+	rec := recorder(c)
+
+	if err := RefreshHandler(testBaseURL, c); err != nil {
+		t.Fatalf("RefreshHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+func TestRefreshHandlerUnknownToken(t *testing.T) {
+	userID, _, _ := newSessionUser(t)
+	// token válido (assinatura ok, mesmo usuário) mas sem conexão registrada no banco
+	other, err := utils.GenerateSessionToken(userID, time.Now().Add(123*time.Second), config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token: %v", err)
+	}
+
+	c := newContextWithCookie(t, http.MethodPost, "/auth/refresh", nil, "", other)
+	c.Set(middleware.UserIDContextKey, userID)
+	rec := recorder(c)
+
+	if err := RefreshHandler(testBaseURL, c); err != nil {
+		t.Fatalf("RefreshHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+// --- ConnectedDevicesHandler ---
+
+func TestConnectedDevicesHandlerSuccess(t *testing.T) {
+	userID, token, conn := newSessionUser(t)
+
+	c := newContextWithCookie(t, http.MethodGet, "/auth/connected_devices", nil, "", token)
+	c.Set(middleware.UserIDContextKey, userID)
+	rec := recorder(c)
+
+	if err := ConnectedDevicesHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ConnectedDevicesHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Connections []services.ConnectionInfo `json:"connections"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(resp.Connections) != 1 {
+		t.Fatalf("esperava 1 conexão, obtive %d: %+v", len(resp.Connections), resp.Connections)
+	}
+	if resp.Connections[0].ID != conn.ID {
+		t.Errorf("esperava conexão %s, obtive %s", conn.ID, resp.Connections[0].ID)
+	}
+}
+
+func TestConnectedDevicesHandlerMultipleConnections(t *testing.T) {
+	userID, _, _ := newSessionUser(t)
+	// segunda conexão (outro dispositivo)
+	if _, _, err := services.CreateSessionConnection(testCtx(), userID); err != nil {
+		t.Fatalf("falha ao criar a segunda conexão: %v", err)
+	}
+
+	c := newContext(t, http.MethodGet, "/auth/connected_devices", nil, "")
+	c.Set(middleware.UserIDContextKey, userID)
+	rec := recorder(c)
+
+	if err := ConnectedDevicesHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ConnectedDevicesHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Connections []services.ConnectionInfo `json:"connections"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(resp.Connections) != 2 {
+		t.Errorf("esperava 2 conexões, obtive %d: %+v", len(resp.Connections), resp.Connections)
+	}
+}
+
+func TestConnectedDevicesHandlerMissingUserID(t *testing.T) {
+	c := newContext(t, http.MethodGet, "/auth/connected_devices", nil, "")
+	rec := recorder(c)
+
+	if err := ConnectedDevicesHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ConnectedDevicesHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+// --- DropConnectionHandler ---
+
+func TestDropConnectionHandlerDropOne(t *testing.T) {
+	userID, token, _ := newSessionUser(t)
+	// segunda conexão para ser revogada
+	secondToken, second, err := services.CreateSessionConnection(testCtx(), userID)
+	if err != nil {
+		t.Fatalf("falha ao criar a segunda conexão: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"connection_id": second.ID})
+	c := newContextWithCookie(t, http.MethodPost, "/auth/drop_connection", body, "", token)
+	c.Set(middleware.UserIDContextKey, userID)
+	rec := recorder(c)
+
+	if err := DropConnectionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("DropConnectionHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Dropped int `json:"dropped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.Dropped != 1 {
+		t.Errorf("esperava dropped=1, obtive %d", resp.Dropped)
+	}
+	// a conexão atual (token) continua ativa
+	if err := storage.CheckUserConnection(testCtx(), userID, utils.HashToken(token)); err != nil {
+		t.Errorf("esperava a conexão atual ainda ativa, obtive %v", err)
+	}
+	// a conexão revogada não é mais aceita
+	if err := storage.CheckUserConnection(testCtx(), userID, utils.HashToken(secondToken)); err == nil {
+		t.Error("esperava a conexão revogada ser rejeitada")
+	}
+}
+
+func TestDropConnectionHandlerDropAll(t *testing.T) {
+	userID, token, _ := newSessionUser(t)
+	if _, _, err := services.CreateSessionConnection(testCtx(), userID); err != nil {
+		t.Fatalf("falha ao criar a segunda conexão: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"connection_id": "ALL"})
+	c := newContextWithCookie(t, http.MethodPost, "/auth/drop_connection", body, "", token)
+	c.Set(middleware.UserIDContextKey, userID)
+	rec := recorder(c)
+
+	if err := DropConnectionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("DropConnectionHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Dropped int `json:"dropped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.Dropped != 2 {
+		t.Errorf("esperava dropped=2, obtive %d", resp.Dropped)
+	}
+	// todas as conexões foram revogadas
+	if err := storage.CheckUserConnection(testCtx(), userID, utils.HashToken(token)); err == nil {
+		t.Error("esperava a conexão atual revogada")
+	}
+	// o cookie Auth deve ser removido (a conexão do token foi revogada)
+	setCookie := rec.Header().Get("Set-Cookie")
+	if !strings.Contains(setCookie, "Auth=") {
+		t.Errorf("esperava Set-Cookie removendo o cookie Auth, obtive %q", setCookie)
+	}
+}
+
+func TestDropConnectionHandlerMissingUserID(t *testing.T) {
+	body, _ := json.Marshal(map[string]string{"connection_id": "ALL"})
+	c := newContext(t, http.MethodPost, "/auth/drop_connection", body, "")
+	rec := recorder(c)
+
+	if err := DropConnectionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("DropConnectionHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+func TestDropConnectionHandlerMissingField(t *testing.T) {
+	userID, token, _ := newSessionUser(t)
+	body, _ := json.Marshal(map[string]string{})
+	c := newContextWithCookie(t, http.MethodPost, "/auth/drop_connection", body, "", token)
+	c.Set(middleware.UserIDContextKey, userID)
+	rec := recorder(c)
+
+	if err := DropConnectionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("DropConnectionHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"campo 'connection_id' é obrigatório")
+}
+
+func TestDropConnectionHandlerInvalidID(t *testing.T) {
+	userID, token, _ := newSessionUser(t)
+	body, _ := json.Marshal(map[string]string{"connection_id": "nao-um-uuid"})
+	c := newContextWithCookie(t, http.MethodPost, "/auth/drop_connection", body, "", token)
+	c.Set(middleware.UserIDContextKey, userID)
+	rec := recorder(c)
+
+	if err := DropConnectionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("DropConnectionHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"campo 'connection_id' deve ser um UUID ou 'ALL'")
+}
+
+func TestDropConnectionHandlerNotFound(t *testing.T) {
+	userID, token, _ := newSessionUser(t)
+	body, _ := json.Marshal(map[string]string{"connection_id": randUUID()})
+	c := newContextWithCookie(t, http.MethodPost, "/auth/drop_connection", body, "", token)
+	c.Set(middleware.UserIDContextKey, userID)
+	rec := recorder(c)
+
+	if err := DropConnectionHandler(testBaseURL, c); err != nil {
+		t.Fatalf("DropConnectionHandler retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado",
+		"conexão de sessão não encontrada")
+}
+
+// --- LogoutHandler (revogação) ---
+
+func TestLogoutHandlerRevokes(t *testing.T) {
+	userID, token, _ := newSessionUser(t)
+
+	c := newContextWithCookie(t, http.MethodPost, "/auth/logout", nil, "", token)
+	rec := recorder(c)
+
+	if err := LogoutHandler(testBaseURL, c); err != nil {
+		t.Fatalf("LogoutHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava status 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	// a conexão foi revogada: o token não é mais aceito
+	if err := storage.CheckUserConnection(testCtx(), userID, utils.HashToken(token)); err == nil {
+		t.Error("esperava a conexão revogada ser rejeitada")
+	}
+}
+
+// --- rotas de conexões de sessão ---
+
+func TestRefreshRouteWithAuth(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+
+	rec := do(t, e, http.MethodPost, "/auth/refresh", nil, authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.Token == "" || resp.Token == token {
+		t.Errorf("esperava um novo token, obtive %q", resp.Token)
+	}
+	_ = userID
+}
+
+func TestConnectedDevicesRouteWithAuth(t *testing.T) {
+	e := newApp()
+	_, token := registerAndLogin(t, e)
+
+	rec := do(t, e, http.MethodGet, "/auth/connected_devices", nil, authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Connections []services.ConnectionInfo `json:"connections"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(resp.Connections) != 1 {
+		t.Errorf("esperava 1 conexão, obtive %d: %+v", len(resp.Connections), resp.Connections)
+	}
+}
+
+func TestDropConnectionRouteWithAuth(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+
+	// cria uma segunda conexão (outro dispositivo)
+	_, second, err := services.CreateSessionConnection(testCtx(), userID)
+	if err != nil {
+		t.Fatalf("falha ao criar a segunda conexão: %v", err)
+	}
+	body, _ := json.Marshal(map[string]string{"connection_id": second.ID})
+
+	rec := do(t, e, http.MethodPost, "/auth/drop_connection", body, authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Dropped int `json:"dropped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.Dropped != 1 {
+		t.Errorf("esperava dropped=1, obtive %d", resp.Dropped)
+	}
 }

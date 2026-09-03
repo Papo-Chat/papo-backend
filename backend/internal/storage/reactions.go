@@ -107,7 +107,7 @@ func AddReaction(ctx context.Context, messageID, userID string, emojiID, unicode
 
 	var distinct int
 	if err := tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM (SELECT DISTINCT COALESCE(emoji_id, '" + zeroUUID + "'::uuid), COALESCE(unicode, '') FROM message_reactions WHERE message_id = $1) tipos",
+		"SELECT COUNT(*) FROM (SELECT DISTINCT COALESCE(emoji_id, '"+zeroUUID+"'::uuid), COALESCE(unicode, '') FROM message_reactions WHERE message_id = $1) tipos",
 		messageID,
 	).Scan(&distinct); err != nil {
 		return models.MessageReaction{}, false, 0, fmt.Errorf("falha ao reagir: %w", err)

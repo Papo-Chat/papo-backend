@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -859,5 +860,137 @@ func TestMaskIP(t *testing.T) {
 				t.Errorf("maskIP(%q) = %q, esperado %q", tc.ip, got, tc.want)
 			}
 		})
+	}
+}
+
+// --- JWTMiddleware (auth híbrida) ---
+
+// doJWTRequest passa uma requisição pelo JWTMiddleware com o token informado no
+// cookie Auth ("" sem cookie) e um handler que responde 200. Retorna o
+// recorder e se o handler foi alcançado.
+func doJWTRequest(t *testing.T, token string) (*httptest.ResponseRecorder, bool) {
+	t.Helper()
+
+	reached := false
+	handler := JWTMiddleware(func(c echo.Context) error {
+		reached = true
+		return c.String(http.StatusOK, "ok")
+	})
+
+	c := newContext(t, http.MethodGet, "/protected", "")
+	if token != "" {
+		c.Request().AddCookie(&http.Cookie{Name: "Auth", Value: token})
+	}
+	if err := handler(c); err != nil {
+		t.Fatalf("handler retornou erro: %v", err)
+	}
+	return recorder(c), reached
+}
+
+// newSessionToken gera um token de sessão válido para o usuário e registra a
+// conexão correspondente no banco.
+func newSessionToken(t *testing.T, userID string, issuedAt time.Time) string {
+	t.Helper()
+
+	token, err := utils.GenerateSessionToken(userID, issuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token de sessão: %v", err)
+	}
+	if _, err := storage.CreateUserConnection(context.Background(), userID, utils.HashToken(token), issuedAt); err != nil {
+		t.Fatalf("falha ao criar a conexão de sessão: %v", err)
+	}
+	return token
+}
+
+func TestJWTMiddlewareValidSession(t *testing.T) {
+	userID := newUser(t)
+	token := newSessionToken(t, userID, time.Now())
+
+	rec, reached := doJWTRequest(t, token)
+	if !reached {
+		t.Fatal("esperava o handler ser alcançado")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestJWTMiddlewareMissingCookie(t *testing.T) {
+	rec, reached := doJWTRequest(t, "")
+	if reached {
+		t.Fatal("não esperava o handler ser alcançado")
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized",
+		"Token inválido ou expirado", "token de autenticação ausente, inválido ou expirado", "")
+}
+
+func TestJWTMiddlewareInvalidToken(t *testing.T) {
+	rec, reached := doJWTRequest(t, "token-que-nao-é-jwt")
+	if reached {
+		t.Fatal("não esperava o handler ser alcançado")
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized",
+		"Token inválido ou expirado", "token de autenticação ausente, inválido ou expirado", "")
+}
+
+// TestJWTMiddlewareNoConnection garante que um JWT válido (assinatura correta)
+// sem conexão de sessão ativa no banco é rejeitado.
+func TestJWTMiddlewareNoConnection(t *testing.T) {
+	userID := newUser(t)
+	token, err := utils.GenerateSessionToken(userID, time.Now(), config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token de sessão: %v", err)
+	}
+
+	rec, reached := doJWTRequest(t, token)
+	if reached {
+		t.Fatal("não esperava o handler ser alcançado")
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized",
+		"Token inválido ou expirado", "token de autenticação ausente, inválido ou expirado", "")
+}
+
+// TestJWTMiddlewareReusedToken garante que reapresentar um token já substituído
+// fora da janela de graça revoga todas as conexões, marca connection_violation e
+// responde 401 connection-reused.
+func TestJWTMiddlewareReusedToken(t *testing.T) {
+	userID := newUser(t)
+	issuedAt := time.Now()
+	tokenA := newSessionToken(t, userID, issuedAt)
+
+	// rotaciona: A é substituído por B (B ainda não existe no banco)
+	newIssuedAt := time.Now().Add(time.Second)
+	tokenB, err := utils.GenerateSessionToken(userID, newIssuedAt, config.LoadConfig().JWTSecret)
+	if err != nil {
+		t.Fatalf("falha ao gerar token B: %v", err)
+	}
+	if _, err := storage.RotateUserConnection(context.Background(), userID, utils.HashToken(tokenA), utils.HashToken(tokenB), newIssuedAt); err != nil {
+		t.Fatalf("falha ao rotacionar: %v", err)
+	}
+	// empurra A para fora da janela de graça
+	if _, err := storage.GetDB().ExecContext(context.Background(),
+		"UPDATE user_connections SET replaced_at = now() - interval '2 minutes' WHERE token_hash = $1",
+		utils.HashToken(tokenA)); err != nil {
+		t.Fatalf("falha ao antecipar replaced_at: %v", err)
+	}
+
+	rec, reached := doJWTRequest(t, tokenA)
+	if reached {
+		t.Fatal("não esperava o handler ser alcançado")
+	}
+	assertProblem(t, rec, http.StatusUnauthorized, "connection-reused",
+		"Sessão invalidada", "token substituído foi reapresentado: todas as conexões foram revogadas", "")
+
+	var violation bool
+	if err := storage.GetDB().QueryRowContext(context.Background(),
+		"SELECT connection_violation FROM users WHERE id = $1", userID).Scan(&violation); err != nil {
+		t.Fatalf("falha ao ler connection_violation: %v", err)
+	}
+	if !violation {
+		t.Error("esperava connection_violation = TRUE")
+	}
+	// B (a conexão legítima) também foi revogada
+	if err := storage.CheckUserConnection(context.Background(), userID, utils.HashToken(tokenB)); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("esperava B revogada, obtive %v", err)
 	}
 }
