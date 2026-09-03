@@ -109,7 +109,6 @@ type loginResponse struct {
 		ID       string `json:"id"`
 		Username string `json:"username"`
 	} `json:"user"`
-	Token string `json:"token"`
 	// ConnectionViolation indica que o reuso de um token de sessão foi
 	// detectado neste usuário (todas as conexões foram revogadas); o cliente
 	// usa a flag para avisar o usuário.
@@ -199,7 +198,10 @@ func LoginHandler(baseURL string, c echo.Context) error {
 		MaxAge:   int(utils.JWTExpiration.Seconds()),
 	})
 
-	resp := loginResponse{Token: token, ConnectionViolation: user.ConnectionViolation}
+	// O token não é retornado no corpo: a sessão é entregue exclusivamente
+	// pelo cookie Auth (HttpOnly), evitando que o cliente o persista em
+	// estado JS/localStorage.
+	resp := loginResponse{ConnectionViolation: user.ConnectionViolation}
 	resp.User.ID = user.ID
 	resp.User.Username = user.Username
 
@@ -210,14 +212,12 @@ type loginServerRequest struct {
 	ServerPassword string `json:"server_password"`
 }
 
-type loginServerResponse struct {
-	TempToken string `json:"temp_token"`
-}
-
 // LoginServerHandler implementa POST /auth/login_server.
 // Valida a senha do servidor (quando o servidor é não público) e emite a
 // autorização temporária: define o cookie Auth com um JWT de curta duração
-// (Max-Age 1800s) e retorna o token no corpo.
+// (Max-Age 1800s). O token não é retornado no corpo (resposta 204): a
+// autorização é entregue exclusivamente pelo cookie Auth (HttpOnly), evitando
+// que o cliente o persista em estado JS/localStorage.
 func LoginServerHandler(baseURL string, c echo.Context) error {
 	cfg := config.LoadConfig()
 
@@ -280,7 +280,7 @@ func LoginServerHandler(baseURL string, c echo.Context) error {
 		MaxAge:   int(utils.TempTokenExpiration.Seconds()),
 	})
 
-	return c.JSON(http.StatusOK, loginServerResponse{TempToken: tempToken})
+	return c.NoContent(http.StatusNoContent)
 }
 
 // requireServerAccessGate aplica a regra de servidores não públicos antes de
@@ -443,14 +443,14 @@ func LogoutHandler(baseURL string, c echo.Context) error {
 }
 
 type refreshResponse struct {
-	Token      string                  `json:"token"`
 	Connection services.ConnectionInfo `json:"connection"`
 }
 
 // RefreshHandler implementa POST /auth/refresh.
 // Rotaciona o token de sessão: a conexão atual (identificada pelo cookie Auth)
-// é substituída atomicamente por uma nova. O novo token é retornado no corpo e
-// definido no cookie Auth.
+// é substituída atomicamente por uma nova. O novo token é definido no cookie
+// Auth (HttpOnly) e não é retornado no corpo, evitando que o cliente o
+// persista em estado JS/localStorage.
 func RefreshHandler(baseURL string, c echo.Context) error {
 	cfg := config.LoadConfig()
 	ctx := c.Request().Context()
@@ -483,7 +483,7 @@ func RefreshHandler(baseURL string, c echo.Context) error {
 	}
 
 	setAuthCookie(c, cfg, newToken)
-	return c.JSON(http.StatusOK, refreshResponse{Token: newToken, Connection: conn})
+	return c.JSON(http.StatusOK, refreshResponse{Connection: conn})
 }
 
 type connectedDevicesResponse struct {

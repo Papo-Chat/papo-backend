@@ -40,12 +40,10 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Detecção e moderação de imagens com conteúdo sensível
 - [ ] Suporte WebRTC (Audio, Video, Transmissão)
 
-- [ ] Otimizações de segurança
-
-
 ### V2:
 
 - [ ] Atualizar Pacotes
+- [ ] Implementar Testes até 80% Coverage
 - [ ] Hashed Resync para conexão instável
 - [ ] Mais informação no endpoint conexão
 - [ ] Refactor endpoints (organizar melhor /admin, /messages)

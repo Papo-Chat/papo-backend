@@ -134,12 +134,8 @@ paths:
             schema:
               $ref: '#/components/schemas/LoginServerRequest'
       responses:
-        '200':
-          description: "Senha válida (Set-Cookie: Auth=temp_token; Max-Age=1800)"
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/LoginServerResponse'
+        '204':
+          description: "Senha válida (Set-Cookie: Auth=temp_token; Max-Age=1800). O token não é retornado no corpo; a autorização é entregue exclusivamente pelo cookie Auth (HttpOnly)"
         '400':
           description: Campo ausente ou inválido
           content:
@@ -2030,6 +2026,7 @@ components:
 
     LoginResponse:
       type: object
+      description: O JWT não é retornado no corpo; a sessão é entregue exclusivamente pelo cookie Auth (HttpOnly)
       properties:
         user:
           type: object
@@ -2039,9 +2036,6 @@ components:
               format: uuid
             username:
               type: string
-        token:
-          type: string
-          description: JWT (também definido no cookie Auth)
         connection_violation:
           type: boolean
           description: Verdadeiro se houve detecção de reuso de token de sessão (todas as conexões foram revogadas)
@@ -2052,13 +2046,6 @@ components:
       properties:
         server_password:
           type: string
-
-    LoginServerResponse:
-      type: object
-      properties:
-        temp_token:
-          type: string
-          description: JWT temporário de 30min (também definido no cookie Auth)
 
     UserSummary:
       type: object
@@ -2201,10 +2188,8 @@ components:
 
     RefreshResponse:
       type: object
+      description: O novo JWT não é retornado no corpo; é entregue exclusivamente pelo cookie Auth (HttpOnly)
       properties:
-        token:
-          type: string
-          description: Novo JWT (também definido no cookie Auth)
         connection:
           $ref: '#/components/schemas/Connection'
 

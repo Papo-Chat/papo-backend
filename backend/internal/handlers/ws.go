@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 
+	"papo/internal/config"
 	"papo/internal/middleware"
 	"papo/internal/services"
 	"papo/internal/utils"
@@ -12,13 +13,31 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// wsCheckOrigin valida o header Origin contra a mesma allowlist usada no CORS
+// (config.CORSOrigins). Navegadores sempre enviam Origin no handshake do
+// WebSocket, então uma página cross-site (ex.: com o cookie Auth em
+// SameSite=None quando SAME_SITE=false) é rejeitada aqui e não abre conexão.
+// Requisição sem Origin (cliente não navegador) é aceita, seguindo o
+// comportamento padrão do gorilla/websocket: a autorização real continua
+// sendo o JWT do cookie Auth validado pelo JWTMiddleware.
+func wsCheckOrigin(r *http.Request) bool {
+	origin := r.Header.Get(echo.HeaderOrigin)
+	if origin == "" {
+		return true
+	}
+	for _, allowed := range config.LoadConfig().CORSOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+	return false
+}
+
 // wsUpgrader faz o upgrade HTTP -> WebSocket. A autenticação é feita pelo
-// JWTMiddleware (cookie Auth) antes do handler; CheckOrigin libera qualquer
-// origem porque a autorização real é o JWT validado no handshake e o cookie
-// Auth é HttpOnly + SameSite=Strict (não é enviado em requisições cross-site).
-// Mas pode ser alterada via env.
+// JWTMiddleware (cookie Auth) antes do handler; CheckOrigin restringe o
+// handshake às origens da allowlist de CORS (ver wsCheckOrigin).
 var wsUpgrader = ws.Upgrader{
-	CheckOrigin: func(*http.Request) bool { return true },
+	CheckOrigin: wsCheckOrigin,
 }
 
 // WebSocketHandler implementa GET /ws. O JWT do cookie Auth é validado pelo

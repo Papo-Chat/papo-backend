@@ -196,8 +196,30 @@ func authCookie(token string) *http.Cookie {
 	return &http.Cookie{Name: "Auth", Value: token}
 }
 
+// authCookieFromResponse extrai o valor do cookie Auth do header Set-Cookie
+// da resposta: a sessão é entregue exclusivamente pelo cookie HttpOnly (o
+// JWT não é retornado no corpo JSON).
+func authCookieFromResponse(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	for _, header := range rec.Header().Values("Set-Cookie") {
+		segment := header
+		if idx := strings.Index(header, ";"); idx >= 0 {
+			segment = header[:idx]
+		}
+		if idx := strings.Index(segment, "="); idx >= 0 {
+			name := strings.TrimSpace(segment[:idx])
+			if name == "Auth" {
+				return strings.TrimSpace(segment[idx+1:])
+			}
+		}
+	}
+	t.Fatal("esperava cookie Auth definido no Set-Cookie")
+	return ""
+}
+
 // registerAndLogin cria um usuário via POST /auth/register e autentica via
-// POST /auth/login, retornando o ID do usuário e o JWT da resposta do login.
+// POST /auth/login, retornando o ID do usuário e o JWT do cookie Auth da
+// resposta do login.
 func registerAndLogin(t *testing.T, e *echo.Echo) (string, string) {
 	t.Helper()
 
@@ -224,17 +246,12 @@ func registerAndLogin(t *testing.T, e *echo.Echo) (string, string) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login: esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
-	var login struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &login); err != nil {
-		t.Fatalf("login: falha ao decodificar resposta: %v", err)
-	}
-	if login.Token == "" {
-		t.Fatal("login: esperava token preenchido")
+	token := authCookieFromResponse(t, rec)
+	if token == "" {
+		t.Fatal("login: esperava token preenchido no cookie Auth")
 	}
 
-	return reg.ID, login.Token
+	return reg.ID, token
 }
 
 // validSettingsBody retorna um corpo com um user config válido.
@@ -4016,7 +4033,6 @@ func TestLoginHandlerSuccess(t *testing.T) {
 			ID       string `json:"id"`
 			Username string `json:"username"`
 		} `json:"user"`
-		Token string `json:"token"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
@@ -4026,9 +4042,6 @@ func TestLoginHandlerSuccess(t *testing.T) {
 	}
 	if resp.User.Username != username {
 		t.Errorf("esperava user.username %q, obtive %q", username, resp.User.Username)
-	}
-	if resp.Token == "" {
-		t.Error("esperava token preenchido")
 	}
 
 	// o cookie Auth deve ser definido com o token
@@ -4059,14 +4072,18 @@ func TestLoginHandlerSuccess(t *testing.T) {
 	if authCookieValue == "" {
 		t.Fatal("esperava cookie Auth definido")
 	}
-	if authCookieValue != resp.Token {
-		t.Errorf("esperava cookie Auth com valor %q, obtive %q", resp.Token, authCookieValue)
+	if _, err := utils.ValidateToken(authCookieValue, config.LoadConfig().JWTSecret); err != nil {
+		t.Errorf("cookie Auth não contém um JWT de sessão válido: %v", err)
 	}
 	if !hasHttpOnly {
 		t.Error("esperava cookie Auth com HttpOnly")
 	}
 	if !hasSecure {
 		t.Error("esperava cookie Auth com Secure")
+	}
+	// o JWT não deve aparecer no corpo da resposta (a sessão é só o cookie)
+	if strings.Contains(rec.Body.String(), authCookieValue) {
+		t.Error("o corpo da resposta não deve conter o JWT")
 	}
 }
 
@@ -8310,22 +8327,16 @@ func TestLoginServerHandlerSuccess(t *testing.T) {
 	if err := LoginServerHandler(testBaseURL, c); err != nil {
 		t.Fatalf("LoginServerHandler retornou erro: %v", err)
 	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava status 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 
-	var resp struct {
-		TempToken string `json:"temp_token"`
+	// o cookie Auth deve ser um token temporário válido com Max-Age de 30min
+	tempToken := authCookieFromResponse(t, rec)
+	if ok, err := utils.ValidateTempToken(tempToken, config.LoadConfig().JWTSecret); err != nil || !ok {
+		t.Errorf("esperava um token temporário válido no cookie Auth: ok=%v err=%v", ok, err)
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("falha ao decodificar resposta: %v", err)
-	}
-	if resp.TempToken == "" {
-		t.Fatal("esperava temp_token preenchido")
-	}
-
-	// o cookie Auth deve ser o token temporário com Max-Age de 30min
-	assertAuthCookie(t, rec, resp.TempToken, strconv.Itoa(int(utils.TempTokenExpiration.Seconds())))
+	assertAuthCookie(t, rec, tempToken, strconv.Itoa(int(utils.TempTokenExpiration.Seconds())))
 }
 
 func TestLoginServerHandlerPublicServer(t *testing.T) {
@@ -8339,8 +8350,8 @@ func TestLoginServerHandlerPublicServer(t *testing.T) {
 	if err := LoginServerHandler(testBaseURL, c); err != nil {
 		t.Fatalf("LoginServerHandler retornou erro: %v", err)
 	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200 em servidor público, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava status 204 em servidor público, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -8537,18 +8548,9 @@ func TestLoginHandlerWithTempToken(t *testing.T) {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 
-	var resp struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("falha ao decodificar resposta: %v", err)
-	}
-	if resp.Token == "" {
-		t.Fatal("esperava token preenchido")
-	}
-
 	// o login consolida o cookie Auth com o token de sessão (24h)
-	assertAuthCookie(t, rec, resp.Token, strconv.Itoa(int(utils.JWTExpiration.Seconds())))
+	token := authCookieFromResponse(t, rec)
+	assertAuthCookie(t, rec, token, strconv.Itoa(int(utils.JWTExpiration.Seconds())))
 }
 
 // --- handlers de mensagens (tarefa 7.2) ---
@@ -11027,7 +11029,6 @@ func TestRefreshHandlerSuccess(t *testing.T) {
 	}
 
 	var resp struct {
-		Token      string `json:"token"`
 		Connection struct {
 			ID string `json:"id"`
 		} `json:"connection"`
@@ -11035,13 +11036,12 @@ func TestRefreshHandlerSuccess(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if resp.Token == "" {
-		t.Error("esperava token preenchido")
-	}
-	if resp.Token == token {
+	// o novo token é entregue exclusivamente no cookie Auth (HttpOnly)
+	newToken := authCookieFromResponse(t, rec)
+	if newToken == token {
 		t.Error("esperava um novo token diferente do antigo")
 	}
-	if _, err := utils.ValidateToken(resp.Token, config.LoadConfig().JWTSecret); err != nil {
+	if _, err := utils.ValidateToken(newToken, config.LoadConfig().JWTSecret); err != nil {
 		t.Errorf("novo token não valida: %v", err)
 	}
 	if resp.Connection.ID == "" {
@@ -11052,17 +11052,14 @@ func TestRefreshHandlerSuccess(t *testing.T) {
 	}
 
 	// o cookie Auth deve ser atualizado com o novo token
-	setCookie := rec.Header().Get("Set-Cookie")
-	if !strings.Contains(setCookie, "Auth="+resp.Token) {
-		t.Errorf("esperava Set-Cookie com o novo token, obtive %q", setCookie)
-	}
+	assertAuthCookie(t, rec, newToken, strconv.Itoa(int(utils.JWTExpiration.Seconds())))
 
 	// a conexão antiga foi substituída (dentro da janela de graça)
 	if err := storage.CheckUserConnection(testCtx(), userID, utils.HashToken(token)); err != nil {
 		t.Errorf("esperava a conexão antiga na janela de graça, obtive %v", err)
 	}
 	// a conexão nova está ativa
-	if err := storage.CheckUserConnection(testCtx(), userID, utils.HashToken(resp.Token)); err != nil {
+	if err := storage.CheckUserConnection(testCtx(), userID, utils.HashToken(newToken)); err != nil {
 		t.Errorf("esperava a conexão nova ativa, obtive %v", err)
 	}
 }
@@ -11341,14 +11338,10 @@ func TestRefreshRouteWithAuth(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
-	var resp struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("falha ao decodificar resposta: %v", err)
-	}
-	if resp.Token == "" || resp.Token == token {
-		t.Errorf("esperava um novo token, obtive %q", resp.Token)
+	// o novo token é entregue exclusivamente no cookie Auth (HttpOnly)
+	newToken := authCookieFromResponse(t, rec)
+	if newToken == "" || newToken == token {
+		t.Errorf("esperava um novo token, obtive %q", newToken)
 	}
 	_ = userID
 }
