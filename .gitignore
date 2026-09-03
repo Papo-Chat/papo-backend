@@ -68,3 +68,8 @@ README_Internal.md
 PROJECT_ROADMAP.md
 AGENTS.md
 
+#Moderation metafiles
+*.pyc
+__pycache__
+.moderation
+safety-xs-v1.onnx

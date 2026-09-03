@@ -40,6 +40,9 @@ MAX_PATH_BYTES = 4096
 # Mesmo limite do pipeline de imagens (THUMBNAIL_MAX_PIXELS): evita
 # decompression bomb em memória.
 MAX_PIXELS = 50_000_000
+# Máximo de frames amostrados de uma imagem animada (GIF/WebP): 0, 25%, 50%,
+# 75% e o último. Evita o bypass de "frame 0 inocente, resto NSFW".
+MAX_FRAMES = 5
 
 
 def parse_args():
@@ -66,19 +69,55 @@ def resolve_media_path(path, media_dir):
     return real
 
 
-def classify(session, image_path):
-    # Primeira frame para GIFs; PIL abre de forma preguiçosa.
+def load_frames(image_path):
+    """Retorna os frames da imagem prontos para inferência.
+
+    Estática: 1 frame. Animada (GIF/WebP): amostragem de até MAX_FRAMES
+    posições (0, 25%, 50%, 75% e último) — o classificador vê mais que o
+    primeiro frame, fechando o bypass de animação com conteúdo no meio/fim.
+    """
     with Image.open(image_path) as img:
         width, height = img.size
         if width * height > MAX_PIXELS:
             raise ValueError("imagem excede o limite de pixels")
-        img = img.convert("RGB").resize((INPUT_SIZE, INPUT_SIZE), Image.Resampling.BILINEAR)
-        pixels = np.asarray(img, dtype=np.float32).transpose(2, 0, 1)[np.newaxis]
+        total = getattr(img, "n_frames", 1)
+        if total <= MAX_FRAMES:
+            indices = list(range(total))
+        else:
+            indices = sorted(
+                {0, round(total * 0.25), round(total * 0.50), round(total * 0.75), total - 1}
+            )
+        frames = []
+        for index in indices:
+            if index:
+                img.seek(index)
+            # convert() materializa o frame atual (o with fecha o arquivo
+            # antes da inferência, então o dado precisa sair do lazy load).
+            frames.append(img.convert("RGB").resize((INPUT_SIZE, INPUT_SIZE), Image.Resampling.BILINEAR))
+    return frames
 
+
+def classify_frame(session, frame):
+    pixels = np.asarray(frame, dtype=np.float32).transpose(2, 0, 1)[np.newaxis]
     input_name = session.get_inputs()[0].name
     probs = session.run(None, {input_name: pixels})[0][0]
     nsfl, nsfw, sfw = (float(p) for p in probs[:3])
     return {"gore": nsfl, "nudity": nsfw, "sfw": sfw}
+
+
+def classify(session, image_path):
+    # Imagem animada: classifica cada frame amostrado e usa o maior score de
+    # cada categoria (o frame mais arriscado define o resultado).
+    worst = None
+    for frame in load_frames(image_path):
+        scores = classify_frame(session, frame)
+        if worst is None:
+            worst = scores
+        else:
+            for key in worst:
+                if scores[key] > worst[key]:
+                    worst[key] = scores[key]
+    return worst
 
 
 def read_request(conn):
@@ -126,8 +165,9 @@ def serve(socket_path, session, model_name, media_dir):
         os.unlink(socket_path)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(socket_path)
+    # Protege o pathname do socket (somente o usuário do serviço conecta).
+    os.chmod(socket_path, 0o600)
     server.listen(16)
-    os.fchmod(server.fileno(), 0o600)
     print(f"moderation worker ready (model={model_name}, socket={socket_path}, media_dir={media_dir})", flush=True)
     while True:
         conn, _ = server.accept()

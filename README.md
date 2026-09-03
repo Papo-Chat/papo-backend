@@ -190,11 +190,16 @@ CLOUDFLARE_PROXY=false
 # Moderação assíncrona de imagens. Desativada por padrão;
 # requer Python 3.10+ com `pip install -r moderation_worker/requirements.txt`.
 # off | flag | blur | block (block exclui a mensagem).
-MODERATION_ENABLED=true
+MODERATION_ENABLED=false
+
 MODERATION_NUDITY_MODE=block
 MODERATION_GORE_MODE=block
 MODERATION_NUDITY_THRESHOLD=0.8
 MODERATION_GORE_THRESHOLD=0.8
+
+# se usar python env tem que configurar para o endereço do python do env
+#MODERATION_WORKER_COMMAND=moderation_worker/<env>/bin/python3
+MODERATION_WORKER_COMMAND=python3
 ```
 
 ## API

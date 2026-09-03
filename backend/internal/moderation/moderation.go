@@ -53,6 +53,13 @@ type Result struct {
 	Model  string
 }
 
+// Classifier faz a inferência de uma imagem no disco. Implementado pelo
+// Client (worker Python); é uma interface para os testes alimentarem o fluxo
+// com resultados sintéticos, sem worker real nem imagem sensível.
+type Classifier interface {
+	Classify(ctx context.Context, path, mime string) (Result, error)
+}
+
 // Service orquestra a fila, os workers, o supervisor do worker Python e o
 // reconciler.
 type Service struct {
@@ -62,7 +69,7 @@ type Service struct {
 	inflight    map[string]struct{}
 	mu          sync.Mutex
 	policy      Policy
-	client      *Client
+	client      Classifier
 	sup         *Supervisor
 	concurrency int
 	stopCh      chan struct{}
@@ -115,6 +122,12 @@ func New(cfg *config.Config, ctx context.Context) *Service {
 	if concurrency <= 0 {
 		concurrency = 1
 	}
+	// O worker Python atende as conexões sequencialmente: workers Go
+	// adicionais só enfileirariam no socket sem paralelizar a inferência.
+	if concurrency > 1 {
+		utils.Infof("moderação: MODERATION_CONCURRENCY=%d ignorado (worker Python é sequencial), usando 1", concurrency)
+		concurrency = 1
+	}
 
 	return &Service{
 		cfg:         cfg,
@@ -129,17 +142,10 @@ func New(cfg *config.Config, ctx context.Context) *Service {
 	}
 }
 
-// Start faz o bootstrap dos modelos e inicia o supervisor, os workers da
-// fila e o reconciler. Nunca falha: a degradação é logada.
+// Start inicia o supervisor (que garante o bootstrap dos modelos e o worker
+// Python, com retry), os workers da fila e o reconciler. Nunca falha: a
+// degradação é logada.
 func (s *Service) Start() {
-	models, err := EnsureModels(s.ctx, s.cfg.ModerationModelsDir)
-	if err != nil {
-		utils.Errorf("moderação: falha no bootstrap dos modelos (o worker não será iniciado): %v", err)
-		return
-	}
-
-	s.sup.SetModels(models)
-
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -163,10 +169,13 @@ func (s *Service) Start() {
 	utils.Info("moderação de imagens iniciada")
 }
 
-// Stop encerra workers, reconciler e o worker Python (idempotente).
+// Stop encerra workers, reconciler e o worker Python (idempotente). Sinaliza
+// todos os componentes ANTES de esperar (o supervisor só sai quando recebe o
+// próprio stop; sem isso o wg.Wait() deadlocks).
 func (s *Service) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
+		s.sup.Stop()
 		s.wg.Wait()
 		os.Remove(s.cfg.ModerationSocketPath)
 		utils.Info("moderação de imagens encerrada")

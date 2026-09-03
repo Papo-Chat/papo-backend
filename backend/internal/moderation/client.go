@@ -118,17 +118,19 @@ func (c *Client) roundTrip(ctx context.Context, req classifyRequest) (classifyRe
 		return classifyResponse{}, fmt.Errorf("falha ao enviar a requisição ao worker: %w", err)
 	}
 
-	reader := bufio.NewReaderSize(conn, maxResponseBytes)
-	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		return classifyResponse{}, fmt.Errorf("falha ao ler a resposta do worker: %w", err)
-	}
-	if len(line) > maxResponseBytes {
-		return classifyResponse{}, fmt.Errorf("resposta do worker excede o limite")
+	// Scanner com limite explícito: uma linha maior que maxResponseBytes
+	// falha na hora (leitura limitada em memória, sem buffering ilimitado).
+	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 0, 4*1024), maxResponseBytes)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return classifyResponse{}, fmt.Errorf("falha ao ler a resposta do worker: %w", err)
+		}
+		return classifyResponse{}, fmt.Errorf("resposta do worker vazia")
 	}
 
 	var resp classifyResponse
-	if err := json.Unmarshal(line, &resp); err != nil {
+	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
 		return classifyResponse{}, fmt.Errorf("falha ao interpretar a resposta do worker: %w", err)
 	}
 	return resp, nil
