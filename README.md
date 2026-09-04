@@ -44,6 +44,8 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 
 - [ ] Atualizar Pacotes
 - [ ] Implementar Testes até 80% Coverage
+- [ ] Instalação do moderation worker integrado no server.
+- [ ] Bootstrap do servidor através de arquivo boot.strap
 - [ ] Hashed Resync para conexão instável
 - [ ] Mais informação no endpoint conexão
 - [ ] Refactor endpoints (organizar melhor /admin, /messages)
@@ -57,6 +59,9 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [ ] Moderação de vídeos
 - [ ] Threads
 - [ ] Eventos
+
+### E Além...
+
 - [ ] Estudo viabilidade WebTransport 
 - [ ] Estudo viabilidade E2EE WebRTC
 - [ ] Suporte NoSQL ou particionamento pg
