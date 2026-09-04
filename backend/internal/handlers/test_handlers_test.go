@@ -2648,6 +2648,109 @@ func TestRemoveUserRoleRouteUserNotFound(t *testing.T) {
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "usuário não encontrado")
 }
 
+// --- role_add / role_remove (websocket) ---
+
+// TestAssignUserRoleBroadcastsRoleAdd garante que atribuir uma role a um
+// usuário via POST /users/:user_id/roles distribui o evento role_add
+// ({user_id, role_id}) aos clientes websocket conectados.
+func TestAssignUserRoleBroadcastsRoleAdd(t *testing.T) {
+	e := newApp()
+	cfg := config.LoadConfig()
+	RegisterWebSocketRoutes(e, cfg)
+	go websocket.GetHub().Run()
+
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	ownerID, ownerToken := registerAndLogin(t, e)
+	targetID, _ := registerAndLogin(t, e)
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{})
+
+	header := http.Header{}
+	header.Set(echo.HeaderCookie, "Auth="+ownerToken)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+	conn, _, err := ws.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("falha ao abrir conexão websocket: %v", err)
+	}
+	defer conn.Close()
+
+	// primeiro evento: presence_sync da própria conexão
+	readWSMessage(t, conn)
+
+	body, _ := json.Marshal(map[string]string{"role_id": role.ID})
+	rec := do(t, e, http.MethodPost, "/users/"+targetID+"/roles", body, authCookie(ownerToken))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	assertRoleEvent(t, conn, "role_add", targetID, role.ID)
+}
+
+// TestRemoveUserRoleBroadcastsRoleRemove garante que remover a role de um
+// usuário via DELETE /users/:user_id/roles/:role_id distribui o evento
+// role_remove ({user_id, role_id}) aos clientes websocket conectados.
+func TestRemoveUserRoleBroadcastsRoleRemove(t *testing.T) {
+	e := newApp()
+	cfg := config.LoadConfig()
+	RegisterWebSocketRoutes(e, cfg)
+	go websocket.GetHub().Run()
+
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	ownerID, ownerToken := registerAndLogin(t, e)
+	targetID, _ := registerAndLogin(t, e)
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{})
+	assignRoleToUser(t, targetID, role.ID)
+
+	header := http.Header{}
+	header.Set(echo.HeaderCookie, "Auth="+ownerToken)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+	conn, _, err := ws.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("falha ao abrir conexão websocket: %v", err)
+	}
+	defer conn.Close()
+
+	// primeiro evento: presence_sync da própria conexão
+	readWSMessage(t, conn)
+
+	rec := do(t, e, http.MethodDelete, "/users/"+targetID+"/roles/"+role.ID, nil, authCookie(ownerToken))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava status 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	assertRoleEvent(t, conn, "role_remove", targetID, role.ID)
+}
+
+// assertRoleEvent lê a próxima mensagem websocket e valida o evento de role
+// (type, user_id e role_id).
+func assertRoleEvent(t *testing.T, conn *ws.Conn, eventType, userID, roleID string) {
+	t.Helper()
+	data := readWSMessage(t, conn)
+
+	var event struct {
+		Type   string `json:"type"`
+		UserID string `json:"user_id"`
+		RoleID string `json:"role_id"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		t.Fatalf("falha ao decodificar evento: %v", err)
+	}
+	if event.Type != eventType {
+		t.Fatalf("esperava tipo %s, obtive %q (corpo: %s)", eventType, event.Type, data)
+	}
+	if event.UserID != userID {
+		t.Errorf("esperava user_id %s, obtive %s", userID, event.UserID)
+	}
+	if event.RoleID != roleID {
+		t.Errorf("esperava role_id %s, obtive %s", roleID, event.RoleID)
+	}
+}
+
 // --- rotas de mensagens (tarefa 7.2) ---
 
 // TestListMessagesRouteWithAuth garante que GET /channels/:channel_id/messages

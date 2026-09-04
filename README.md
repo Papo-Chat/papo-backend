@@ -240,6 +240,7 @@ Autenticação via o mesmo cookie `Auth` da API REST, validado no handshake.
 | `presence_update` | outbound (delta) |
 | `user_join` | outbound |
 | `avatar_update` | outbound |
+| `role_add`, `role_remove` | outbound |
 | `reaction_update` | outbound |
 | `heartbeat` / `heartbeat_ack` | inbound / outbound |
 | `error` | outbound |

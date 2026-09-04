@@ -29,6 +29,8 @@ const (
 	EventTypeUserJoin        EventType = "user_join"
 	EventTypeReactUpdate     EventType = "react_update"
 	EventTypeNewNotification EventType = "new_notification"
+	EventTypeRoleAdd         EventType = "role_add"
+	EventTypeRoleRemove      EventType = "role_remove"
 	// EventTypeAttachmentModerationUpdate é o evento de mudança de estado da
 	// moderação assíncrona de um attachment de imagem (sensitive; o blocked
 	// chega como message_delete, pois a mensagem inteira é excluída).
@@ -203,6 +205,22 @@ type PresenceUpdateOutbound struct {
 type UserJoinOutbound struct {
 	Type   EventType `json:"type"`
 	UserID string    `json:"user_id"`
+}
+
+// RoleAddOutbound é o evento de atribuição de role a um usuário
+// (POST /users/:user_id/roles), distribuído aos clientes conectados.
+type RoleAddOutbound struct {
+	Type   EventType `json:"type"`
+	UserID string    `json:"user_id"`
+	RoleID string    `json:"role_id"`
+}
+
+// RoleRemoveOutbound é o evento de remoção de role de um usuário
+// (DELETE /users/:user_id/roles/:role_id), distribuído aos clientes conectados.
+type RoleRemoveOutbound struct {
+	Type   EventType `json:"type"`
+	UserID string    `json:"user_id"`
+	RoleID string    `json:"role_id"`
 }
 
 // PresenceSyncOutbound é a lista de membros online enviada ao cliente no

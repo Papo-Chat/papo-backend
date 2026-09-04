@@ -8,6 +8,7 @@ import (
 	"papo/internal/models"
 	"papo/internal/services"
 	"papo/internal/utils"
+	"papo/internal/websocket"
 
 	"github.com/labstack/echo/v4"
 )
@@ -199,6 +200,13 @@ func AssignUserRoleHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao atribuir a role")
 	}
 
+	// Notifica os clientes conectados da atribuição da role (role_add).
+	websocket.GetHub().Broadcast(websocket.RoleAddOutbound{
+		Type:   websocket.EventTypeRoleAdd,
+		UserID: userID,
+		RoleID: req.RoleID,
+	})
+
 	return c.JSON(http.StatusCreated, userRole)
 }
 
@@ -241,6 +249,13 @@ func RemoveUserRoleHandler(baseURL string, c echo.Context) error {
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
 			"internal", "Erro interno", "falha ao remover a role do usuário")
 	}
+
+	// Notifica os clientes conectados da remoção da role (role_remove).
+	websocket.GetHub().Broadcast(websocket.RoleRemoveOutbound{
+		Type:   websocket.EventTypeRoleRemove,
+		UserID: userID,
+		RoleID: roleID,
+	})
 
 	return c.NoContent(http.StatusNoContent)
 }

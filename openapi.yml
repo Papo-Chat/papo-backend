@@ -1877,6 +1877,8 @@ paths:
         | `typing`         | outbound  | `{ type: "typing", channel_id, user_id, is_typing }`                                    |
         | `avatar_update`  | outbound  | `{ type: "avatar_update", user_id }`                                                    |
         | `user_join`      | outbound  | `{ type: "user_join", user_id }`                                                        |
+        | `role_add`       | outbound  | `{ type: "role_add", user_id, role_id }` (role atribuída ao usuário)                     |
+        | `role_remove`    | outbound  | `{ type: "role_remove", user_id, role_id }` (role removida do usuário)                   |
         | `presence_update`| outbound  | `{ type: "presence_update", user_id, status, status_message, nickname }` (status: online/offline/away/busy) |
         | `presence_sync  `| unicast   | `{ type: "presence_sync", members: (user_id, status, status_message, nickname)[] }` (status: online/offline/away/busy) |
         | `heartbeat`      | inbound   | `{ type: "heartbeat" }`                                                                 |

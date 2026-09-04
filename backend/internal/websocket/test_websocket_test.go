@@ -516,6 +516,8 @@ func TestEventTypeIsInbound(t *testing.T) {
 		{"presence_update", EventTypePresenceUpdate, false},
 		{"presence_sync", EventTypePresenceSync, false},
 		{"user_join", EventTypeUserJoin, false},
+		{"role_add", EventTypeRoleAdd, false},
+		{"role_remove", EventTypeRoleRemove, false},
 		{"heartbeat_ack", EventTypeHeartbeatAck, false},
 		{"error", EventTypeError, false},
 		{"vazio", EventType(""), false},
