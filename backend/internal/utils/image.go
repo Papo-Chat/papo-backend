@@ -7,16 +7,17 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/color/palette"
+	stddraw "image/draw"
 	"image/gif"
-	_ "image/jpeg" // registra decoder JPEG para image.Decode/DecodeConfig
-	_ "image/png"  // registra decoder PNG para image.Decode/DecodeConfig
-	"math"
+	_ "image/jpeg"
+	_ "image/png"
 	"net/http"
 	"time"
 
 	"papo/internal/config"
 
-	"github.com/deepteams/webp" // encoder + decoder WebP (pure Go)
+	"github.com/deepteams/webp"
 	"golang.org/x/image/draw"
 )
 
@@ -161,100 +162,231 @@ func staticGIFFallback(content []byte, maxDim int) ([]byte, string, int, int, er
 // Antes de decodificar frames, um walker de blocos conta os frames e soma a
 // área dos sub-rectângulos (sem decodificar pixels): bloqueia frame bomb e
 // limita a memória de gif.DecodeAll (que retém todos os frames).
-func generateGIFThumbnail(content []byte, maxDim int, ctx context.Context) ([]byte, string, int, int, error) {
-	delays, totalArea, ok := gifFrameInfo(content)
-	if !ok || len(delays) == 0 {
-		// Malformado: tenta o frame 0 (best-effort).
+func generateGIFThumbnail(
+	content []byte,
+	maxDim int,
+	ctx context.Context,
+) ([]byte, string, int, int, error) {
+	// Mantém o pre-check barato antes de gif.DecodeAll.
+	_, totalArea, ok := gifFrameInfo(content)
+	if !ok {
 		return staticGIFFallback(content, maxDim)
 	}
-	if len(delays) == 1 {
-		// GIF estático (1 frame) → caminho WebP.
+
+	if totalArea > int64(config.LoadConfig().ThumbnailMaxPixels) {
 		return staticGIFFallback(content, maxDim)
 	}
-	if len(delays) > MaxGIFFrames || totalArea > int64(config.LoadConfig().ThumbnailMaxPixels) {
-		// Frame bomb / teto de memória → fallback estático do frame 0.
-		return staticGIFFallback(content, maxDim)
+
+	if ctx.Err() != nil {
+		return nil, "", 0, 0, ctx.Err()
 	}
 
 	g, err := gif.DecodeAll(bytes.NewReader(content))
-	if err != nil || ctx.Err() != nil {
-		return staticGIFFallback(content, maxDim)
-	}
-	if len(g.Image) != len(delays) {
+	if err != nil {
 		return staticGIFFallback(content, maxDim)
 	}
 
-	W, H := g.Config.Width, g.Config.Height
+	if len(g.Image) == 0 {
+		return staticGIFFallback(content, maxDim)
+	}
+
+	if len(g.Image) == 1 {
+		return staticGIFFallback(content, maxDim)
+	}
+
+	if len(g.Image) > MaxGIFFrames {
+		return staticGIFFallback(content, maxDim)
+	}
+
+	W := g.Config.Width
+	H := g.Config.Height
 	if W <= 0 || H <= 0 {
 		return staticGIFFallback(content, maxDim)
 	}
-	TW, TH, changed := scaleTarget(W, H, maxDim)
 
-	scaled := make([]*image.Paletted, 0, len(g.Image))
-	if changed {
-		sx := float64(TW) / float64(W)
-		sy := float64(TH) / float64(H)
-		for _, f := range g.Image {
-			if ctx.Err() != nil {
-				return staticGIFFallback(content, maxDim)
-			}
-			rb := f.Bounds()
-			x0 := int(math.Round(float64(rb.Min.X) * sx))
-			y0 := int(math.Round(float64(rb.Min.Y) * sy))
-			x1 := int(math.Round(float64(rb.Max.X) * sx))
-			y1 := int(math.Round(float64(rb.Max.Y) * sy))
-			if x0 < 0 {
-				x0 = 0
-			}
-			if y0 < 0 {
-				y0 = 0
-			}
-			if x1 > TW {
-				x1 = TW
-			}
-			if y1 > TH {
-				y1 = TH
-			}
-			if x1-x0 < 1 {
-				x0, x1 = TW-1, TW
-			}
-			if y1-y0 < 1 {
-				y0, y1 = TH-1, TH
-			}
-			dst := image.NewPaletted(image.Rect(x0, y0, x1, y1), f.Palette)
-			// Preenche com o índice transparente (se houver): image.NewPaletted
-			// inicializa com índice 0, que pode ser uma cor opaca.
-			if ti := transparentPaletteIndex(f.Palette); ti >= 0 {
-				for p := range dst.Pix {
-					dst.Pix[p] = byte(ti)
-				}
-			}
-			draw.CatmullRom.Scale(dst, dst.Bounds(), f, rb, draw.Over, nil)
-			scaled = append(scaled, dst)
+	TW, TH, _ := scaleTarget(W, H, maxDim)
+
+	// Canvas lógico do GIF.
+	//
+	// É importante compor os frames originais ANTES do resize:
+	// frames GIF frequentemente representam apenas o delta em relação
+	// ao frame anterior.
+	canvas := image.NewNRGBA(image.Rect(0, 0, W, H))
+
+	frames := make([]*image.Paletted, 0, len(g.Image))
+	delays := make([]int, 0, len(g.Image))
+	disposals := make([]byte, 0, len(g.Image))
+
+	pal := gifThumbnailPalette()
+
+	for i, frame := range g.Image {
+		if ctx.Err() != nil {
+			return nil, "", 0, 0, ctx.Err()
 		}
-	} else {
-		scaled = g.Image
+
+		var disposal byte
+		if i < len(g.Disposal) {
+			disposal = g.Disposal[i]
+		}
+
+		// DisposalPrevious precisa do estado ANTES de desenhar
+		// o frame atual.
+		var previous *image.NRGBA
+		if disposal == gif.DisposalPrevious {
+			previous = cloneNRGBA(canvas)
+		}
+
+		frameRect := frame.Bounds().Intersect(canvas.Bounds())
+
+		if !frameRect.Empty() {
+			// Os Bounds() do frame GIF já estão nas coordenadas
+			// do logical screen.
+			stddraw.Draw(
+				canvas,
+				frameRect,
+				frame,
+				frameRect.Min,
+				stddraw.Over,
+			)
+		}
+
+		// Neste ponto canvas representa exatamente a imagem que
+		// deveria estar visível para este frame.
+
+		var scaled *image.NRGBA
+
+		if TW == W && TH == H {
+			scaled = cloneNRGBA(canvas)
+		} else {
+			scaled = image.NewNRGBA(image.Rect(0, 0, TW, TH))
+
+			draw.CatmullRom.Scale(
+				scaled,
+				scaled.Bounds(),
+				canvas,
+				canvas.Bounds(),
+				draw.Src,
+				nil,
+			)
+		}
+
+		// Cada frame da thumbnail passa a ser um frame COMPLETO.
+		// Isso elimina erros causados por resize de sub-retângulos.
+		outFrame := image.NewPaletted(
+			image.Rect(0, 0, TW, TH),
+			pal,
+		)
+
+		stddraw.Draw(
+			outFrame,
+			outFrame.Bounds(),
+			scaled,
+			scaled.Bounds().Min,
+			stddraw.Src,
+		)
+
+		frames = append(frames, outFrame)
+
+		delay := 10
+		if i < len(g.Delay) {
+			delay = g.Delay[i]
+			if delay <= 0 {
+				delay = 10
+			}
+		}
+		delays = append(delays, delay)
+
+		// Como cada frame produzido é full-frame, limpamos o canvas
+		// da thumbnail após cada frame. Assim o próximo frame não
+		// depende do anterior.
+		disposals = append(disposals, gif.DisposalBackground)
+
+		// Agora aplica o disposal ORIGINAL para obter corretamente
+		// o canvas usado na composição do próximo frame.
+		switch disposal {
+		case gif.DisposalBackground:
+			if !frameRect.Empty() {
+				stddraw.Draw(
+					canvas,
+					frameRect,
+					image.Transparent,
+					image.Point{},
+					stddraw.Src,
+				)
+			}
+
+		case gif.DisposalPrevious:
+			if previous != nil {
+				canvas = previous
+			}
+
+		case gif.DisposalNone, 0:
+			// Mantém canvas como está.
+		}
 	}
 
 	out := &gif.GIF{
-		Image:           scaled,
-		Delay:           delays,
-		Disposal:        g.Disposal,
-		LoopCount:       g.LoopCount,
-		Config:          image.Config{Width: TW, Height: TH},
-		BackgroundIndex: g.BackgroundIndex,
+		Image:     frames,
+		Delay:     delays,
+		Disposal:  disposals,
+		LoopCount: g.LoopCount,
+		Config: image.Config{
+			ColorModel: pal,
+			Width:      TW,
+			Height:     TH,
+		},
+
+		// Índice 0 da nossa palette é transparente.
+		BackgroundIndex: 0,
 	}
+
 	var buf bytes.Buffer
 	if err := gif.EncodeAll(&buf, out); err != nil {
 		return staticGIFFallback(content, maxDim)
 	}
+
 	thumb := buf.Bytes()
+
 	if len(thumb) > MaxGIFThumbSize {
 		return staticGIFFallback(content, maxDim)
 	}
 
-	// Dimensões do canvas (não do sub-rectângulo do frame 0).
 	return thumb, "image/gif", TW, TH, nil
+}
+
+func cloneNRGBA(src *image.NRGBA) *image.NRGBA {
+	dst := image.NewNRGBA(src.Bounds())
+
+	for y := src.Bounds().Min.Y; y < src.Bounds().Max.Y; y++ {
+		srcOff := src.PixOffset(src.Bounds().Min.X, y)
+		dstOff := dst.PixOffset(dst.Bounds().Min.X, y)
+
+		n := src.Bounds().Dx() * 4
+		copy(dst.Pix[dstOff:dstOff+n], src.Pix[srcOff:srcOff+n])
+	}
+
+	return dst
+}
+
+func gifThumbnailPalette() color.Palette {
+	// Deixamos o índice 0 reservado para transparência.
+	p := make(color.Palette, 0, 256)
+	p = append(p, color.NRGBA{R: 0, G: 0, B: 0, A: 0})
+
+	for _, c := range palette.Plan9 {
+		if len(p) >= 256 {
+			break
+		}
+
+		_, _, _, a := c.RGBA()
+		if a == 0 {
+			continue
+		}
+
+		p = append(p, c)
+	}
+
+	return p
 }
 
 // transparentPaletteIndex retorna o índice da entrada transparente
@@ -306,7 +438,7 @@ func gifFrameInfo(content []byte) (delays []int, totalArea int64, ok bool) {
 					current = delay
 				}
 				i += 8 // 0x21 0xF9 0x04 + packed + delay(2) + transparent + 0x00
-			case 0x01, 0xFF: // comment / application extension: pula sub-blocks
+			case 0x01, 0xFE, 0xFF: // text/ comment / application extension: pula sub-blocks
 				i += 2
 				if !skipSubBlocks(content, &i) {
 					return nil, 0, false
