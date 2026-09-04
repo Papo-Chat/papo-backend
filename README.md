@@ -15,6 +15,7 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - **JWT** + **Bcrypt** — autenticação
 - **Goose** — migrations
 - **Logrus** — logging
+- **Pion** - WebRTC
 - **Go Puro** - Sem cgo ou microserviços, binário leve e focado em rodar com o mínimo de recursos possível.
 
 ## Roadmap (V1)
@@ -38,7 +39,7 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Fortificar Auth (Refresh Token)
 - [x] Suporte Cloudflare
 - [x] Detecção e moderação de imagens com conteúdo sensível
-- [ ] Suporte WebRTC (Audio, Video, Transmissão)
+- [x] Suporte WebRTC (Audio, Video, Transmissão)
 - [ ] Adicionar suporte nos endpoints com upload de imagens (avatar, banner, server icon e emoji) para WebP e JPG. (adicionar suporte a esses formatos a thumbnails nos attachments também)
 - [ ] Implementar ws event: outbound link_preview_update {channel_id, message_id, preview:{preview_object} } (somente usuarios com permissão para ver canal)
 
@@ -116,6 +117,7 @@ backend/
 - **Manutenção Automática** Crons autônomas que visam limpar e corrigir estados inválidos do servidor.
 - **Logging** Logs de interações dos usuários que visa cumprir LGPD e GDRP, sem log explicito de IP e com limpeza frequente. 
 - **Moderação Automática Robusta** Bloqueio de conteúdo inaquado usando state-of-art reconhecimento de imagens com IA local.
+- **Suporte a WebRTC** Áudio, Vídeo e Screenshare, ainda em estado de maturação, mas implementado com boas práticas.
 
 ## Pré-requisitos:
 * Go 1.21+, Docker (para o Postgres), [Goose](https://github.com/pressly/goose).
@@ -206,11 +208,19 @@ MODERATION_GORE_THRESHOLD=0.8
 # se usar python env tem que configurar para o endereço do python do env
 #MODERATION_WORKER_COMMAND=moderation_worker/<env>/bin/python3
 MODERATION_WORKER_COMMAND=python3
+
+# Voz/câmera (SFU embutido). Sem TURN_URLS a sala usa só STUN (funciona em
+# redes sem NAT restritivo); com TURN_URLS o TURN_SECRET (HMAC, ≥ 32 bytes)
+# é obrigatório para gerar credenciais efêmeras (RFC 5389).
+STUN_URLS=stun:stun.l.google.com:19302
+TURN_URLS=
+TURN_SECRET=
 ```
 
 ## API
 
 Esquema completo em [`openapi.yml`](./openapi.yml).
+Esquema contém também os events de audio e vídeo.
 
 | Recurso | Endpoints principais |
 |---|---|
@@ -253,9 +263,9 @@ Presença e digitação são estado efêmero, mantido só em memória — nunca 
 ## Segurança
 
 - Validação de arquivo por magic number, nunca por extensão ou `Content-Type` declarado
-- Rate limiting por IP e usuário
+- Rate limiting por IP e usuário em todos os endpoints
 - Permission checks por role em cada endpoint sensível
-- Proteção contra SSRF em qualquer request de saída (link preview)
+- Proteção contra SSRF em qualquer request de saída 
 - Hook plugável para verificação de CSAM (recomendação padrão: Cloudflare CSAM Scanning Tool)
 - Proteção contra sequestro de cookies (Refresh Token)
 - Suporte a Cloudflare Proxy

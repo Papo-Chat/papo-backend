@@ -1,0 +1,575 @@
+package webrtc
+
+import (
+	"sync"
+
+	"papo/internal/models"
+
+	"github.com/pion/rtcp"
+	"github.com/pion/webrtc/v4"
+)
+
+// trackRole classifica as m-lines de vídeo/áudio do offer do cliente. A
+// primeira m-line de vídeo é a câmera; a segunda (quando existe) é o screen
+// share (seção 5.6 — determinístico, sem depender de label).
+type trackRole int
+
+const (
+	roleAudio trackRole = iota
+	roleCamera
+	roleScreen
+)
+
+// Peer é a PeerConnection de um usuário em uma sala (D10: 1 peer por usuário
+// por sala, não por conexão WS). A PC só existe após o primeiro voice_offer.
+//
+// Disciplina de lock: p.mu protege o estado do peer (tracks, slots, estado de
+// voz, pc). NUNCA segurar p.mu durante chamadas de PC do pion
+// (SetRemoteDescription/CreateAnswer/SetLocalDescription/AddTransceiverFromTrack)
+// nem durante chamadas do signaler (SendToUser/BroadcastToUsers) — essas são
+// feitas com p.mu solto. O worker de renegociação é sequencial por PC (D4), o
+// que serializa o signaling sem p.mu.
+type Peer struct {
+	m      *Manager
+	room   *Room
+	userID string
+
+	mu     sync.Mutex
+	pc     *webrtc.PeerConnection
+	closed bool
+
+	// tracks recebidas (cliente → servidor)
+	audioTrack  *webrtc.TrackRemote
+	videoTrack  *webrtc.TrackRemote // câmera
+	screenTrack *webrtc.TrackRemote // screen share
+	audioSSRC   uint32              // SSRC da track de áudio (registro p/ active speaker)
+
+	midRole map[string]trackRole // mid da m-line → papel (do offer atual)
+
+	// slots de envio (servidor → cliente): N vídeo + K áudio (D5)
+	videoSlots []*slot
+	audioSlots []*slot
+
+	// estado de voz (o que a UI precisa)
+	muted         bool
+	cameraOn      bool
+	screenSharing bool
+	audioSet      []string // top-K de áudio atual (p/ detecção de mudança)
+
+	// fila de renegociação (D4): worker sequencial por PC
+	renegQueue chan func() error
+	renegStop  chan struct{}
+}
+
+// newPeer cria o peer sem PeerConnection (a PC nasce no primeiro
+// voice_offer) e inicia o worker de renegociação.
+func newPeer(m *Manager, room *Room, userID string) *Peer {
+	p := &Peer{
+		m:          m,
+		room:       room,
+		userID:     userID,
+		midRole:    make(map[string]trackRole),
+		renegQueue: make(chan func() error, 16),
+		renegStop:  make(chan struct{}),
+	}
+	go p.renegWorker()
+	return p
+}
+
+// renegWorker processa a fila de renegociação sequencialmente (D4 — pion não
+// serializa CreateOffer/SetLocalDescription/SetRemoteDescription).
+func (p *Peer) renegWorker() {
+	for {
+		select {
+		case <-p.renegStop:
+			return
+		case fn := <-p.renegQueue:
+			if err := fn(); err != nil {
+				// Renegociação falhou: o cliente vê o erro e pode tentar de novo.
+			}
+		}
+	}
+}
+
+// enqueue adiciona uma operação de signaling à fila do peer (não bloqueia).
+func (p *Peer) enqueue(fn func() error) error {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return ErrVoiceRoomClosed
+	}
+	p.mu.Unlock()
+	select {
+	case p.renegQueue <- fn:
+		return nil
+	default:
+		return ErrVoiceRateLimited
+	}
+}
+
+// PC retorna a PeerConnection (nil antes do primeiro offer).
+func (p *Peer) PC() *webrtc.PeerConnection {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.pc
+}
+
+// ensurePC cria a PeerConnection na primeira vez (o worker de renegociação é
+// sequencial, então não há corrida na criação). Retorna false se o peer
+// fechou.
+func (p *Peer) ensurePC() bool {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return false
+	}
+	existing := p.pc
+	p.mu.Unlock()
+	if existing != nil {
+		return true
+	}
+
+	pc, err := p.m.api.NewPeerConnection(webrtc.Configuration{
+		ICEServers: p.m.iceServers(),
+	})
+	if err != nil {
+		return false
+	}
+	p.setupPCEvents(pc)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		_ = pc.Close()
+		return false
+	}
+	p.pc = pc
+	return true
+}
+
+// handleOffer processa a oferta SDP do cliente (join, screen share ou mais
+// slots) e responde com voice_answer + trickle ICE.
+func (p *Peer) handleOffer(sdp string) error {
+	if !p.ensurePC() {
+		return ErrVoiceRoomClosed
+	}
+	pc := p.PC()
+	if pc == nil {
+		return ErrVoiceNotFound
+	}
+
+	// Atualiza o mapa mid → papel ANTES do SetRemoteDescription (OnTrack só
+	// dispara após ICE/DTLS, mas o mapa já deve estar correto).
+	p.mu.Lock()
+	p.midRole = parseMidRoles(sdp)
+	firstOffer := len(p.videoSlots) == 0 && len(p.audioSlots) == 0
+	screenRemoved := p.screenTrack != nil && !hasRole(p.midRole, roleScreen)
+	p.mu.Unlock()
+
+	if err := pc.SetRemoteDescription(webrtc.SessionDescription{
+		Type: webrtc.SDPTypeOffer,
+		SDP:  sdp,
+	}); err != nil {
+		return err
+	}
+
+	if firstOffer {
+		if err := p.allocateSlots(); err != nil {
+			return err
+		}
+	} else if screenRemoved {
+		p.mu.Lock()
+		p.screenTrack = nil
+		p.mu.Unlock()
+		p.releaseKind("screen")
+	}
+
+	answer, err := pc.CreateAnswer(nil)
+	if err != nil {
+		return err
+	}
+	if err := pc.SetLocalDescription(answer); err != nil {
+		return err
+	}
+
+	// voice_answer (unicast) — p.mu solto.
+	p.m.signaler.SendToUser(p.userID, VoiceAnswer{
+		Type:      EventTypeVoiceAnswer,
+		ChannelID: p.room.channelID,
+		SDP:       answer.SDP,
+	})
+	return nil
+}
+
+// handleAnswer processa a resposta SDP do cliente a uma renegociação
+// iniciada pelo servidor.
+func (p *Peer) handleAnswer(sdp string) error {
+	pc := p.PC()
+	if pc == nil {
+		return ErrVoiceNotFound
+	}
+	return pc.SetRemoteDescription(webrtc.SessionDescription{
+		Type: webrtc.SDPTypeAnswer,
+		SDP:  sdp,
+	})
+}
+
+// addICECandidate entrega um candidate trickle de ICE do cliente à PC.
+func (p *Peer) addICECandidate(candidate, sdpMid string, sdpMLineIndex int) error {
+	pc := p.PC()
+	if pc == nil {
+		return ErrVoiceNotFound
+	}
+	return pc.AddICECandidate(toICECandidateInit(candidate, sdpMid, sdpMLineIndex))
+}
+
+// setupPCEvents liga os callbacks da PeerConnection. Os callbacks podem ser
+// disparados por goroutines do pion; eles adquirem p.mu (nunca o inverso).
+func (p *Peer) setupPCEvents(pc *webrtc.PeerConnection) {
+	pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		mid := ""
+		if tc := receiver.RTPTransceiver(); tc != nil {
+			mid = tc.Mid()
+		}
+		p.onIncomingTrack(track, mid)
+	})
+
+	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
+		if candidate == nil {
+			return
+		}
+		init := candidate.ToJSON()
+		p.m.signaler.SendToUser(p.userID, VoiceICECandidate{
+			Type:          EventTypeVoiceICECandidate,
+			ChannelID:     p.room.channelID,
+			Candidate:     init.Candidate,
+			SDPMid:        init.SDPMid,
+			SDPMLineIndex: intFromU16Ptr(init.SDPMLineIndex),
+		})
+	})
+
+	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		switch state {
+		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			// A última conexão caiu: remove o peer da sala (libera slots,
+			// notifica os leitores). disconnected → aguarda recuperação.
+			p.room.removePeer(p.userID)
+		}
+	})
+}
+
+// onIncomingTrack classifica a track recebida (pelo mid) e a armazena. O
+// registro do SSRC (active speaker) é feito SEM p.mu para não criar o ciclo
+// de lock p.mu → m.ssrcMu → r.mu → p.mu.
+func (p *Peer) onIncomingTrack(track *webrtc.TrackRemote, mid string) {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	var newSSRC, oldSSRC uint32
+	switch p.midRole[mid] {
+	case roleAudio:
+		p.audioTrack = track
+		newSSRC = uint32(track.SSRC())
+		oldSSRC = p.audioSSRC
+		p.audioSSRC = newSSRC
+	case roleCamera:
+		p.videoTrack = track
+	case roleScreen:
+		p.screenTrack = track
+	}
+	p.mu.Unlock()
+
+	if newSSRC != 0 {
+		p.m.registerSSRC(newSSRC, p.room, p.userID)
+		if oldSSRC != 0 && oldSSRC != newSSRC {
+			p.m.unregisterSSRC(oldSSRC)
+		}
+	}
+}
+
+// allocateSlots cria os slots de envio (N vídeo + K áudio) com tracks
+// placeholder (D5). As chamadas AddTransceiverFromTrack são feitas SEM p.mu;
+// as slices de slots são publicadas sob p.mu ao final.
+func (p *Peer) allocateSlots() error {
+	pc := p.PC()
+	if pc == nil {
+		return ErrVoiceNotFound
+	}
+	n := p.m.cfg.VoiceVideoSlots
+	k := p.m.cfg.VoiceAudioSlots
+	videoCodec := p.m.api.videoCodec.RTPCodecCapability
+	audioCodec := webrtc.RTPCodecCapability{
+		MimeType:  webrtc.MimeTypeOpus,
+		ClockRate: 48000,
+		Channels:  2,
+	}
+
+	videoSlots := make([]*slot, 0, n)
+	for i := 0; i < n; i++ {
+		track, err := webrtc.NewTrackLocalStaticRTP(videoCodec, "papo", "papo-video")
+		if err != nil {
+			return err
+		}
+		t, err := pc.AddTransceiverFromTrack(track, webrtc.RTPTransceiverInit{
+			Direction: webrtc.RTPTransceiverDirectionSendonly,
+		})
+		if err != nil {
+			return err
+		}
+		videoSlots = append(videoSlots, &slot{peer: p, sender: t.Sender(), local: track})
+	}
+
+	audioSlots := make([]*slot, 0, k)
+	for i := 0; i < k; i++ {
+		track, err := webrtc.NewTrackLocalStaticRTP(audioCodec, "papo", "papo-audio")
+		if err != nil {
+			return err
+		}
+		t, err := pc.AddTransceiverFromTrack(track, webrtc.RTPTransceiverInit{
+			Direction: webrtc.RTPTransceiverDirectionSendonly,
+		})
+		if err != nil {
+			return err
+		}
+		audioSlots = append(audioSlots, &slot{peer: p, sender: t.Sender(), local: track})
+	}
+
+	p.mu.Lock()
+	p.videoSlots = videoSlots
+	p.audioSlots = audioSlots
+	p.mu.Unlock()
+	return nil
+}
+
+// trackOfKind retorna a track recebida do peer para o kind (video/screen/audio).
+func (p *Peer) trackOfKind(kind string) *webrtc.TrackRemote {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.trackOfKindLocked(kind)
+}
+
+func (p *Peer) trackOfKindLocked(kind string) *webrtc.TrackRemote {
+	switch kind {
+	case "video":
+		return p.videoTrack
+	case "screen":
+		return p.screenTrack
+	case "audio":
+		return p.audioTrack
+	}
+	return nil
+}
+
+// AudioTrack retorna a track de áudio (mic) do peer.
+func (p *Peer) AudioTrack() *webrtc.TrackRemote {
+	return p.trackOfKind("audio")
+}
+
+// hasActiveTrack indica se o peer está publicando a track do kind.
+func (p *Peer) hasActiveTrack(kind string) bool {
+	return p.trackOfKind(kind) != nil
+}
+
+// assignVideoSlot faz o subscriber começar a receber a track de vídeo/screen
+// do publisher em um slot de vídeo (D5). Sem slot livre → ErrVoiceRoomFull
+// (o caminho de renegociação para adicionar slot é raro/fase 2).
+func (p *Peer) assignVideoSlot(pub *Peer, kind string) error {
+	// Resolve a track e a PC do publisher ANTES de segurar p.mu (evita
+	// p.mu → pub.mu).
+	track := pub.trackOfKind(kind)
+	if track == nil {
+		return ErrVoiceNotFound
+	}
+	pubPC := pub.PC()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return ErrVoiceRoomClosed
+	}
+	slot := p.findVideoSlotFor(pub, kind)
+	if slot == nil {
+		return ErrVoiceRoomFull
+	}
+	slot.assign(pub, kind, track)
+	sendPLI(pubPC, track) // D7: keyframe na troca de conteúdo de slot de vídeo
+	return nil
+}
+
+// findVideoSlotFor retorna o slot para (owner, kind): o slot já ocupado por
+// (owner, kind) [reassign] ou um slot livre. Nil quando não há (o caller
+// segura peer.mu).
+func (p *Peer) findVideoSlotFor(owner *Peer, kind string) *slot {
+	for _, s := range p.videoSlots {
+		if s.owner == owner && s.kind == kind {
+			return s
+		}
+	}
+	for _, s := range p.videoSlots {
+		if s.owner == nil {
+			return s
+		}
+	}
+	return nil
+}
+
+// releaseVideoSlot para de forwardar a track do publisher (o slot fica vazio).
+func (p *Peer) releaseVideoSlot(pubID, kind string) {
+	pub := p.room.peer(pubID) // resolve ANTES de p.mu (evita p.mu → r.mu)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, s := range p.videoSlots {
+		if s.owner == pub && s.kind == kind {
+			s.release()
+		}
+	}
+}
+
+// releaseAllFrom libera todos os slots do subscriber que forwardam do
+// publisher (vídeo + áudio) — usado quando o publisher sai da sala.
+func (p *Peer) releaseAllFrom(pub *Peer) {
+	if pub == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, s := range p.videoSlots {
+		if s.owner == pub {
+			s.release()
+		}
+	}
+	for _, s := range p.audioSlots {
+		if s.owner == pub {
+			s.release()
+		}
+	}
+}
+
+// releaseKind libera todos os slots do kind (ex.: screen share encerrado).
+func (p *Peer) releaseKind(kind string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, s := range p.videoSlots {
+		if s.kind == kind {
+			s.release()
+		}
+	}
+}
+
+// setAudioSet atualiza o top-K de áudio do subscriber e sincroniza os slots.
+// owners e tracks já resolvidos pelo caller (room.tick, sob o lock da sala) —
+// evita p.mu → r.mu e p.mu → other.p.mu.
+func (p *Peer) setAudioSet(set []string, owners []*Peer, tracks []*webrtc.TrackRemote) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || sameStringSlice(set, p.audioSet) {
+		return
+	}
+	p.audioSet = set
+	for i, s := range p.audioSlots {
+		var owner *Peer
+		var track *webrtc.TrackRemote
+		if i < len(owners) {
+			owner = owners[i]
+			track = tracks[i]
+		}
+		if s.owner == owner && s.src == track {
+			continue
+		}
+		if owner == nil || track == nil {
+			s.release()
+			continue
+		}
+		s.assign(owner, "audio", track)
+	}
+}
+
+// sendPLI pede um keyframe ao publisher na troca de conteúdo de slot de vídeo
+// (D7). O PLI vai na PC do publisher, para o SSRC da track.
+func sendPLI(pc *webrtc.PeerConnection, track *webrtc.TrackRemote) {
+	if pc == nil || track == nil {
+		return
+	}
+	_ = pc.WriteRTCP([]rtcp.Packet{
+		&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())},
+	})
+}
+
+// state retorna o estado de voz do peer (p/ voice_joined e voice_state_update).
+func (p *Peer) state() models.VoiceState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return models.VoiceState{
+		UserID:        p.userID,
+		Muted:         p.muted,
+		CameraOn:      p.cameraOn,
+		ScreenSharing: p.screenSharing,
+	}
+}
+
+// updateState atualiza o estado de voz (campos nil não mudam) e retorna o
+// estado resultante.
+func (p *Peer) updateState(muted, cameraOn, screenSharing *bool) models.VoiceState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if muted != nil {
+		p.muted = *muted
+	}
+	if cameraOn != nil {
+		p.cameraOn = *cameraOn
+	}
+	if screenSharing != nil {
+		p.screenSharing = *screenSharing
+	}
+	return models.VoiceState{
+		UserID:        p.userID,
+		Muted:         p.muted,
+		CameraOn:      p.cameraOn,
+		ScreenSharing: p.screenSharing,
+	}
+}
+
+// close fecha a PeerConnection e para o worker de renegociação (idempotente).
+func (p *Peer) close() {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.closed = true
+	close(p.renegStop)
+	pc := p.pc
+	p.pc = nil
+	audioSSRC := p.audioSSRC
+	p.audioSSRC = 0
+	p.mu.Unlock()
+
+	if audioSSRC != 0 {
+		p.m.unregisterSSRC(audioSSRC)
+	}
+	if pc != nil {
+		_ = pc.Close()
+	}
+}
+
+// hasRole indica se o mapa mid→papel contém o papel.
+func hasRole(roles map[string]trackRole, role trackRole) bool {
+	for _, r := range roles {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
+// intFromU16Ptr converte *uint16 → *int (para o shape do voice_ice_candidate).
+func intFromU16Ptr(v *uint16) *int {
+	if v == nil {
+		return nil
+	}
+	i := int(*v)
+	return &i
+}

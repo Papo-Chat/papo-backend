@@ -24,6 +24,11 @@ type Hub struct {
 	// e permitir o encerramento ordenado das conexões.
 	shuttingDown bool
 	stopOnce     sync.Once
+
+	// onUserOffline é chamado quando a última conexão de um usuário cai
+	// (o usuário ficou offline). O main.go injeta o gancho do manager de voz
+	// (remove o peer das salas de voz). Nil = nada a fazer.
+	onUserOffline func(userID string)
 }
 
 // hub é o hub global de conexões WebSocket da aplicação.
@@ -298,13 +303,26 @@ func (h *Hub) presenceOnline(c *Client) {
 	})
 }
 
+// SetOnUserOffline injeta o gancho chamado quando a última conexão de um
+// usuário cai (o main.go liga o manager de voz para removê-lo das salas).
+func (h *Hub) SetOnUserOffline(fn func(userID string)) {
+	h.mu.Lock()
+	h.onUserOffline = fn
+	h.mu.Unlock()
+}
+
 // presenceOffline libera a conexão do cliente na presença. Quando esta era a
-// última conexão do usuário, notifica os clientes (presence_update offline).
+// última conexão do usuário, notifica os clientes (presence_update offline) e
+// dispara o gancho onUserOffline (ex.: remover o peer das salas de voz).
 func (h *Hub) presenceOffline(c *Client) {
 	nickname := h.presence.Nickname(c.userID)
 	if !h.presence.RemoveConnection(c.userID) {
 		return
 	}
+
+	h.mu.RLock()
+	onUserOffline := h.onUserOffline
+	h.mu.RUnlock()
 
 	h.Broadcast(PresenceUpdateOutbound{
 		Type:     EventTypePresenceUpdate,
@@ -312,6 +330,10 @@ func (h *Hub) presenceOffline(c *Client) {
 		Status:   StatusOffline,
 		Nickname: nickname,
 	})
+
+	if onUserOffline != nil {
+		onUserOffline(c.userID)
+	}
 }
 
 // UpdateStatusMessage atualiza o nickname e a mensagem de status de um

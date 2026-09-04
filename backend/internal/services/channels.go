@@ -7,6 +7,7 @@ import (
 
 	"papo/internal/models"
 	"papo/internal/storage"
+	"papo/internal/webrtc"
 )
 
 // ErrChannelNotFound indica que o canal não existe.
@@ -43,8 +44,8 @@ func ListChannels(ctx context.Context, userID string) ([]models.ChannelSummary, 
 
 // CreateChannel cria um novo canal
 // (README: o body de criação tem name, type e topic; type é opcional e padrão
-// "text", aceita "text" ou "category"; topic é opcional, máx 512 caracteres e
-// válido apenas para canais de texto).
+// "text", aceita "text", "category" ou "voice"; topic é opcional, máx 512
+// caracteres e válido apenas para canais de texto/voz).
 // Retorna ErrInvalidInput quando o nome está vazio ou acima de 32
 // caracteres, quando o type é inválido, quando o topic excede 512 caracteres
 // ou quando um canal category recebe topic, ErrChannelLimitReached quando o
@@ -54,7 +55,7 @@ func CreateChannel(ctx context.Context, actorID, name, channelType, topic string
 	if channelType == "" {
 		channelType = "text"
 	}
-	if channelType != "text" && channelType != "category" {
+	if channelType != "text" && channelType != "category" && channelType != "voice" {
 		return models.ChannelSummary{}, ErrInvalidInput
 	}
 	if name == "" || utf8.RuneCountInString(name) > maxChannelNameLength {
@@ -203,7 +204,9 @@ func ChangeChannelPosition(ctx context.Context, actorID, channelID string, oldPo
 }
 
 // DeleteChannel exclui um canal pelo id (README: 204 when successful).
-// Retorna ErrChannelNotFound quando o canal não existe.
+// Retorna ErrChannelNotFound quando o canal não existe. Canais de voz têm a
+// sala de voz destruída após a exclusão (webrtc.DestroyRoom — fecha as
+// PeerConnections e notifica os membros).
 func DeleteChannel(ctx context.Context, actorID, id string) error {
 	if id == "" {
 		return ErrChannelNotFound
@@ -229,6 +232,11 @@ func DeleteChannel(ctx context.Context, actorID, id string) error {
 		EntityType: EntityChannel,
 		EntityID:   &id,
 	})
+
+	// Derruba a sala de voz (se existir) — o manager é global e nil-safe.
+	if m := webrtc.GetManager(); m != nil {
+		m.DestroyRoom(id)
+	}
 
 	return nil
 }

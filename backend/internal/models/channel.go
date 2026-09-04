@@ -3,10 +3,13 @@ package models
 import "time"
 
 // ChannelPermission define as permissões de uma role em um canal (JSONB channel_permissions).
+// ConnectVoice é o direito de entrar em calls de voz em canais voice
+// (fail-closed: entry de role existente sem o campo = false).
 type ChannelPermission struct {
 	ReadChannel    bool `json:"read_channel"`
 	SendMessages   bool `json:"send_messages"`
 	DeleteMessages bool `json:"delete_messages"`
+	ConnectVoice   bool `json:"connect_voice"`
 }
 
 // Channel representa a tabela channels.

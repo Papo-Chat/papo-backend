@@ -31,6 +31,20 @@ const (
 	EventTypeNewNotification EventType = "new_notification"
 	EventTypeRoleAdd         EventType = "role_add"
 	EventTypeRoleRemove      EventType = "role_remove"
+	// Eventos de voz (canais type "voice" + SFU). Inbound: client → server.
+	// Outbound: voice_joined, voice_answer, voice_ice_candidate,
+	// voice_state_update, voice_leave, active_speaker_update.
+	EventTypeVoiceJoin         EventType = "voice_join"
+	EventTypeVoiceLeave        EventType = "voice_leave"
+	EventTypeVoiceOffer        EventType = "voice_offer"
+	EventTypeVoiceAnswer       EventType = "voice_answer"
+	EventTypeVoiceICECandidate EventType = "voice_ice_candidate"
+	EventTypeTrackSubscribe    EventType = "track_subscribe"
+	EventTypeTrackUnsubscribe  EventType = "track_unsubscribe"
+	EventTypeVoiceMute         EventType = "voice_mute"
+	EventTypeVoiceCamera       EventType = "voice_camera"
+	EventTypeScreenShareStart  EventType = "screen_share_start"
+	EventTypeScreenShareStop   EventType = "screen_share_stop"
 	// EventTypeAttachmentModerationUpdate é o evento de mudança de estado da
 	// moderação assíncrona de um attachment de imagem (sensitive; o blocked
 	// chega como message_delete, pois a mensagem inteira é excluída).
@@ -41,7 +55,12 @@ const (
 // servidor, conforme o contrato da API.
 func (t EventType) IsInbound() bool {
 	switch t {
-	case EventTypeTyping, EventTypeHeartbeat:
+	case EventTypeTyping, EventTypeHeartbeat,
+		EventTypeVoiceJoin, EventTypeVoiceLeave, EventTypeVoiceOffer,
+		EventTypeVoiceAnswer, EventTypeVoiceICECandidate,
+		EventTypeTrackSubscribe, EventTypeTrackUnsubscribe,
+		EventTypeVoiceMute, EventTypeVoiceCamera,
+		EventTypeScreenShareStart, EventTypeScreenShareStop:
 		return true
 	default:
 		return false
@@ -59,6 +78,87 @@ type TypingInbound struct {
 // HeartbeatInbound é o evento de keepalive enviado pelo cliente.
 type HeartbeatInbound struct {
 	Type EventType `json:"type"`
+}
+
+// Eventos inbound de voz (cliente -> servidor). O despachamento e a permissão
+// (connect_voice no join; membership nos demais) ficam em voice.go.
+
+// VoiceJoinInbound pede a entrada do usuário na sala de voz do canal.
+type VoiceJoinInbound struct {
+	Type      EventType `json:"type"`
+	ChannelID string    `json:"channel_id"`
+}
+
+// VoiceLeaveInbound pede a saída explícita do usuário da sala de voz.
+type VoiceLeaveInbound struct {
+	Type      EventType `json:"type"`
+	ChannelID string    `json:"channel_id"`
+}
+
+// VoiceOfferInbound é a oferta SDP do cliente (join, screen share, mais slots).
+type VoiceOfferInbound struct {
+	Type      EventType `json:"type"`
+	ChannelID string    `json:"channel_id"`
+	SDP       string    `json:"sdp"`
+}
+
+// VoiceAnswerInbound é a resposta SDP do cliente a uma renegociação do servidor.
+type VoiceAnswerInbound struct {
+	Type      EventType `json:"type"`
+	ChannelID string    `json:"channel_id"`
+	SDP       string    `json:"sdp"`
+}
+
+// VoiceICECandidateInbound é um candidate trickle de ICE do cliente.
+type VoiceICECandidateInbound struct {
+	Type          EventType `json:"type"`
+	ChannelID     string    `json:"channel_id"`
+	Candidate     string    `json:"candidate"`
+	SDPMid        *string   `json:"sdp_mid"`
+	SDPMLineIndex *int      `json:"sdp_mline_index"`
+}
+
+// TrackSubscribeInbound pede o forward da track de vídeo/screen do publisher.
+type TrackSubscribeInbound struct {
+	Type        EventType `json:"type"`
+	ChannelID   string    `json:"channel_id"`
+	PublisherID string    `json:"publisher_id"`
+	Kind        string    `json:"kind"`
+}
+
+// TrackUnsubscribeInbound para o forward da track de vídeo/screen do publisher.
+type TrackUnsubscribeInbound struct {
+	Type        EventType `json:"type"`
+	ChannelID   string    `json:"channel_id"`
+	PublisherID string    `json:"publisher_id"`
+	Kind        string    `json:"kind"`
+}
+
+// VoiceMuteInbound atualiza o estado do mic do usuário.
+type VoiceMuteInbound struct {
+	Type      EventType `json:"type"`
+	ChannelID string    `json:"channel_id"`
+	Muted     bool      `json:"muted"`
+}
+
+// VoiceCameraInbound atualiza o estado da câmera do usuário.
+type VoiceCameraInbound struct {
+	Type      EventType `json:"type"`
+	ChannelID string    `json:"channel_id"`
+	On        bool      `json:"on"`
+}
+
+// ScreenShareStartInbound marca o início do screen share (a track chega na
+// renegociação seguinte).
+type ScreenShareStartInbound struct {
+	Type      EventType `json:"type"`
+	ChannelID string    `json:"channel_id"`
+}
+
+// ScreenShareStopInbound marca o fim do screen share.
+type ScreenShareStopInbound struct {
+	Type      EventType `json:"type"`
+	ChannelID string    `json:"channel_id"`
 }
 
 // Eventos outbound (servidor -> cliente)

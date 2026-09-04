@@ -28,6 +28,7 @@ tags:
   - name: LinkPreviews
   - name: Search
   - name: Admin
+  - name: Voice
   - name: WebSocket
 
 security:
@@ -1184,6 +1185,27 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /voice/ice-servers:
+    get:
+      tags: [Voice]
+      summary: Servidores ICE (STUN/TURN) do usuário
+      description: >
+        Retorna a lista de servidores ICE do usuário autenticado, no mesmo shape
+        de RTCIceServer do browser (passar direto para new
+        RTCPeerConnection({ iceServers })). TURN usa credencial efêmera RFC 5389
+        por usuário.
+      responses:
+        '200':
+          description: Servidores ICE
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ICEServersResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /channels/{channel_id}/messages:
     get:
       tags: [Messages]
@@ -1884,6 +1906,24 @@ paths:
         | `heartbeat`      | inbound   | `{ type: "heartbeat" }`                                                                 |
         | `heartbeat_ack`  | outbound  | `{ type: "heartbeat_ack" }`                                                             |
         | `error`          | outbound  | `{ type: "error", message, code? }`                                                     |
+        | `voice_join`     | inbound   | `{ type: "voice_join", channel_id }`                                                    |
+        | `voice_leave`    | inbound   | `{ type: "voice_leave", channel_id }`                                                   |
+        | `voice_offer`    | inbound   | `{ type: "voice_offer", channel_id, sdp }` (client-offers-first; renegociações do servidor chegam como `voice_offer` outbound) |
+        | `voice_answer`   | inbound   | `{ type: "voice_answer", channel_id, sdp }`                                             |
+        | `voice_ice_candidate` | inbound | `{ type: "voice_ice_candidate", channel_id, candidate, sdp_mid?, sdp_mline_index? }`    |
+        | `track_subscribe`| inbound   | `{ type: "track_subscribe", channel_id, publisher_id, kind }` (kind: camera/screen; vídeo só é forwardado com subscribe explícito) |
+        | `track_unsubscribe` | inbound | `{ type: "track_unsubscribe", channel_id, publisher_id, kind }`                        |
+        | `voice_mute`     | inbound   | `{ type: "voice_mute", channel_id, muted }`                                             |
+        | `voice_camera`   | inbound   | `{ type: "voice_camera", channel_id, on }`                                              |
+        | `screen_share_start` | inbound | `{ type: "screen_share_start", channel_id }` (a track chega na renegociação seguinte)  |
+        | `screen_share_stop` | inbound | `{ type: "screen_share_stop", channel_id }`                                            |
+        | `voice_joined`   | unicast   | `{ type: "voice_joined", channel_id, members: (user_id, muted, camera_on, screen_sharing)[], active_speakers: user_id[] }` (estado inicial do late joiner) |
+        | `voice_answer`   | unicast   | `{ type: "voice_answer", channel_id, sdp }` (resposta ao `voice_offer` do cliente)      |
+        | `voice_offer`    | unicast   | `{ type: "voice_offer", channel_id, sdp }` (renegociação iniciada pelo servidor)        |
+        | `voice_ice_candidate` | unicast | `{ type: "voice_ice_candidate", channel_id, candidate, sdp_mid?, sdp_mline_index? }`    |
+        | `voice_state_update` | outbound | `{ type: "voice_state_update", channel_id, user_id, muted, camera_on, screen_sharing }` |
+        | `voice_leave`    | outbound  | `{ type: "voice_leave", channel_id, user_id }` (explícita, WS caiu, sessão revogada ou sala destruída) |
+        | `active_speaker_update` | outbound | `{ type: "active_speaker_update", channel_id, user_ids: user_id[] }` (top-K active speakers) |
       responses:
         '101':
           description: WebSocket upgrade
@@ -2455,7 +2495,7 @@ components:
           type: string
         type:
           type: string
-          enum: [text, category]
+          enum: [text, category, voice]
         position:
           type: integer
           description: Posição do canal na visualização (1-based)
@@ -2464,7 +2504,7 @@ components:
           nullable: true
           description: >
             Tópico do canal (máx 512 caracteres). Válido apenas para canais de
-            texto; null para canais category ou sem tópico.
+            texto ou voz; null para canais category ou sem tópico.
         permissions:
           type: array
           items:
@@ -2598,6 +2638,9 @@ components:
           type: boolean
         delete_messages:
           type: boolean
+        connect_voice:
+          type: boolean
+          description: Permite entrar em calls do canal (padrão false)
 
     ChannelPermissionsResponse:
       type: object
@@ -2610,6 +2653,28 @@ components:
           items:
             $ref: '#/components/schemas/ChannelPermissionEntry'
 
+    ICEServer:
+      type: object
+      properties:
+        urls:
+          type: array
+          items:
+            type: string
+        username:
+          type: string
+          nullable: true
+        credential:
+          type: string
+          nullable: true
+
+    ICEServersResponse:
+      type: object
+      properties:
+        ice_servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ICEServer'
+
     CreateChannelRequest:
       type: object
       required: [name]
@@ -2618,13 +2683,13 @@ components:
           type: string
         type:
           type: string
-          enum: [text, category]
+          enum: [text, category, voice]
           description: Tipo do canal (padrão text)
         topic:
           type: string
           description: >
             Tópico do canal (máx 512 caracteres). Opcional; válido apenas para
-            canais de texto.
+            canais de texto ou voz.
 
     UpdateChannelRequest:
       type: object
@@ -2638,7 +2703,7 @@ components:
           description: >
             Tópico do canal (máx 512 caracteres). Opcional; ausente não altera
             o tópico, string vazia limpa o tópico. Válido apenas para canais de
-            texto.
+            texto ou voz.
 
     ChangeChannelPositionRequest:
       type: object

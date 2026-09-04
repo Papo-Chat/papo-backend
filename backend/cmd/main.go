@@ -16,6 +16,7 @@ import (
 	"papo/internal/services"
 	"papo/internal/storage"
 	"papo/internal/utils"
+	"papo/internal/webrtc"
 	"papo/internal/websocket"
 
 	"github.com/labstack/echo/v4"
@@ -38,10 +39,28 @@ func validateJWTSecret(secret string) error {
 	return nil
 }
 
+// validateTurnSecret valida o segredo HMAC do TURN (obrigatório e com ≥ 32
+// bytes quando TURN_URLS está configurado — credencial efêmera RFC 5389).
+func validateTurnSecret(cfg *config.Config) error {
+	if len(cfg.TURNURLs) == 0 {
+		return nil
+	}
+	if cfg.TURNSecret == "" {
+		return errors.New("TURN_SECRET ausente: defina a variável de ambiente TURN_SECRET para usar TURN")
+	}
+	if len(cfg.TURNSecret) < minJWTSecretLength {
+		return fmt.Errorf("TURN_SECRET muito curto: use pelo menos %d caracteres", minJWTSecretLength)
+	}
+	return nil
+}
+
 func main() {
 	cfg := config.LoadConfig()
 
 	if err := validateJWTSecret(cfg.JWTSecret); err != nil {
+		utils.Fatal(err.Error())
+	}
+	if err := validateTurnSecret(cfg); err != nil {
 		utils.Fatal(err.Error())
 	}
 
@@ -53,7 +72,26 @@ func main() {
 	defer storage.CloseDB()
 
 	// Inicia o hub WebSocket (estado efêmero de transporte).
-	go websocket.GetHub().Run()
+	hub := websocket.GetHub()
+	go hub.Run()
+
+	// SFU de voz (estado efêmero em memória): o Signaler envia os eventos de
+	// voz via hub e a audiência usa a permissão connect_voice (fail-closed).
+	voiceMgr := webrtc.NewManager(cfg, webrtc.Signaler{
+		SendToUser:       hub.SendToUser,
+		BroadcastToUsers: func(allowed map[string]bool, event any) { hub.BroadcastToUsers(event, allowed) },
+		VoiceAudience: func(channelID string) map[string]bool {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			allowed, err := services.VoiceConnectors(ctx, channelID, hub.OnlineUserIDs())
+			if err != nil {
+				return map[string]bool{}
+			}
+			return allowed
+		},
+	})
+	// Última conexão do usuário caiu: remove o peer das salas de voz.
+	hub.SetOnUserOffline(voiceMgr.UserOffline)
 
 	// Rotina de manutenção (GC de mídia + purge de auditoria): roda no boot e
 	// a cada 12h. O cancelamento do ctx para o scheduler e interrompe o job em
@@ -122,6 +160,7 @@ func main() {
 	handlers.RegisterUserRoutes(e, cfg)
 	handlers.RegisterServerRoutes(e, cfg)
 	handlers.RegisterChannelRoutes(e, cfg)
+	handlers.RegisterVoiceRoutes(e, cfg)
 	handlers.RegisterMessageRoutes(e, cfg)
 	handlers.RegisterAttachmentRoutes(e, cfg)
 	handlers.RegisterMediaRoutes(e, cfg)
@@ -154,7 +193,11 @@ func main() {
 	moderation.Shutdown()
 
 	// Encerra as conexões WebSocket ativas (close frame) e para o Hub.
-	websocket.GetHub().Shutdown()
+	hub.Shutdown()
+
+	// Encerra o SFU de voz (fecha as PeerConnections) após o hub (os eventos
+	// de saída de sala precisam do hub ativo para ser entregues).
+	voiceMgr.Shutdown()
 
 	utils.Info("Servidor desligado")
 }

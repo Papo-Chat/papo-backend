@@ -187,6 +187,7 @@ func (s *wsTestServer) clientAt(t *testing.T, index int) *Client {
 type wsEvent struct {
 	Type          string          `json:"type"`
 	Message       string          `json:"message"`
+	Code          *string         `json:"code"`
 	ID            string          `json:"id"`
 	ChannelID     string          `json:"channel_id"`
 	AuthorID      string          `json:"author_id"`

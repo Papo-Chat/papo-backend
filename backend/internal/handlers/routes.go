@@ -233,6 +233,13 @@ func RegisterAdminRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware, middleware.RequireManageServer())
 }
 
+// RegisterVoiceRoutes registra as rotas de voz/câmera (SFU embutido).
+func RegisterVoiceRoutes(e *echo.Echo, cfg *config.Config) {
+	e.GET("/voice/ice-servers", func(c echo.Context) error {
+		return ICEServersHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+}
+
 // RegisterWebSocketRoutes registra a rota do WebSocket.
 // Usa o mesmo cookie Auth da API REST: o JWT é validado pelo
 // JWTMiddleware durante o handshake, antes do upgrade da conexão.

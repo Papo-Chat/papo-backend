@@ -1,0 +1,573 @@
+package webrtc
+
+import (
+	"errors"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"papo/internal/config"
+	"papo/internal/utils"
+
+	"golang.org/x/time/rate"
+)
+
+// Erros de domínio dos eventos de voz. O websocket/client.go mapeia cada um
+// para o código de erro do evento `error` (seção 7 do plano).
+var (
+	ErrVoiceNotFound         = errors.New("usuário não está na sala de voz")
+	ErrVoiceForbidden        = errors.New("sem permissão para a sala de voz")
+	ErrVoiceRoomFull         = errors.New("sala de voz cheia")
+	ErrVoiceAlreadyInRoom    = errors.New("usuário já está na sala de voz")
+	ErrVoiceCodecUnsupported = errors.New("codec de vídeo não suportado na sala")
+	ErrVoiceInvalidSDP       = errors.New("SDP inválido")
+	ErrVoiceRateLimited      = errors.New("muitos eventos de voz")
+	ErrVoiceRoomClosed       = errors.New("sala de voz encerrada")
+)
+
+// voiceErrorCode mapeia um erro de domínio para o código do evento `error`.
+func voiceErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ErrVoiceNotFound):
+		return CodeVoiceNotFound
+	case errors.Is(err, ErrVoiceForbidden):
+		return CodeVoiceForbidden
+	case errors.Is(err, ErrVoiceRoomFull):
+		return CodeVoiceRoomFull
+	case errors.Is(err, ErrVoiceAlreadyInRoom):
+		return CodeVoiceAlreadyInRoom
+	case errors.Is(err, ErrVoiceCodecUnsupported):
+		return CodeVoiceCodecUnsupported
+	case errors.Is(err, ErrVoiceInvalidSDP):
+		return CodeVoiceInvalidSDP
+	case errors.Is(err, ErrVoiceRateLimited):
+		return CodeVoiceRateLimited
+	case errors.Is(err, ErrVoiceRoomClosed):
+		return CodeVoiceRoomClosed
+	default:
+		return ""
+	}
+}
+
+// ErrorCode expõe o mapeamento erro de domínio -> código do evento `error`
+// para a camada de transporte (websocket), que envia o evento de erro.
+func ErrorCode(err error) string {
+	return voiceErrorCode(err)
+}
+
+// Signaler é o conjunto de funções concretas injetado pelo main.go a partir
+// do hub WebSocket (evita ciclo de import — webrtc não importa websocket).
+type Signaler struct {
+	// SendToUser envia em unicast a todas as conexões do usuário.
+	SendToUser func(userID string, event any)
+	// BroadcastToUsers envia somente aos clientes cujo usuário está em allowed.
+	BroadcastToUsers func(allowed map[string]bool, event any)
+	// VoiceAudience retorna os usuários online autorizados a escutar os
+	// eventos de voz do canal (permissão connect_voice, via
+	// services.VoiceConnectors). Nil/erro vira mapa vazio (ninguém recebe).
+	VoiceAudience func(channelID string) map[string]bool
+}
+
+// Manager é o SFU embutido: estado efêmero de salas de voz em memória
+// (1 backend = 1 servidor). Salas são criadas sob demanda (get-or-create)
+// e destruídas após um grace period vazias.
+type Manager struct {
+	cfg      *config.Config
+	signaler Signaler
+
+	api *webrtcAPI // MediaEngine/interceptors compartilhados (codec da sala)
+
+	mu    sync.RWMutex
+	rooms map[string]*Room
+
+	limiterMu sync.Mutex
+	limiters  map[string]*userLimiters
+
+	userMu    sync.Mutex
+	userRooms map[string]map[string]struct{} // userID -> canalIDs (VOICE_MAX_ROOMS_PER_USER)
+
+	ssrcMu    sync.Mutex
+	ssrcOwner map[uint32]ssrcOwner // SSRC da track de áudio -> (sala, usuário)
+
+	stopped atomic.Bool
+}
+
+// ssrcOwner associa o SSRC de uma track de áudio recebida à sala e ao usuário
+// que a publica (o interceptor de audio-level usa para reportar o nível).
+type ssrcOwner struct {
+	room   *Room
+	userID string
+}
+
+type userLimiters struct {
+	signal    *rate.Limiter
+	subscribe *rate.Limiter
+}
+
+// manager é o manager global (mesmo padrão do hub: websocket/hub.go).
+// Nil até o main.go criar o manager; GetManager retorna nil nesse caso e os
+// callers tratam (evento `error` genérico).
+var manager *Manager
+
+// NewManager cria o Manager global com a configuração e o Signaler do hub.
+func NewManager(cfg *config.Config, s Signaler) *Manager {
+	m := &Manager{
+		cfg:       cfg,
+		signaler:  s,
+		rooms:     make(map[string]*Room),
+		limiters:  make(map[string]*userLimiters),
+		userRooms: make(map[string]map[string]struct{}),
+		ssrcOwner: make(map[uint32]ssrcOwner),
+	}
+	api, err := newSharedAPI(cfg, m)
+	if err != nil {
+		// Codec inválido em VOICE_VIDEO_CODEC: o servidor não inicia
+		// (mesma política de falha de configuração do boot).
+		utils.Fatal("falha ao configurar o codec de vídeo de voz: " + err.Error())
+	}
+	m.api = api
+	manager = m
+	return m
+}
+
+// GetManager retorna o manager global (nil se o main.go ainda não o criou).
+func GetManager() *Manager {
+	return manager
+}
+
+// sendError envia um evento `error` com o código de voz ao usuário.
+func (m *Manager) sendError(userID string, err error) {
+	code := voiceErrorCode(err)
+	if code == "" {
+		code = CodeVoiceNotFound
+	}
+	m.signaler.SendToUser(userID, VoiceError{
+		Type:    "error",
+		Message: err.Error(),
+		Code:    code,
+	})
+}
+
+// audience retorna a audiência autorizada do canal (usuários online com
+// permissão connect_voice — mesma regra de quem pode entrar na call).
+func (m *Manager) audience(channelID string) map[string]bool {
+	if m.signaler.VoiceAudience == nil {
+		return map[string]bool{}
+	}
+	return m.signaler.VoiceAudience(channelID)
+}
+
+// broadcastVoice envia um evento de voz aos leitores autorizados do canal.
+func (m *Manager) broadcastVoice(channelID string, event any) {
+	m.broadcastTo(m.audience(channelID), event)
+}
+
+// broadcastTo envia um evento de voz a uma audiência já computada.
+func (m *Manager) broadcastTo(allowed map[string]bool, event any) {
+	m.signaler.BroadcastToUsers(allowed, event)
+}
+
+// registerSSRC associa o SSRC de uma track de áudio recebida à sala/usuário
+// (chamado quando a track de áudio do peer é estabelecida).
+func (m *Manager) registerSSRC(ssrc uint32, room *Room, userID string) {
+	m.ssrcMu.Lock()
+	m.ssrcOwner[ssrc] = ssrcOwner{room: room, userID: userID}
+	m.ssrcMu.Unlock()
+}
+
+// unregisterSSRC remove o SSRC do registro (peer fechado ou track substituída).
+func (m *Manager) unregisterSSRC(ssrc uint32) {
+	if ssrc == 0 {
+		return
+	}
+	m.ssrcMu.Lock()
+	delete(m.ssrcOwner, ssrc)
+	m.ssrcMu.Unlock()
+}
+
+// reportAudioLevel encaminha o nível (dBFS) reportado pelo interceptor para a
+// sala do SSRC (silencioso quando o SSRC não está registrado).
+func (m *Manager) reportAudioLevel(ssrc uint32, level float64) {
+	m.ssrcMu.Lock()
+	o, ok := m.ssrcOwner[ssrc]
+	m.ssrcMu.Unlock()
+	if !ok {
+		return
+	}
+	o.room.noteAudioLevel(o.userID, level)
+}
+
+// limiterFor retorna os token buckets do usuário (cria sob demanda).
+func (m *Manager) limiterFor(userID string) *userLimiters {
+	m.limiterMu.Lock()
+	defer m.limiterMu.Unlock()
+	l, ok := m.limiters[userID]
+	if !ok {
+		l = &userLimiters{
+			signal:    rate.NewLimiter(rate.Limit(m.cfg.VoiceSignalRateLimit), m.cfg.VoiceSignalRateBurst),
+			subscribe: rate.NewLimiter(rate.Limit(m.cfg.VoiceSubscribeRateLimit), m.cfg.VoiceSubscribeRateBurst),
+		}
+		m.limiters[userID] = l
+	}
+	return l
+}
+
+// checkSignal aplica o rate limit de sinalização do usuário.
+func (m *Manager) checkSignal(userID string) error {
+	if !m.limiterFor(userID).signal.Allow() {
+		return ErrVoiceRateLimited
+	}
+	return nil
+}
+
+// checkSubscribe aplica o rate limit de subscribe do usuário.
+func (m *Manager) checkSubscribe(userID string) error {
+	if !m.limiterFor(userID).subscribe.Allow() {
+		return ErrVoiceRateLimited
+	}
+	return nil
+}
+
+// getRoom retorna a sala do canal (nil quando não existe).
+func (m *Manager) getRoom(channelID string) *Room {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.rooms[channelID]
+}
+
+// createRoom cria e registra a sala (o caller já validou os limites).
+func (m *Manager) createRoom(channelID string) *Room {
+	room := newRoom(m, channelID)
+
+	m.mu.Lock()
+	if existing, ok := m.rooms[channelID]; ok {
+		m.mu.Unlock()
+		return existing
+	}
+	m.rooms[channelID] = room
+	m.mu.Unlock()
+
+	return room
+}
+
+// removeRoom remove a sala do mapa (idempotente).
+func (m *Manager) removeRoom(channelID string) *Room {
+	m.mu.Lock()
+	room := m.rooms[channelID]
+	delete(m.rooms, channelID)
+	m.mu.Unlock()
+	return room
+}
+
+// trackUserRoom registra/limpa a sala do usuário para VOICE_MAX_ROOMS_PER_USER.
+func (m *Manager) trackUserRoom(userID, channelID string, add bool) {
+	m.userMu.Lock()
+	defer m.userMu.Unlock()
+	if add {
+		set := m.userRooms[userID]
+		if set == nil {
+			set = make(map[string]struct{})
+			m.userRooms[userID] = set
+		}
+		set[channelID] = struct{}{}
+		return
+	}
+	if set := m.userRooms[userID]; set != nil {
+		delete(set, channelID)
+		if len(set) == 0 {
+			delete(m.userRooms, userID)
+		}
+	}
+}
+
+// userRoomCount retorna quantas salas distintas o usuário ocupa.
+func (m *Manager) userRoomCount(userID string) int {
+	m.userMu.Lock()
+	defer m.userMu.Unlock()
+	return len(m.userRooms[userID])
+}
+
+// Join adiciona o usuário à sala de voz do canal (cria o peer sem PC; a
+// PeerConnection só existe após o voice_offer). Enforce de VOICE_MAX_ROOM_PEERS
+// e VOICE_MAX_ROOMS_PER_USER. A permissão de canal (connect_voice) é checada
+// antes, no websocket/client.go.
+func (m *Manager) Join(channelID, userID string) error {
+	if m.stopped.Load() {
+		return ErrVoiceRoomClosed
+	}
+	if err := m.checkSignal(userID); err != nil {
+		return err
+	}
+
+	m.userMu.Lock()
+	if _, ok := m.userRooms[userID][channelID]; ok {
+		m.userMu.Unlock()
+		return ErrVoiceAlreadyInRoom
+	}
+	if len(m.userRooms[userID]) >= m.cfg.VoiceMaxRoomsPerUser {
+		m.userMu.Unlock()
+		return ErrVoiceAlreadyInRoom
+	}
+	m.userMu.Unlock()
+
+	room := m.getRoom(channelID)
+	if room == nil {
+		room = m.createRoom(channelID)
+	}
+
+	if err := room.addPeer(userID); err != nil {
+		// Sala cheia: destrói a sala recém-criada se ficou vazia.
+		if room.peerCount() == 0 {
+			room.destroy()
+		}
+		return err
+	}
+	m.trackUserRoom(userID, channelID, true)
+	return nil
+}
+
+// Leave remove o usuário da sala de voz do canal (saída explícita).
+func (m *Manager) Leave(channelID, userID string) error {
+	if err := m.checkSignal(userID); err != nil {
+		return err
+	}
+	room := m.getRoom(channelID)
+	if room == nil {
+		return ErrVoiceNotFound
+	}
+	if !room.hasPeer(userID) {
+		return ErrVoiceNotFound
+	}
+	room.removePeer(userID)
+	m.trackUserRoom(userID, channelID, false)
+	return nil
+}
+
+// ClientOffer processa a oferta SDP do cliente (join, screen share ou mais
+// slots) e responde com voice_answer + trickle ICE.
+func (m *Manager) ClientOffer(channelID, userID, sdp string) error {
+	if err := m.checkSignal(userID); err != nil {
+		return err
+	}
+	room := m.getRoom(channelID)
+	if room == nil {
+		return ErrVoiceNotFound
+	}
+	peer := room.peer(userID)
+	if peer == nil {
+		return ErrVoiceNotFound
+	}
+	if err := validateSDP(sdp, m.cfg, true); err != nil {
+		return err
+	}
+	return peer.enqueue(func() error { return peer.handleOffer(sdp) })
+}
+
+// ClientAnswer processa a resposta SDP do cliente a uma renegociação
+// iniciada pelo servidor.
+func (m *Manager) ClientAnswer(channelID, userID, sdp string) error {
+	if err := m.checkSignal(userID); err != nil {
+		return err
+	}
+	room := m.getRoom(channelID)
+	if room == nil {
+		return ErrVoiceNotFound
+	}
+	peer := room.peer(userID)
+	if peer == nil {
+		return ErrVoiceNotFound
+	}
+	if err := validateSDP(sdp, m.cfg, false); err != nil {
+		return err
+	}
+	return peer.enqueue(func() error { return peer.handleAnswer(sdp) })
+}
+
+// AddICECandidate entrega um candidate trickle de ICE do cliente.
+func (m *Manager) AddICECandidate(channelID, userID, candidate, sdpMid string, sdpMLineIndex int) error {
+	if err := m.checkSignal(userID); err != nil {
+		return err
+	}
+	if err := validateCandidate(candidate); err != nil {
+		return err
+	}
+	room := m.getRoom(channelID)
+	if room == nil {
+		return ErrVoiceNotFound
+	}
+	peer := room.peer(userID)
+	if peer == nil {
+		return ErrVoiceNotFound
+	}
+	return peer.addICECandidate(candidate, sdpMid, sdpMLineIndex)
+}
+
+// Subscribe faz o subscriber começar a receber a track de vídeo/screen do
+// publisher em um slot de vídeo (vídeo sempre explícito, D5).
+func (m *Manager) Subscribe(channelID, subscriberID, publisherID, kind string) error {
+	if err := m.checkSubscribe(subscriberID); err != nil {
+		return err
+	}
+	if kind != "video" && kind != "screen" {
+		return ErrVoiceInvalidSDP
+	}
+	room := m.getRoom(channelID)
+	if room == nil {
+		return ErrVoiceNotFound
+	}
+	sub := room.peer(subscriberID)
+	pub := room.peer(publisherID)
+	if sub == nil || pub == nil {
+		return ErrVoiceNotFound
+	}
+	if sub == pub {
+		return ErrVoiceNotFound
+	}
+	if kind == "video" && !pub.hasActiveTrack("video") {
+		return ErrVoiceNotFound
+	}
+	if kind == "screen" && !pub.hasActiveTrack("screen") {
+		return ErrVoiceNotFound
+	}
+	return sub.assignVideoSlot(pub, kind)
+}
+
+// Unsubscribe para de forwardar a track de vídeo/screen do publisher para o
+// subscriber (o slot fica vazio, sem renegociação).
+func (m *Manager) Unsubscribe(channelID, subscriberID, publisherID, kind string) error {
+	if err := m.checkSubscribe(subscriberID); err != nil {
+		return err
+	}
+	room := m.getRoom(channelID)
+	if room == nil {
+		return ErrVoiceNotFound
+	}
+	sub := room.peer(subscriberID)
+	if sub == nil {
+		return ErrVoiceNotFound
+	}
+	sub.releaseVideoSlot(publisherID, kind)
+	return nil
+}
+
+// SetMuted atualiza o estado do mic do usuário e notifica os leitores do
+// canal (o cliente para de enviar frames; os slots param de receber pacotes).
+func (m *Manager) SetMuted(channelID, userID string, muted bool) error {
+	if err := m.checkSignal(userID); err != nil {
+		return err
+	}
+	room := m.getRoom(channelID)
+	if room == nil || !room.hasPeer(userID) {
+		return ErrVoiceNotFound
+	}
+	room.setMuted(userID, muted)
+	return nil
+}
+
+// SetCameraOn atualiza o estado da câmera do usuário e notifica os leitores
+// do canal (o cliente para de enviar frames; idem mic).
+func (m *Manager) SetCameraOn(channelID, userID string, on bool) error {
+	if err := m.checkSignal(userID); err != nil {
+		return err
+	}
+	room := m.getRoom(channelID)
+	if room == nil || !room.hasPeer(userID) {
+		return ErrVoiceNotFound
+	}
+	room.setCameraOn(userID, on)
+	return nil
+}
+
+// StartScreenShare atualiza o estado de screen share do usuário e notifica
+// os leitores do canal. A track nova chega na renegociação seguinte
+// (voice_offer com a m-line de vídeo adicional).
+func (m *Manager) StartScreenShare(channelID, userID string) error {
+	if err := m.checkSignal(userID); err != nil {
+		return err
+	}
+	room := m.getRoom(channelID)
+	if room == nil || !room.hasPeer(userID) {
+		return ErrVoiceNotFound
+	}
+	room.setScreenSharing(userID, true)
+	return nil
+}
+
+// StopScreenShare remove o estado de screen share do usuário (a track é
+// removida na renegociação seguinte).
+func (m *Manager) StopScreenShare(channelID, userID string) error {
+	if err := m.checkSignal(userID); err != nil {
+		return err
+	}
+	room := m.getRoom(channelID)
+	if room == nil || !room.hasPeer(userID) {
+		return ErrVoiceNotFound
+	}
+	room.setScreenSharing(userID, false)
+	return nil
+}
+
+// UserOffline remove o peer do usuário de todas as salas (a última conexão
+// WebSocket dele caiu — gancho do hub). Chamado pelo hub.
+func (m *Manager) UserOffline(userID string) {
+	m.userMu.Lock()
+	channelIDs := make([]string, 0, len(m.userRooms[userID]))
+	for id := range m.userRooms[userID] {
+		channelIDs = append(channelIDs, id)
+	}
+	m.userMu.Unlock()
+
+	for _, channelID := range channelIDs {
+		room := m.getRoom(channelID)
+		if room == nil {
+			continue
+		}
+		if !room.hasPeer(userID) {
+			continue
+		}
+		room.removePeer(userID)
+		m.trackUserRoom(userID, channelID, false)
+	}
+
+	m.limiterMu.Lock()
+	delete(m.limiters, userID)
+	m.limiterMu.Unlock()
+}
+
+// DestroyRoom destrói a sala de voz do canal (canal de voz excluído): fecha
+// todas as PeerConnections e notifica os membros (error voice-room-closed +
+// voice_leave). Chamado por services.DeleteChannel.
+func (m *Manager) DestroyRoom(channelID string) {
+	room := m.removeRoom(channelID)
+	if room == nil {
+		return
+	}
+	room.destroyWithClosedNotice()
+}
+
+// Shutdown fecha todas as PeerConnections e para o manager (encerramento da
+// aplicação). Chamado pelo main.go após o hub.Shutdown.
+func (m *Manager) Shutdown() {
+	if !m.stopped.CompareAndSwap(false, true) {
+		return
+	}
+	m.mu.Lock()
+	rooms := make([]*Room, 0, len(m.rooms))
+	for _, r := range m.rooms {
+		rooms = append(rooms, r)
+	}
+	m.rooms = make(map[string]*Room)
+	m.mu.Unlock()
+
+	for _, room := range rooms {
+		room.destroy()
+	}
+}
+
+// GracePeriod retorna o grace period de destruição de salas vazias (D11).
+func (m *Manager) GracePeriod() time.Duration {
+	if m.cfg.VoiceRoomCleanupGrace > 0 {
+		return m.cfg.VoiceRoomCleanupGrace
+	}
+	return 30 * time.Second
+}

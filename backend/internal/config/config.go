@@ -54,6 +54,24 @@ type Config struct {
 	// a cada 12h.
 	LogDuration time.Duration
 
+	// Voz/câmera (SFU embutido, WEBRTC_PAPO.md). STUN/TURN vazios por padrão:
+	// em LAN o ICE resolve direto; TURN (com TURN_SECRET) é requisito para
+	// exposição na internet.
+	STUNURLs                []string
+	TURNURLs                []string
+	TURNSecret              string
+	TURNTTL                 time.Duration
+	VoiceVideoCodec         string
+	VoiceVideoSlots         int
+	VoiceAudioSlots         int
+	VoiceMaxRoomPeers       int
+	VoiceMaxRoomsPerUser    int
+	VoiceRoomCleanupGrace   time.Duration
+	VoiceSignalRateLimit    int
+	VoiceSignalRateBurst    int
+	VoiceSubscribeRateLimit int
+	VoiceSubscribeRateBurst int
+
 	// Moderação de imagens (nudez/gore): worker Python supervisionado pelo
 	// processo Go, inferência assíncrona fora do caminho crítico do envio de
 	// mensagem. MODERATION_ENABLED=false desativa tudo (nenhum processo
@@ -130,6 +148,21 @@ func LoadConfig() *Config {
 
 		LogDuration: time.Duration(getEnvInt("LOG_DURATION", 90)) * 24 * time.Hour,
 
+		STUNURLs:                getEnvList("STUN_URLS", []string{}),
+		TURNURLs:                getEnvList("TURN_URLS", []string{}),
+		TURNSecret:              getEnv("TURN_SECRET", ""),
+		TURNTTL:                 time.Duration(getEnvInt("TURN_TTL_SECONDS", 3600)) * time.Second,
+		VoiceVideoCodec:         getEnv("VOICE_VIDEO_CODEC", "vp8"),
+		VoiceVideoSlots:         getEnvInt("VOICE_VIDEO_SLOTS", 6),
+		VoiceAudioSlots:         getEnvInt("VOICE_AUDIO_SLOTS", 4),
+		VoiceMaxRoomPeers:       getEnvInt("VOICE_MAX_ROOM_PEERS", 25),
+		VoiceMaxRoomsPerUser:    getEnvInt("VOICE_MAX_ROOMS_PER_USER", 1),
+		VoiceRoomCleanupGrace:   time.Duration(getEnvInt("VOICE_ROOM_CLEANUP_GRACE", 30)) * time.Second,
+		VoiceSignalRateLimit:    getEnvInt("VOICE_SIGNAL_RATE_LIMIT", 10),
+		VoiceSignalRateBurst:    getEnvInt("VOICE_SIGNAL_RATE_BURST", 20),
+		VoiceSubscribeRateLimit: getEnvInt("VOICE_SUBSCRIBE_RATE_LIMIT", 5),
+		VoiceSubscribeRateBurst: getEnvInt("VOICE_SUBSCRIBE_RATE_BURST", 10),
+
 		ModerationEnabled:         getEnvBool("MODERATION_ENABLED", false),
 		ModerationWorkerCommand:   getEnv("MODERATION_WORKER_COMMAND", "python3"),
 		ModerationWorkerPath:      getEnv("MODERATION_WORKER_PATH", "moderation_worker/worker.py"),
@@ -141,7 +174,7 @@ func LoadConfig() *Config {
 		ModerationNudityMode:      getEnv("MODERATION_NUDITY_MODE", "off"),
 		ModerationGoreMode:        getEnv("MODERATION_GORE_MODE", "off"),
 		ModerationNudityThreshold: getEnvFloat("MODERATION_NUDITY_THRESHOLD", 0.8),
-		ModerationGoreThreshold: getEnvFloat("MODERATION_GORE_THRESHOLD", 0.8),
+		ModerationGoreThreshold:   getEnvFloat("MODERATION_GORE_THRESHOLD", 0.8),
 	})
 
 	return configInstance.Load()

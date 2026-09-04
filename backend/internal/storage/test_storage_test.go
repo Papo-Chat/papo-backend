@@ -1058,7 +1058,7 @@ func TestCreateChannel(t *testing.T) {
 		t.Errorf("esperava type %q, obtive %q", "category", category.Type)
 	}
 
-	if _, err := CreateChannel(testCtx(), "channel_"+randHex(8), "voice", ""); err == nil {
+	if _, err := CreateChannel(testCtx(), "channel_"+randHex(8), "audio", ""); err == nil {
 		t.Error("esperava erro para type inválido, obtive nil")
 	}
 }

@@ -3162,8 +3162,8 @@ func TestCreateChannelType(t *testing.T) {
 		t.Errorf("esperava type %q no banco, obtive %q", "category", stored.Type)
 	}
 
-	// type inválido é rejeitado
-	for _, invalidType := range []string{"voice", "audio", "TEXT"} {
+	// type inválido é rejeitado ("voice" é válido desde a migration 009)
+	for _, invalidType := range []string{"audio", "TEXT"} {
 		if _, err := CreateChannel(testCtx(), testActorID(), newRandomChannelName(), invalidType, ""); !errors.Is(err, ErrInvalidInput) {
 			t.Errorf("esperava ErrInvalidInput para type %q, obtive %v", invalidType, err)
 		}

@@ -200,6 +200,28 @@ func (c *Client) handle(raw []byte) {
 		c.sendEvent(HeartbeatAckOutbound{Type: EventTypeHeartbeatAck})
 	case EventTypeTyping:
 		c.handleTyping(raw)
+	case EventTypeVoiceJoin:
+		c.handleVoiceJoin(raw)
+	case EventTypeVoiceLeave:
+		c.handleVoiceLeave(raw)
+	case EventTypeVoiceOffer:
+		c.handleVoiceOffer(raw)
+	case EventTypeVoiceAnswer:
+		c.handleVoiceAnswer(raw)
+	case EventTypeVoiceICECandidate:
+		c.handleVoiceICECandidate(raw)
+	case EventTypeTrackSubscribe:
+		c.handleTrackSubscribe(raw)
+	case EventTypeTrackUnsubscribe:
+		c.handleTrackUnsubscribe(raw)
+	case EventTypeVoiceMute:
+		c.handleVoiceMute(raw)
+	case EventTypeVoiceCamera:
+		c.handleVoiceCamera(raw)
+	case EventTypeScreenShareStart:
+		c.handleScreenShareStart(raw)
+	case EventTypeScreenShareStop:
+		c.handleScreenShareStop(raw)
 	}
 }
 
