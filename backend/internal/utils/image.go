@@ -181,6 +181,16 @@ func generateGIFThumbnail(
 		return nil, "", 0, 0, ctx.Err()
 	}
 
+	delays, totalArea, ok := gifFrameInfo(content)
+	if !ok || len(delays) == 0 {
+		return staticGIFFallback(content, maxDim)
+	}
+
+	if len(delays) > MaxGIFFrames ||
+		totalArea > int64(config.LoadConfig().ThumbnailMaxPixels) {
+		return staticGIFFallback(content, maxDim)
+	}
+
 	g, err := gif.DecodeAll(bytes.NewReader(content))
 	if err != nil {
 		return staticGIFFallback(content, maxDim)
@@ -214,7 +224,6 @@ func generateGIFThumbnail(
 	canvas := image.NewNRGBA(image.Rect(0, 0, W, H))
 
 	frames := make([]*image.Paletted, 0, len(g.Image))
-	delays := make([]int, 0, len(g.Image))
 	disposals := make([]byte, 0, len(g.Image))
 
 	pal := gifThumbnailPalette()
