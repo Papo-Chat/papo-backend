@@ -8,7 +8,6 @@ import (
 	"image"
 	"image/color"
 	"image/color/palette"
-	stddraw "image/draw"
 	"image/gif"
 	_ "image/jpeg"
 	_ "image/png"
@@ -158,131 +157,51 @@ func staticGIFFallback(content []byte, maxDim int) ([]byte, string, int, int, er
 	return encodeStaticImage(first, maxDim)
 }
 
-// generateGIFThumbnail decide entre thumbnail animada e estática (frame 0).
-// Antes de decodificar frames, um walker de blocos conta os frames e soma a
-// área dos sub-rectângulos (sem decodificar pixels): bloqueia frame bomb e
-// limita a memória de gif.DecodeAll (que retém todos os frames).
+// generateGIFThumbnail cria thumbnail estática (frame 0)
+// e faz varias verificações de segurança.
 func generateGIFThumbnail(content []byte, maxDim int, ctx context.Context) ([]byte, string, int, int, error) {
-	delays, totalArea, ok := gifFrameInfo(content)
-	if !ok || len(delays) == 0 {
-		return staticGIFFallback(content, maxDim)
+	if ctx.Err() != nil {
+		return nil, "", 0, 0, ctx.Err()
 	}
 
-	if len(delays) > MaxGIFFrames ||
-		totalArea > int64(config.LoadConfig().ThumbnailMaxPixels) {
-		return staticGIFFallback(content, maxDim)
+	// 1) Pré-parse barato do GIF, sem decode completo.
+	delays, totalArea, ok := gifFrameInfo(content)
+	if !ok || len(delays) == 0 {
+		return nil, "", 0, 0, fmt.Errorf("gif inválido")
+	}
+
+	// 2) Limites de segurança.
+	if len(delays) > MaxGIFFrames {
+		return nil, "", 0, 0, fmt.Errorf("gif excede o limite de frames (%d)", MaxGIFFrames)
+	}
+
+	limitPixels := config.LoadConfig().ThumbnailMaxPixels
+	if totalArea > int64(limitPixels) {
+		return nil, "", 0, 0, fmt.Errorf("gif excede o limite de área total")
+	}
+
+	// 3) Decode só do primeiro frame.
+	first, err := gif.Decode(bytes.NewReader(content))
+	if err != nil {
+		return nil, "", 0, 0, fmt.Errorf("falha ao decodificar primeiro frame do gif: %w", err)
 	}
 
 	if ctx.Err() != nil {
 		return nil, "", 0, 0, ctx.Err()
 	}
 
-	g, err := gif.DecodeAll(bytes.NewReader(content))
-	if err != nil {
-		return staticGIFFallback(content, maxDim)
+	b := first.Bounds()
+	if b.Dx() <= 0 || b.Dy() <= 0 {
+		return nil, "", 0, 0, fmt.Errorf("primeiro frame do gif tem dimensões inválidas")
 	}
 
-	if len(g.Image) == 0 {
-		return staticGIFFallback(content, maxDim)
+	// Defesa extra, embora o caller já tenha feito pre-check.
+	if int64(b.Dx())*int64(b.Dy()) > int64(limitPixels) {
+		return nil, "", 0, 0, fmt.Errorf("primeiro frame do gif excede o limite de pixels")
 	}
 
-	if len(g.Image) == 1 {
-		return staticGIFFallback(content, maxDim)
-	}
-
-	W := g.Config.Width
-	H := g.Config.Height
-	if W <= 0 || H <= 0 {
-		return staticGIFFallback(content, maxDim)
-	}
-
-	TW, TH, _ := scaleTarget(W, H, maxDim)
-
-	canvas := image.NewNRGBA(image.Rect(0, 0, W, H))
-
-	frames := make([]*image.Paletted, 0, len(g.Image))
-	outDelays := make([]int, 0, len(g.Image))
-	disposals := make([]byte, 0, len(g.Image))
-
-	pal := gifThumbnailPalette()
-
-	for i, frame := range g.Image {
-		if ctx.Err() != nil {
-			return nil, "", 0, 0, ctx.Err()
-		}
-
-		var disposal byte
-		if i < len(g.Disposal) {
-			disposal = g.Disposal[i]
-		}
-
-		var previous *image.NRGBA
-		if disposal == gif.DisposalPrevious {
-			previous = cloneNRGBA(canvas)
-		}
-
-		frameRect := frame.Bounds().Intersect(canvas.Bounds())
-		if !frameRect.Empty() {
-			stddraw.Draw(canvas, frameRect, frame, frameRect.Min, stddraw.Over)
-		}
-
-		var scaled *image.NRGBA
-		if TW == W && TH == H {
-			scaled = cloneNRGBA(canvas)
-		} else {
-			scaled = image.NewNRGBA(image.Rect(0, 0, TW, TH))
-			draw.ApproxBiLinear.Scale(scaled, scaled.Bounds(), canvas, canvas.Bounds(), draw.Src, nil)
-		}
-
-		outFrame := image.NewPaletted(image.Rect(0, 0, TW, TH), pal)
-		stddraw.Draw(outFrame, outFrame.Bounds(), scaled, scaled.Bounds().Min, stddraw.Src)
-
-		frames = append(frames, outFrame)
-
-		delay := 10
-		if i < len(g.Delay) && g.Delay[i] > 0 {
-			delay = g.Delay[i]
-		}
-		outDelays = append(outDelays, delay)
-
-		disposals = append(disposals, gif.DisposalBackground)
-
-		switch disposal {
-		case gif.DisposalBackground:
-			if !frameRect.Empty() {
-				stddraw.Draw(canvas, frameRect, image.Transparent, image.Point{}, stddraw.Src)
-			}
-		case gif.DisposalPrevious:
-			if previous != nil {
-				canvas = previous
-			}
-		}
-	}
-
-	out := &gif.GIF{
-		Image:     frames,
-		Delay:     outDelays,
-		Disposal:  disposals,
-		LoopCount: g.LoopCount,
-		Config: image.Config{
-			ColorModel: pal,
-			Width:      TW,
-			Height:     TH,
-		},
-		BackgroundIndex: 0,
-	}
-
-	var buf bytes.Buffer
-	if err := gif.EncodeAll(&buf, out); err != nil {
-		return staticGIFFallback(content, maxDim)
-	}
-
-	thumb := buf.Bytes()
-	if len(thumb) > MaxGIFThumbSize {
-		return staticGIFFallback(content, maxDim)
-	}
-
-	return thumb, "image/gif", TW, TH, nil
+	// 4) Sempre thumbnail estática em WebP.
+	return encodeStaticImage(first, maxDim)
 }
 
 func cloneNRGBA(src *image.NRGBA) *image.NRGBA {
