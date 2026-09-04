@@ -5,6 +5,7 @@ import (
 
 	"papo/internal/config"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/interceptor/pkg/gcc"
@@ -20,6 +21,10 @@ import (
 type webrtcAPI struct {
 	*webrtc.API
 	videoCodec webrtc.RTPCodecParameters
+	// iceMux é o ICEUDPMux compartilhado (todas as PCs usam a mesma porta UDP
+	// — VOICE_ICE_UDP_PORT). Nil quando o mux está desligado (porta 0).
+	// Encerrado em Manager.Shutdown.
+	iceMux ice.UDPMux
 }
 
 // videoCodecCapability mapeia o nome do codec (VOICE_VIDEO_CODEC) para a
@@ -133,9 +138,30 @@ func newSharedAPI(cfg *config.Config, m *Manager) (*webrtcAPI, error) {
 	// reporta o nível por SSRC (active_speaker.go).
 	registry.Add(newAudioLevelFactory(m))
 
+	// ICEUDPMux (VOICE_ICE_UDP_PORT): todas as PeerConnections compartilham a
+	// mesma porta UDP (multiplexado por ufrag) — deploy/firewall previsível
+	// (uma porta, não uma faixa efêmera 1–65535). Criado ANTES de qualquer PC
+	// e encerrado em Manager.Shutdown. Porta 0 desliga (portas efêmeras).
+	// Porta em uso → erro no boot (falha clara, não ICE flaky em runtime).
+	var settingEngine webrtc.SettingEngine
+	var iceMux ice.UDPMux
+	if cfg.VoiceICEUDPPort > 0 {
+		mux, err := ice.NewMultiUDPMuxFromPort(cfg.VoiceICEUDPPort)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao criar o ICEUDPMux na porta %d (em uso?): %w", cfg.VoiceICEUDPPort, err)
+		}
+		settingEngine.SetICEUDPMux(mux)
+		iceMux = mux
+	}
+
 	return &webrtcAPI{
-		API:        webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine), webrtc.WithInterceptorRegistry(registry)),
+		API: webrtc.NewAPI(
+			webrtc.WithMediaEngine(mediaEngine),
+			webrtc.WithInterceptorRegistry(registry),
+			webrtc.WithSettingEngine(settingEngine),
+		),
 		videoCodec: videoCodec,
+		iceMux:     iceMux,
 	}, nil
 }
 

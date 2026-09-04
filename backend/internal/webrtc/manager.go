@@ -60,6 +60,10 @@ func ErrorCode(err error) string {
 type Signaler struct {
 	// SendToUser envia em unicast a todas as conexões do usuário.
 	SendToUser func(userID string, event any)
+	// SendToClient envia em unicast a UMA conexão (clientID). Usado para o
+	// signaling WebRTC (answer/ICE/erros), que pertence à conexão que originou
+	// — não pode vazar para outras abas/dispositivos do mesmo usuário.
+	SendToClient func(clientID string, event any)
 	// BroadcastToUsers envia somente aos clientes cujo usuário está em allowed.
 	BroadcastToUsers func(allowed map[string]bool, event any)
 	// VoiceAudience retorna os usuários online autorizados a escutar os
@@ -135,13 +139,18 @@ func GetManager() *Manager {
 	return manager
 }
 
-// sendError envia um evento `error` com o código de voz ao usuário.
-func (m *Manager) sendError(userID string, err error) {
+// sendErrorToClient envia um evento `error` de voz a UMA conexão (clientID) —
+// usado pelos erros de renegociação, que pertencem à conexão que originou o
+// signaling (sem fallback para SendToUser: clientID vazio não envia).
+func (m *Manager) sendErrorToClient(clientID string, err error) {
+	if clientID == "" || m.signaler.SendToClient == nil {
+		return
+	}
 	code := voiceErrorCode(err)
 	if code == "" {
 		code = CodeVoiceNotFound
 	}
-	m.signaler.SendToUser(userID, VoiceError{
+	m.signaler.SendToClient(clientID, VoiceError{
 		Type:    "error",
 		Message: err.Error(),
 		Code:    code,
@@ -290,8 +299,9 @@ func (m *Manager) userRoomCount(userID string) int {
 // Join adiciona o usuário à sala de voz do canal (cria o peer sem PC; a
 // PeerConnection só existe após o voice_offer). Enforce de VOICE_MAX_ROOM_PEERS
 // e VOICE_MAX_ROOMS_PER_USER. A permissão de canal (connect_voice) é checada
-// antes, no websocket/client.go.
-func (m *Manager) Join(channelID, userID string) error {
+// antes, no websocket/client.go. clientID identifica a conexão que pediu o
+// join (o voice_joined vai só para ela, não para todas as conexões do usuário).
+func (m *Manager) Join(channelID, userID, clientID string) error {
 	if m.stopped.Load() {
 		return ErrVoiceRoomClosed
 	}
@@ -315,7 +325,7 @@ func (m *Manager) Join(channelID, userID string) error {
 		room = m.createRoom(channelID)
 	}
 
-	if err := room.addPeer(userID); err != nil {
+	if err := room.addPeer(userID, clientID); err != nil {
 		// Sala cheia: destrói a sala recém-criada se ficou vazia.
 		if room.peerCount() == 0 {
 			room.destroy()
@@ -338,14 +348,15 @@ func (m *Manager) Leave(channelID, userID string) error {
 	if !room.hasPeer(userID) {
 		return ErrVoiceNotFound
 	}
-	room.removePeer(userID)
-	m.trackUserRoom(userID, channelID, false)
+	room.removePeer(userID) // removePeer limpa userRooms (VOICE_MAX_ROOMS_PER_USER)
 	return nil
 }
 
 // ClientOffer processa a oferta SDP do cliente (join, screen share ou mais
-// slots) e responde com voice_answer + trickle ICE.
-func (m *Manager) ClientOffer(channelID, userID, sdp string) error {
+// slots) e responde com voice_answer + trickle ICE. clientID é a conexão que
+// enviou a oferta: ela passa a ser a "dono" do signaling da PeerConnection
+// (voice_answer/ICE/erros vão só para ela).
+func (m *Manager) ClientOffer(channelID, userID, clientID, sdp string) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
@@ -360,7 +371,7 @@ func (m *Manager) ClientOffer(channelID, userID, sdp string) error {
 	if err := validateSDP(sdp, m.cfg, true); err != nil {
 		return err
 	}
-	return peer.enqueue(func() error { return peer.handleOffer(sdp) })
+	return peer.enqueue(func() error { return peer.handleOffer(clientID, sdp) })
 }
 
 // ClientAnswer processa a resposta SDP do cliente a uma renegociação
@@ -399,7 +410,12 @@ func (m *Manager) AddICECandidate(channelID, userID, candidate, sdpMid string, s
 	if peer == nil {
 		return ErrVoiceNotFound
 	}
-	return peer.addICECandidate(candidate, sdpMid, sdpMLineIndex)
+	// Entra na fila de renegociação (D4): o candidate é aplicado em sequência
+	// com o offer/answer, evitando corrida com SetRemoteDescription/CreateAnswer
+	// (pion não serializa signaling + candidatos entre goroutines).
+	return peer.enqueue(func() error {
+		return peer.addICECandidate(candidate, sdpMid, sdpMLineIndex)
+	})
 }
 
 // Subscribe faz o subscriber começar a receber a track de vídeo/screen do
@@ -525,8 +541,7 @@ func (m *Manager) UserOffline(userID string) {
 		if !room.hasPeer(userID) {
 			continue
 		}
-		room.removePeer(userID)
-		m.trackUserRoom(userID, channelID, false)
+		room.removePeer(userID) // removePeer limpa userRooms (VOICE_MAX_ROOMS_PER_USER)
 	}
 
 	m.limiterMu.Lock()
@@ -561,6 +576,11 @@ func (m *Manager) Shutdown() {
 
 	for _, room := range rooms {
 		room.destroy()
+	}
+
+	// Encerra o ICEUDPMux (libera a porta UDP compartilhada).
+	if m.api != nil && m.api.iceMux != nil {
+		_ = m.api.iceMux.Close()
 	}
 }
 

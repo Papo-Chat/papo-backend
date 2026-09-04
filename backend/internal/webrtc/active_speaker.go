@@ -1,7 +1,6 @@
 package webrtc
 
 import (
-	"math"
 	"strings"
 
 	"github.com/pion/interceptor"
@@ -100,11 +99,10 @@ func (r *audioLevelReader) Read(b []byte, attrs interceptor.Attributes) (int, in
 	return n, attrs, err
 }
 
-// audioLevelToDBFS converte o nível linear (0-127, RFC 6464) para dBFS.
-// level=0 (silêncio) vira -120 dBFS (abaixo do threshold do active speaker).
+// audioLevelToDBFS converte o nível da extensão ssrc-audio-level (RFC 6464)
+// para dBFS. O valor 0-127 do RFC já é o dBFS negado: 0 = 0 dBFS (mais alto)
+// e 127 = -127 dBFS (silêncio). A conversão anterior tratava 0 como silêncio
+// e 127 como máximo (invertido).
 func audioLevelToDBFS(level uint8) float64 {
-	if level == 0 {
-		return -120
-	}
-	return 20 * math.Log10(float64(level)/127.0)
+	return -float64(level)
 }

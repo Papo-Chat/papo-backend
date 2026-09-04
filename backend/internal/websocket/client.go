@@ -10,6 +10,7 @@ import (
 	"papo/internal/services"
 	"papo/internal/utils"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -41,6 +42,7 @@ type Client struct {
 	hub             *Hub
 	conn            *websocket.Conn
 	userID          string
+	clientID        string // identidade única da conexão (uuid) — routing de signaling
 	statusMessage   *string
 	nickname        *string
 	persistedStatus *string
@@ -66,6 +68,7 @@ func NewClient(hub *Hub, conn *websocket.Conn, userID string, statusMessage, nic
 		hub:             hub,
 		conn:            conn,
 		userID:          userID,
+		clientID:        uuid.NewString(),
 		statusMessage:   statusMessage,
 		nickname:        nickname,
 		persistedStatus: persistedStatus,

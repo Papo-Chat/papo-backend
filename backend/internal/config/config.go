@@ -71,6 +71,11 @@ type Config struct {
 	VoiceSignalRateBurst    int
 	VoiceSubscribeRateLimit int
 	VoiceSubscribeRateBurst int
+	// VoiceICEUDPPort é a porta UDP única do ICEUDPMux: todas as
+	// PeerConnections compartilham a mesma porta (multiplexado por ufrag), o
+	// que torna o firewall/deploy previsível (uma porta, não uma faixa).
+	// 0 desliga o mux (volta a usar portas efêmeras).
+	VoiceICEUDPPort int
 
 	// Moderação de imagens (nudez/gore): worker Python supervisionado pelo
 	// processo Go, inferência assíncrona fora do caminho crítico do envio de
@@ -162,6 +167,8 @@ func LoadConfig() *Config {
 		VoiceSignalRateBurst:    getEnvInt("VOICE_SIGNAL_RATE_BURST", 20),
 		VoiceSubscribeRateLimit: getEnvInt("VOICE_SUBSCRIBE_RATE_LIMIT", 5),
 		VoiceSubscribeRateBurst: getEnvInt("VOICE_SUBSCRIBE_RATE_BURST", 10),
+		// 50000: porta fixa por padrão (deploy previsível). 0 desliga o mux.
+		VoiceICEUDPPort: getEnvInt("VOICE_ICE_UDP_PORT", 50000),
 
 		ModerationEnabled:         getEnvBool("MODERATION_ENABLED", false),
 		ModerationWorkerCommand:   getEnv("MODERATION_WORKER_COMMAND", "python3"),

@@ -79,6 +79,7 @@ func main() {
 	// voz via hub e a audiência usa a permissão connect_voice (fail-closed).
 	voiceMgr := webrtc.NewManager(cfg, webrtc.Signaler{
 		SendToUser:       hub.SendToUser,
+		SendToClient:     hub.SendToClient,
 		BroadcastToUsers: func(allowed map[string]bool, event any) { hub.BroadcastToUsers(event, allowed) },
 		VoiceAudience: func(channelID string) map[string]bool {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

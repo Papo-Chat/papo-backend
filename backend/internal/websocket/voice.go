@@ -65,7 +65,7 @@ func (c *Client) handleVoiceJoin(raw []byte) {
 		return
 	}
 
-	if err := m.Join(event.ChannelID, c.userID); err != nil {
+	if err := m.Join(event.ChannelID, c.userID, c.clientID); err != nil {
 		c.sendVoiceError(err)
 	}
 }
@@ -98,7 +98,7 @@ func (c *Client) handleVoiceOffer(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.ClientOffer(event.ChannelID, c.userID, event.SDP); err != nil {
+	if err := m.ClientOffer(event.ChannelID, c.userID, c.clientID, event.SDP); err != nil {
 		c.sendVoiceError(err)
 	}
 }

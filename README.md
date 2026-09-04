@@ -54,6 +54,7 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [ ] Hashed Resync para conexão instável
 - [ ] Mais informação no endpoint conexão
 - [ ] 2P-Auth (Authenticator)
+- [ ] SFU com simulcast
 - [ ] Direct Messages / Block User
 - [ ] Bot API
 - [ ] Mention Roles
@@ -215,6 +216,9 @@ MODERATION_WORKER_COMMAND=python3
 STUN_URLS=stun:stun.l.google.com:19302
 TURN_URLS=
 TURN_SECRET=
+
+# Porta UDP para MUX, 0 desliga
+VOICE_ICE_UDP_PORT=50000
 ```
 
 ## API

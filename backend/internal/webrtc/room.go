@@ -13,7 +13,7 @@ import (
 
 // Parâmetros do active speaker (D8): decaimento do score por tick (1s) e
 // threshold mínimo de nível (dBFS) para permanecer no top-K. Score é o
-// nível mais alto visto na janela (RFC 6464, negativo: -14.5 * level).
+// nível mais alto visto na janela (RFC 6464, dBFS = -level).
 const (
 	scoreDecayPerTick = 15.0 // dB por tick (1s): quem para de falar cai do top-K
 	scoreThreshold    = -95.0
@@ -174,8 +174,9 @@ func (r *Room) noteAudioLevel(userID string, level float64) {
 }
 
 // addPeer adiciona o usuário à sala (cria o peer sem PC — a PeerConnection
-// só existe após o voice_offer). Enforce de VOICE_MAX_ROOM_PEERS.
-func (r *Room) addPeer(userID string) error {
+// só existe após o voice_offer). Enforce de VOICE_MAX_ROOM_PEERS. clientID é a
+// conexão que pediu o join (o voice_joined vai só para ela).
+func (r *Room) addPeer(userID, clientID string) error {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -196,14 +197,17 @@ func (r *Room) addPeer(userID string) error {
 
 	r.cancelCleanup()
 
-	// Estado inicial ao late joiner (unicast) + notifica os demais leitores.
+	// Estado inicial ao late joiner (unicast à conexão que pediu o join) +
+	// notifica os demais leitores.
 	members := r.members()
-	r.m.signaler.SendToUser(userID, VoiceJoined{
-		Type:           EventTypeVoiceJoined,
-		ChannelID:      r.channelID,
-		Members:        members,
-		ActiveSpeakers: r.currentTopK(),
-	})
+	if r.m.signaler.SendToClient != nil {
+		r.m.signaler.SendToClient(clientID, VoiceJoined{
+			Type:           EventTypeVoiceJoined,
+			ChannelID:      r.channelID,
+			Members:        members,
+			ActiveSpeakers: r.currentTopK(),
+		})
+	}
 	r.m.broadcastVoice(r.channelID, VoiceStateUpdate{
 		Type:          EventTypeVoiceStateUpdate,
 		ChannelID:     r.channelID,
@@ -243,6 +247,13 @@ func (r *Room) removePeer(userID string) {
 		syncs = append(syncs, syncPair{peer: p, set: set, owners: owners, tracks: tracks})
 	}
 	r.mu.Unlock()
+
+	// Limpa o tracking de salas do usuário (VOICE_MAX_ROOMS_PER_USER). É aqui
+	// — e não nos callers (Leave/UserOffline) — porque removePeer é o único
+	// ponto por onde um peer sai da sala (saída explícita, WS offline, falha
+	// de ICE/PC). Sem isso, uma falha de PC deixa entry stale em userRooms e
+	// o usuário não consegue reentrar (ErrVoiceAlreadyInRoom).
+	r.m.trackUserRoom(userID, r.channelID, false)
 
 	// Libera os slots de vídeo que o peer publicava nos demais subscribers e
 	// resincroniza o áudio (o top-K já não inclui o peer que saiu).
@@ -363,6 +374,7 @@ func (r *Room) destroy() {
 	r.mu.Unlock()
 
 	for _, p := range peers {
+		r.m.trackUserRoom(p.userID, r.channelID, false)
 		p.close()
 	}
 }
@@ -400,6 +412,7 @@ func (r *Room) destroyWithClosedNotice() {
 			ChannelID: r.channelID,
 			UserID:    p.userID,
 		})
+		r.m.trackUserRoom(p.userID, r.channelID, false)
 		p.close()
 	}
 }

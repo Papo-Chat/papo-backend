@@ -38,11 +38,20 @@ type Peer struct {
 	pc     *webrtc.PeerConnection
 	closed bool
 
+	// signalingClient é o clientID da conexão que originou o signaling da PC
+	// (definido pelo voice_offer). voice_answer/ICE/erros de reneg vão só para
+	// ela — nunca para todas as conexões do usuário (outras abas/dispositivos).
+	signalingClient string
+
 	// tracks recebidas (cliente → servidor)
 	audioTrack  *webrtc.TrackRemote
 	videoTrack  *webrtc.TrackRemote // câmera
 	screenTrack *webrtc.TrackRemote // screen share
 	audioSSRC   uint32              // SSRC da track de áudio (registro p/ active speaker)
+
+	// fanouts: 1 reader por track recebida (kind → fanout). Os subscribers
+	// forwardam via o fanout do publisher (nunca chamam ReadRTP diretamente).
+	fanouts map[string]*fanout
 
 	midRole map[string]trackRole // mid da m-line → papel (do offer atual)
 
@@ -68,8 +77,11 @@ func newPeer(m *Manager, room *Room, userID string) *Peer {
 		m:          m,
 		room:       room,
 		userID:     userID,
+		fanouts:    make(map[string]*fanout),
 		midRole:    make(map[string]trackRole),
-		renegQueue: make(chan func() error, 16),
+		// 64: acomoda o burst de trickle ICE (muitos candidatos em sequência)
+		// sem descartar por rate limit durante a conexão.
+		renegQueue: make(chan func() error, 64),
 		renegStop:  make(chan struct{}),
 	}
 	go p.renegWorker()
@@ -86,6 +98,11 @@ func (p *Peer) renegWorker() {
 		case fn := <-p.renegQueue:
 			if err := fn(); err != nil {
 				// Renegociação falhou: o cliente vê o erro e pode tentar de novo.
+				// Vai à conexão dona do signaling (p.mu solto durante o send).
+				p.mu.Lock()
+				clientID := p.signalingClient
+				p.mu.Unlock()
+				p.m.sendErrorToClient(clientID, err)
 			}
 		}
 	}
@@ -112,6 +129,14 @@ func (p *Peer) PC() *webrtc.PeerConnection {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.pc
+}
+
+// setSignalingClient define a conexão dona do signaling da PC (chamado pelo
+// handleOffer). Usado também pelos testes para isolar o roteamento de erros.
+func (p *Peer) setSignalingClient(clientID string) {
+	p.mu.Lock()
+	p.signalingClient = clientID
+	p.mu.Unlock()
 }
 
 // ensurePC cria a PeerConnection na primeira vez (o worker de renegociação é
@@ -148,8 +173,9 @@ func (p *Peer) ensurePC() bool {
 }
 
 // handleOffer processa a oferta SDP do cliente (join, screen share ou mais
-// slots) e responde com voice_answer + trickle ICE.
-func (p *Peer) handleOffer(sdp string) error {
+// slots) e responde com voice_answer + trickle ICE. clientID é a conexão que
+// enviou a oferta: ela passa a ser a "dona" do signaling da PC.
+func (p *Peer) handleOffer(clientID, sdp string) error {
 	if !p.ensurePC() {
 		return ErrVoiceRoomClosed
 	}
@@ -159,8 +185,10 @@ func (p *Peer) handleOffer(sdp string) error {
 	}
 
 	// Atualiza o mapa mid → papel ANTES do SetRemoteDescription (OnTrack só
-	// dispara após ICE/DTLS, mas o mapa já deve estar correto).
+	// dispara após ICE/DTLS, mas o mapa já deve estar correto). A conexão que
+	// enviou a oferta torna-se a dona do signaling (answer/ICE/erros vão a ela).
 	p.mu.Lock()
+	p.signalingClient = clientID
 	p.midRole = parseMidRoles(sdp)
 	firstOffer := len(p.videoSlots) == 0 && len(p.audioSlots) == 0
 	screenRemoved := p.screenTrack != nil && !hasRole(p.midRole, roleScreen)
@@ -192,12 +220,14 @@ func (p *Peer) handleOffer(sdp string) error {
 		return err
 	}
 
-	// voice_answer (unicast) — p.mu solto.
-	p.m.signaler.SendToUser(p.userID, VoiceAnswer{
-		Type:      EventTypeVoiceAnswer,
-		ChannelID: p.room.channelID,
-		SDP:       answer.SDP,
-	})
+	// voice_answer (unicast à conexão dona do signaling) — p.mu solto.
+	if p.m.signaler.SendToClient != nil {
+		p.m.signaler.SendToClient(clientID, VoiceAnswer{
+			Type:      EventTypeVoiceAnswer,
+			ChannelID: p.room.channelID,
+			SDP:       answer.SDP,
+		})
+	}
 	return nil
 }
 
@@ -239,13 +269,20 @@ func (p *Peer) setupPCEvents(pc *webrtc.PeerConnection) {
 			return
 		}
 		init := candidate.ToJSON()
-		p.m.signaler.SendToUser(p.userID, VoiceICECandidate{
-			Type:          EventTypeVoiceICECandidate,
-			ChannelID:     p.room.channelID,
-			Candidate:     init.Candidate,
-			SDPMid:        init.SDPMid,
-			SDPMLineIndex: intFromU16Ptr(init.SDPMLineIndex),
-		})
+		// ICE do servidor vai à conexão dona do signaling (p.mu para ler o
+		// clientID; o send é feito fora do lock).
+		p.mu.Lock()
+		clientID := p.signalingClient
+		p.mu.Unlock()
+		if clientID != "" && p.m.signaler.SendToClient != nil {
+			p.m.signaler.SendToClient(clientID, VoiceICECandidate{
+				Type:          EventTypeVoiceICECandidate,
+				ChannelID:     p.room.channelID,
+				Candidate:     init.Candidate,
+				SDPMid:        init.SDPMid,
+				SDPMLineIndex: intFromU16Ptr(init.SDPMLineIndex),
+			})
+		}
 	})
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
@@ -268,18 +305,29 @@ func (p *Peer) onIncomingTrack(track *webrtc.TrackRemote, mid string) {
 		return
 	}
 	var newSSRC, oldSSRC uint32
+	var oldFanout *fanout
 	switch p.midRole[mid] {
 	case roleAudio:
+		oldFanout = p.fanouts["audio"]
 		p.audioTrack = track
 		newSSRC = uint32(track.SSRC())
 		oldSSRC = p.audioSSRC
 		p.audioSSRC = newSSRC
 	case roleCamera:
+		oldFanout = p.fanouts["video"]
 		p.videoTrack = track
 	case roleScreen:
+		oldFanout = p.fanouts["screen"]
 		p.screenTrack = track
 	}
 	p.mu.Unlock()
+
+	// Track substituída (renegociação): destrói o fanout da track antiga — o
+	// reader antigo parou (receiver resetado) e os forwarders antigos precisam
+	// ser encerrados (evita goroutine presa no canal sem pacotes).
+	if oldFanout != nil && oldFanout.track != track {
+		oldFanout.destroy()
+	}
 
 	if newSSRC != 0 {
 		p.m.registerSSRC(newSSRC, p.room, p.userID)
@@ -372,17 +420,60 @@ func (p *Peer) hasActiveTrack(kind string) bool {
 	return p.trackOfKind(kind) != nil
 }
 
+// fanoutFor retorna o fanout (reader único) da track do kind, criando sob
+// demanda. Retorna nil quando a track é nil. O caller NÃO pode estar segurando
+// p.mu (adquire internamente) — os callers resolvem o fanout ANTES de segurar
+// o lock do subscriber (evita subscriber.mu → publisher.mu).
+//
+// Se a track do kind mudou (renegociação), o fanout antigo é destruído e um
+// novo é criado para a track nova.
+func (p *Peer) fanoutFor(kind string, track *webrtc.TrackRemote) *fanout {
+	if track == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if f := p.fanouts[kind]; f != nil && f.track == track {
+		return f
+	}
+	if old := p.fanouts[kind]; old != nil {
+		old.destroy()
+	}
+	f := newFanout(track)
+	p.fanouts[kind] = f
+	f.start()
+	return f
+}
+
+// stopAllFanouts destrói todos os fanouts do peer (chamado em close).
+func (p *Peer) stopAllFanouts() {
+	p.mu.Lock()
+	fanouts := make([]*fanout, 0, len(p.fanouts))
+	for _, f := range p.fanouts {
+		fanouts = append(fanouts, f)
+	}
+	p.fanouts = make(map[string]*fanout)
+	p.mu.Unlock()
+	for _, f := range fanouts {
+		f.destroy()
+	}
+}
+
 // assignVideoSlot faz o subscriber começar a receber a track de vídeo/screen
 // do publisher em um slot de vídeo (D5). Sem slot livre → ErrVoiceRoomFull
 // (o caminho de renegociação para adicionar slot é raro/fase 2).
 func (p *Peer) assignVideoSlot(pub *Peer, kind string) error {
-	// Resolve a track e a PC do publisher ANTES de segurar p.mu (evita
-	// p.mu → pub.mu).
+	// Resolve a track, a PC e o fanout do publisher ANTES de segurar p.mu
+	// (evita p.mu → pub.mu).
 	track := pub.trackOfKind(kind)
 	if track == nil {
 		return ErrVoiceNotFound
 	}
 	pubPC := pub.PC()
+	fanout := pub.fanoutFor(kind, track)
+	if fanout == nil {
+		return ErrVoiceNotFound
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -393,7 +484,7 @@ func (p *Peer) assignVideoSlot(pub *Peer, kind string) error {
 	if slot == nil {
 		return ErrVoiceRoomFull
 	}
-	slot.assign(pub, kind, track)
+	slot.assignWithFanout(pub, kind, track, fanout)
 	sendPLI(pubPC, track) // D7: keyframe na troca de conteúdo de slot de vídeo
 	return nil
 }
@@ -463,6 +554,15 @@ func (p *Peer) releaseKind(kind string) {
 // owners e tracks já resolvidos pelo caller (room.tick, sob o lock da sala) —
 // evita p.mu → r.mu e p.mu → other.p.mu.
 func (p *Peer) setAudioSet(set []string, owners []*Peer, tracks []*webrtc.TrackRemote) {
+	// Resolve os fanouts dos publishers ANTES de segurar p.mu (evita
+	// p.mu → owner.mu). fanout[i] é nil quando owner[i]/track[i] é nil.
+	fanouts := make([]*fanout, len(owners))
+	for i := range owners {
+		if owners[i] != nil && tracks[i] != nil {
+			fanouts[i] = owners[i].fanoutFor("audio", tracks[i])
+		}
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed || sameStringSlice(set, p.audioSet) {
@@ -479,11 +579,11 @@ func (p *Peer) setAudioSet(set []string, owners []*Peer, tracks []*webrtc.TrackR
 		if s.owner == owner && s.src == track {
 			continue
 		}
-		if owner == nil || track == nil {
+		if owner == nil || track == nil || fanouts[i] == nil {
 			s.release()
 			continue
 		}
-		s.assign(owner, "audio", track)
+		s.assignWithFanout(owner, "audio", track, fanouts[i])
 	}
 }
 
@@ -546,6 +646,10 @@ func (p *Peer) close() {
 	audioSSRC := p.audioSSRC
 	p.audioSSRC = 0
 	p.mu.Unlock()
+
+	// Encerra os fanouts (readers únicos das tracks) ANTES de fechar a PC:
+	// destrói os forwarders e libera os readers.
+	p.stopAllFanouts()
 
 	if audioSSRC != 0 {
 		p.m.unregisterSSRC(audioSSRC)
