@@ -41,6 +41,13 @@ func MediaBaseDir() string {
 // registra a mídia na tabela media (deduplicação pelo hmac-sha256 do conteúdo).
 // Retorna o hmac-sha256 (hex) e o registro de mídia. Se o conteúdo já existe, o
 // registro existente é reutilizado e a gravação em disco é pulada.
+//
+// A publicação é disco-antes-banco: o arquivo é gravado de forma atômica
+// (temporário + rename) e somente depois o registro entra na tabela media.
+// Assim um leitor nunca encontra a row sem o arquivo completo (o hash é
+// unguessable, mas a ordem correta elimina a janela entre as duas escritas).
+// Se o registro no banco falhar, o arquivo fica órfão (sem row) e é limpo
+// pela rotina de manutenção.
 func StoreMediaFromBytes(ctx context.Context, content []byte, mimeType string) (string, models.Media, error) {
 	cfg := config.LoadConfig()
 
@@ -49,26 +56,57 @@ func StoreMediaFromBytes(ctx context.Context, content []byte, mimeType string) (
 
 	hash := hex.EncodeToString(mac.Sum(nil))
 
-	media, _, err := storage.InsertMediaIfAbsent(ctx, hash, mimeType, int64(len(content)))
-	if err != nil {
-		return "", models.Media{}, err
-	}
-
 	// Grava o arquivo apenas se ainda não existe (deduplicação); se a linha
 	// existe mas o arquivo sumiu, regrava (conteúdo idêntico, auto-cura).
 	path := mediaBlobPath(hash)
 	if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return "", models.Media{}, fmt.Errorf("falha ao criar pasta da mídia: %w", err)
-		}
-		if err := os.WriteFile(path, content, 0o644); err != nil {
-			return "", models.Media{}, fmt.Errorf("falha ao gravar a mídia: %w", err)
+		if err := writeMediaFile(path, content); err != nil {
+			return "", models.Media{}, err
 		}
 	} else if statErr != nil {
 		return "", models.Media{}, fmt.Errorf("falha ao verificar a mídia: %w", statErr)
 	}
 
+	media, _, err := storage.InsertMediaIfAbsent(ctx, hash, mimeType, int64(len(content)))
+	if err != nil {
+		return "", models.Media{}, err
+	}
+
 	return hash, media, nil
+}
+
+// writeMediaFile grava o conteúdo no caminho final de forma atômica: arquivo
+// temporário no mesmo diretório (mesmo filesystem) + rename. Leitores nunca
+// observam o blob parcial — o path final aparece completo ou não aparece.
+func writeMediaFile(path string, content []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("falha ao criar pasta da mídia: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(dir, ".media-*")
+	if err != nil {
+		return fmt.Errorf("falha ao criar arquivo temporário da mídia: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer removeIfExists(tmpName)
+
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return fmt.Errorf("falha ao gravar a mídia: %w", err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return fmt.Errorf("falha ao ajustar permissão da mídia: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("falha ao gravar a mídia: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("falha ao gravar a mídia: %w", err)
+	}
+
+	return nil
 }
 
 // ErrMediaNotFound indica que a mídia não existe.

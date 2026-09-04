@@ -79,8 +79,9 @@ func CreateServer(ctx context.Context, name string, ownerID *string) (models.Ser
 // o ícone não é um GIF, JPEG ou PNG válido de até 2MB com dimensões de até
 // 512px ou quando o servidor é privado sem senha.
 // O sistema tem um único servidor (coluna singleton UNIQUE na tabela
-// servers): tentar criar um segundo servidor retorna ErrServerAlreadyCreated
-// (violação da constraint única).
+// servers): tentar criar um segundo servidor retorna ErrServerAlreadyCreated.
+// Com ícone, o singleton é verificado antes de gravar o blob (evita blob
+// órfão); a constraint única continua como garantia final.
 func CreateServerWithIcon(ctx context.Context, name, icon, iconFormat string, public bool, password *string, ownerID *string) (models.Server, error) {
 	if name == "" || utf8.RuneCountInString(name) > maxServerNameLength {
 		return models.Server{}, ErrInvalidInput
@@ -104,6 +105,15 @@ func CreateServerWithIcon(ctx context.Context, name, icon, iconFormat string, pu
 
 		if err := utils.ValidateImage(decoded, utils.MaxImageDimension); err != nil {
 			return models.Server{}, ErrInvalidInput
+		}
+
+		// Verifica o singleton antes de gravar o blob: sem isso, uma criação
+		// repetida com ícone distinto grava mídia e a constraint única só
+		// falha na inserção, deixando blob órfão (acumulável via POST /server).
+		if _, err := storage.GetServer(ctx); err == nil {
+			return models.Server{}, ErrServerAlreadyCreated
+		} else if !errors.Is(err, storage.ErrNotFound) {
+			return models.Server{}, err
 		}
 
 		sha, _, err := StoreMediaFromBytes(ctx, decoded, formatToMime(format))

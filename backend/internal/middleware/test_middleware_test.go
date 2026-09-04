@@ -994,3 +994,104 @@ func TestJWTMiddlewareReusedToken(t *testing.T) {
 		t.Errorf("esperava B revogada, obtive %v", err)
 	}
 }
+
+// --- BodyLimit ---
+
+// newBodyLimitApp monta um Echo com o BodyLimit e um handler que lê o corpo
+// inteiro (simula o c.Bind dos handlers reais).
+func newBodyLimitApp(limit int64, skip func(echo.Context) bool) *echo.Echo {
+	e := echo.New()
+	e.Use(BodyLimit(limit, skip))
+	e.POST("/target", func(c echo.Context) error {
+		body, err := io.ReadAll(c.Request().Body)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		return c.String(http.StatusOK, fmt.Sprintf("lido:%d", len(body)))
+	})
+	return e
+}
+
+// TestBodyLimitRejectsOversizedDeclaredBody garante que Content-Length acima
+// do limite responde 413 (RFC 7807) sem ler o corpo nem chamar o handler.
+func TestBodyLimitRejectsOversizedDeclaredBody(t *testing.T) {
+	e := newBodyLimitApp(1024, nil)
+
+	body := bytes.Repeat([]byte("a"), 2048)
+	req := httptest.NewRequest(http.MethodPost, "/target", bytes.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	assertProblem(t, rec, http.StatusRequestEntityTooLarge, "payload-too-large",
+		"Payload muito grande", "corpo da requisição excede o tamanho máximo permitido", "/target")
+}
+
+// TestBodyLimitAllowsBodyWithinLimit garante que corpo dentro do limite é
+// lido integralmente e o handler responde normalmente.
+func TestBodyLimitAllowsBodyWithinLimit(t *testing.T) {
+	e := newBodyLimitApp(1024, nil)
+
+	body := bytes.Repeat([]byte("a"), 512)
+	req := httptest.NewRequest(http.MethodPost, "/target", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "lido:512" {
+		t.Errorf("esperava o corpo completo lido, obtive %q", rec.Body.String())
+	}
+}
+
+// TestBodyLimitSkip garante que o skipper dispensa o limite para as rotas
+// indicadas (ex.: upload com limite próprio maior).
+func TestBodyLimitSkip(t *testing.T) {
+	e := newBodyLimitApp(1024, func(c echo.Context) bool {
+		return c.Path() == "/target"
+	})
+
+	body := bytes.Repeat([]byte("a"), 2048)
+	req := httptest.NewRequest(http.MethodPost, "/target", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200 (skip), obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "lido:2048" {
+		t.Errorf("esperava o corpo completo lido, obtive %q", rec.Body.String())
+	}
+}
+
+// chunkedReader é um io.Reader sem tamanho declarado (simula corpo chunked
+// sem Content-Length confiável).
+type chunkedReader struct {
+	data []byte
+	off  int
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.off:])
+	r.off += n
+	return n, nil
+}
+
+// TestBodyLimitStreamingOverflow garante que corpo chunked acima do limite
+// interrompe a leitura (o handler responde 400 no bind) — mesmo comportamento
+// do BodyLimit oficial do Echo.
+func TestBodyLimitStreamingOverflow(t *testing.T) {
+	e := newBodyLimitApp(1024, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/target", &chunkedReader{data: bytes.Repeat([]byte("a"), 2048)})
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("esperava status 400 para estouro em streaming, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+}

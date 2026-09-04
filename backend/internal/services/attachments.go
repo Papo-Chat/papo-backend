@@ -162,10 +162,16 @@ func resolveReadableAttachment(ctx context.Context, fileID, userID string) (mode
 }
 
 // storeAttachment grava um attachment em etapas, não atômicas entre si:
-//  1. insere o blob na tabela media (deduplicação pelo sha256 do conteúdo);
-//  2. move o arquivo temporário para o caminho content-addressable
-//     (se o blob já existe, o rename reescreve o mesmo conteúdo — inofensivo);
+//  1. move o arquivo temporário para o caminho content-addressable
+//     (rename atômico; se o blob já existe, o rename reescreve o mesmo
+//     conteúdo — inofensivo);
+//  2. insere o blob na tabela media (deduplicação pelo sha256 do conteúdo);
 //  3. insere o registro do attachment referenciando o blob pelo sha_hash.
+//
+// A publicação é disco-antes-banco: o blob só é referenciado pela base após
+// existir completo em disco (um leitor nunca encontra a row sem o arquivo).
+// Se o banco falhar após o rename, o blob fica órfão (sem row) e é limpo pela
+// rotina de manutenção.
 func storeAttachment(ctx context.Context, input AttachmentInput, userID string) (models.Attachments, error) {
 	fileName := utils.SanitizeFileName(input.OriginalFileName)
 	if fileName == "" || utf8.RuneCountInString(fileName) > maxAttachmentNameLength {
@@ -183,11 +189,11 @@ func storeAttachment(ctx context.Context, input AttachmentInput, userID string) 
 		return models.Attachments{}, err
 	}
 
-	if _, _, err := storage.InsertMediaIfAbsent(ctx, hash, mimeType, size); err != nil {
+	if err := moveToBlob(tmpName, hash); err != nil {
 		return models.Attachments{}, err
 	}
 
-	if err := moveToBlob(tmpName, hash); err != nil {
+	if _, _, err := storage.InsertMediaIfAbsent(ctx, hash, mimeType, size); err != nil {
 		return models.Attachments{}, err
 	}
 

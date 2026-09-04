@@ -115,6 +115,11 @@ func newApp() *echo.Echo {
 	e.Use(echoMiddleware.RequestID())
 	e.Use(echoMiddleware.Recover())
 	e.Use(middleware.AuditContext)
+	// Mesma política de main.go: limite global JSON, /messages com limite de
+	// upload próprio (registrado na rota).
+	e.Use(middleware.BodyLimit(middleware.MaxJSONBodySize, func(c echo.Context) bool {
+		return c.Path() == "/messages"
+	}))
 
 	cfg := config.LoadConfig()
 	RegisterAuthRoutes(e, cfg)
@@ -1356,17 +1361,48 @@ func TestCreateServerRouteWithAuth(t *testing.T) {
 }
 
 // TestCreateServerRouteAlreadyExists garante que POST /server responde 409
-// quando o backend já possui o servidor único.
+// quando o backend já possui o servidor único, mesmo com ícone — sem gravar
+// o ícone (sem blob órfão, que seria acumulável via POST /server).
 func TestCreateServerRouteAlreadyExists(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 	createServerFor(t, userID)
 
-	body, _ := json.Marshal(map[string]any{"name": "srv_" + randHex(4), "public": true})
+	mediaCount := func() int {
+		var n int
+		if err := storage.GetDB().QueryRowContext(context.Background(),
+			"SELECT count(*) FROM media").Scan(&n); err != nil {
+			t.Fatalf("falha ao contar rows de media: %v", err)
+		}
+		return n
+	}
+	before := mediaCount()
+
+	// Dimensões incomuns: o hash deste PNG não colide com mídia de outros testes.
+	icon := base64.StdEncoding.EncodeToString(pngAvatarBytes(137, 211))
+	body, _ := json.Marshal(map[string]any{"name": "srv_" + randHex(4), "public": true, "icon_blob": icon, "icon_format": "PNG"})
 	rec := do(t, e, http.MethodPost, "/server", body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusConflict, "server-already-exists", "Ação Proibida",
 		"O servidor já foi criado, não há como criar mais de 1 servidor")
+
+	if after := mediaCount(); after != before {
+		t.Errorf("criação repetida com ícone não deveria gravar mídia: %d row(s) antes, %d depois", before, after)
+	}
+}
+
+// TestCreateServerRouteBodyTooLarge garante que POST /server responde 413
+// (RFC 7807) quando o corpo JSON excede o limite global (4MB).
+func TestCreateServerRouteBodyTooLarge(t *testing.T) {
+	e := newApp()
+	_, token := registerAndLogin(t, e)
+
+	pad := strings.Repeat("a", middleware.MaxJSONBodySize+1)
+	body, _ := json.Marshal(map[string]any{"name": "srv", "pad": pad})
+	rec := do(t, e, http.MethodPost, "/server", body, authCookie(token))
+
+	assertProblem(t, rec, http.StatusRequestEntityTooLarge, "payload-too-large", "Payload muito grande",
+		"corpo da requisição excede o tamanho máximo permitido")
 }
 
 // TestCreateServerRouteUnauthenticated garante que POST /server exige
@@ -2821,6 +2857,30 @@ func TestDeleteMessageRouteNotFound(t *testing.T) {
 	rec := do(t, e, http.MethodDelete, "/messages/00000000-0000-4000-8000-000000000000", nil, authCookie(token))
 
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "mensagem não encontrada")
+}
+
+// TestMessagesRouteAcceptsBodyAboveJSONLimit garante que POST /messages é
+// dispensado do limite global JSON (4MB) e aceita corpo multipart maior que
+// ele (limite próprio de upload, 110MB).
+func TestMessagesRouteAcceptsBodyAboveJSONLimit(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+
+	png := append([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A},
+		bytes.Repeat([]byte("x"), middleware.MaxJSONBodySize+1)...) // >4MB
+
+	rec := doMultipart(t, e, http.MethodPost, "/messages",
+		map[string]string{"channel_id": channel.ID, "content": "anexo grande"},
+		map[string][][2]string{"attachments": {{"grande.png", string(png)}}}, authCookie(token))
+
+	if rec.Code == http.StatusRequestEntityTooLarge {
+		t.Fatalf("POST /messages não deve receber o limite global JSON: 413 (corpo: %s)", rec.Body.String())
+	}
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
 }
 
 // --- rotas de attachments (tarefa 7.3) ---

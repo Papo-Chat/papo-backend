@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -72,7 +73,10 @@ type Config struct {
 }
 
 var (
-	configInstance *Config
+	// configInstance é atualizado a cada LoadConfig (releitura do ambiente) e
+	// lido por múltiplas goroutines (middlewares/handlers concorrentes): o
+	// acesso precisa ser atômico.
+	configInstance atomic.Pointer[Config]
 	once           sync.Once
 )
 
@@ -83,7 +87,7 @@ func LoadConfig() *Config {
 			logrus.Info("Arquivo .env não encontrado, usando variáveis de ambiente")
 		}
 	})
-	configInstance = &Config{
+	configInstance.Store(&Config{
 		ServerPort:        getEnv("SERVER_PORT", ""),
 		DatabaseURL:       getEnv("DATABASE_URL", ""),
 		JWTSecret:         getEnv("JWT_SECRET", ""),
@@ -137,10 +141,10 @@ func LoadConfig() *Config {
 		ModerationNudityMode:      getEnv("MODERATION_NUDITY_MODE", "off"),
 		ModerationGoreMode:        getEnv("MODERATION_GORE_MODE", "off"),
 		ModerationNudityThreshold: getEnvFloat("MODERATION_NUDITY_THRESHOLD", 0.8),
-		ModerationGoreThreshold:   getEnvFloat("MODERATION_GORE_THRESHOLD", 0.8),
-	}
+		ModerationGoreThreshold: getEnvFloat("MODERATION_GORE_THRESHOLD", 0.8),
+	})
 
-	return configInstance
+	return configInstance.Load()
 }
 
 func getEnv(key string, defaultValue string) string {

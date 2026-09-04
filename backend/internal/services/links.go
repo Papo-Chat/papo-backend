@@ -113,6 +113,38 @@ var (
 	previewRateUsers  sync.Map // userID → *tokenBucket
 )
 
+// previewRateUserTTL é o tempo máximo que um bucket por usuário fica no mapa
+// sem uso: os obsoletos são removidos pela rotina de manutenção (sem isso o
+// previewRateUsers cresce sem limite — 1 entrada por usuário que enviou
+// link). O TTL é bem maior que o tempo de refill completo (~6min a 10/min),
+// então remover um bucket não altera a taxa de um usuário ativo. (var: os
+// testes usam um TTL curto.)
+var previewRateUserTTL = time.Hour
+
+// stale indica se o bucket está sem uso há mais que ttl (o último uso é a
+// referência do refill).
+func (b *tokenBucket) stale(ttl time.Duration) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return time.Since(b.last) > ttl
+}
+
+// cleanupStalePreviewRateBuckets remove dos buckets de preview por usuário os
+// que estão sem uso há mais que previewRateUserTTL (chamado pela rotina de
+// manutenção). CompareAndDelete evita remover um bucket recém-recriado para
+// o mesmo usuário. Retorna a quantidade removida.
+func cleanupStalePreviewRateBuckets() int {
+	removed := 0
+	previewRateUsers.Range(func(key, value any) bool {
+		bucket := value.(*tokenBucket)
+		if bucket.stale(previewRateUserTTL) && previewRateUsers.CompareAndDelete(key, bucket) {
+			removed++
+		}
+		return true
+	})
+	return removed
+}
+
 // previewRateAllow consome token do bucket global (PREVIEW_FETCH_RATE_GLOBAL,
 // 30/min) E do bucket por usuário (PREVIEW_FETCH_RATE_USER, 10/min). Estourou
 // algum → false (pular o preview, best-effort). Fecha o cache-busting por

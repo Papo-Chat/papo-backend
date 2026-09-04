@@ -1502,6 +1502,67 @@ func TestStoreMediaFromBytes(t *testing.T) {
 	}
 }
 
+// TestStoreMediaFromBytesConcurrent garante que gravações concorrentes do
+// mesmo conteúdo produzem uma única row e um único arquivo completo (escrita
+// atômica: sem blob parcial visível e sem temporário .media-* residual).
+func TestStoreMediaFromBytesConcurrent(t *testing.T) {
+	withTempMediaDir(t)
+
+	cfg := config.LoadConfig()
+	content := []byte("conteúdo concorrente da mídia")
+	mac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
+	mac.Write(content)
+	expectedHash := hex.EncodeToString(mac.Sum(nil))
+
+	const workers = 8
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := StoreMediaFromBytes(testCtx(), content, "text/plain"); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("StoreMediaFromBytes concorrente retornou erro: %v", err)
+	}
+
+	var count int
+	if err := storage.GetDB().QueryRowContext(testCtx(),
+		"SELECT count(*) FROM media WHERE sha_hash = $1", expectedHash).Scan(&count); err != nil {
+		t.Fatalf("falha ao contar rows de mídia: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("esperava 1 row para o conteúdo, obtive %d", count)
+	}
+
+	got, err := MediaContent(expectedHash)
+	if err != nil {
+		t.Fatalf("MediaContent retornou erro: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("conteúdo do blob não confere:\n got  %q\n want %q", got, content)
+	}
+
+	// Nenhum temporário .media-* residual na pasta de mídia.
+	if err := filepath.WalkDir(mediaBaseDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if strings.HasPrefix(d.Name(), ".media-") {
+			t.Errorf("arquivo temporário residual encontrado: %s", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("falha ao varrer a pasta de mídia: %v", err)
+	}
+}
+
 func TestMediaContent(t *testing.T) {
 	content := []byte("conteúdo lido de volta")
 	hash, _, err := StoreMediaFromBytes(testCtx(), content, "text/plain")
@@ -2066,6 +2127,44 @@ func TestCreateServerWithIcon(t *testing.T) {
 	}
 	if !bytes.Equal(blob, pngAvatarBytes(100, 100)) {
 		t.Errorf("icon_blob persistido não confere: %x", blob)
+	}
+}
+
+// TestCreateServerWithIconAlreadyExistsNoOrphan garante que uma criação
+// repetida com ícone distinto retorna ErrServerAlreadyCreated SEM gravar o
+// ícone na mídia (sem blob órfão — o DoS de disco via POST /server).
+func TestCreateServerWithIconAlreadyExistsNoOrphan(t *testing.T) {
+	withTempMediaDir(t)
+	cleanServers(testCtx())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+
+	icon1 := base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100))
+	if _, err := CreateServerWithIcon(testCtx(), newRandomServerName(), icon1, "png", true, nil, &owner.ID); err != nil {
+		t.Fatalf("CreateServerWithIcon (1ª) retornou erro: %v", err)
+	}
+
+	// Ícone distinto: o servidor já existe → ErrServerAlreadyCreated antes da
+	// gravação em mídia.
+	icon2Bytes := pngAvatarBytes(120, 120)
+	icon2 := base64.StdEncoding.EncodeToString(icon2Bytes)
+	_, err = CreateServerWithIcon(testCtx(), newRandomServerName(), icon2, "png", true, nil, &owner.ID)
+	if !errors.Is(err, ErrServerAlreadyCreated) {
+		t.Fatalf("esperava ErrServerAlreadyCreated, obtive %v", err)
+	}
+
+	// O 2º ícone não pode ter sido gravado (nem row, nem arquivo).
+	cfg := config.LoadConfig()
+	mac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
+	mac.Write(icon2Bytes)
+	hash2 := hex.EncodeToString(mac.Sum(nil))
+	if mediaRowExists(t, hash2) {
+		t.Errorf("ícone de criação repetida não deveria ter row na tabela media")
+	}
+	if _, statErr := os.Stat(mediaBlobPath(hash2)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("ícone de criação repetida não deveria ter arquivo em disco (stat err = %v)", statErr)
 	}
 }
 

@@ -111,6 +111,11 @@ func main() {
 	// WebSocket em GET /ws). As rotas de auth mantêm um limite próprio mais
 	// restrito, aplicado por cima deste.
 	e.Use(middleware.RateLimit(cfg.RateLimit, cfg.RateBurst))
+	// Limite global de corpo (4MB JSON). POST /messages é dispensado aqui e
+	// usa o próprio limite de upload (110MB) na rota.
+	e.Use(middleware.BodyLimit(middleware.MaxJSONBodySize, func(c echo.Context) bool {
+		return c.Path() == "/messages"
+	}))
 
 	e.GET("/health", handlers.HealthHandler)
 	handlers.RegisterAuthRoutes(e, cfg)

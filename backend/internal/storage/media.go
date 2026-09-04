@@ -105,7 +105,7 @@ func FindExistingMediaHashes(ctx context.Context, hashes []string) (map[string]b
 }
 
 // ListMediaHashesBefore lista os sha_hash criados antes do cutoff (candidatos
-// do GC de mídia: rows que podem ter perdido o arquivo).
+// do GC de mídia: rows que podem ter perdido o arquivo ou a referência).
 func ListMediaHashesBefore(ctx context.Context, cutoff time.Time) ([]string, error) {
 	rows, err := GetDB().QueryContext(ctx,
 		"SELECT sha_hash FROM media WHERE created_at < $1",
@@ -151,8 +151,8 @@ func MediaIsReferenced(ctx context.Context, shaHash string) (bool, error) {
 	return referenced, nil
 }
 
-// DeleteMediaByHash remove o registro de mídia (GC: row sem arquivo e sem
-// referência).
+// DeleteMediaByHash remove o registro de mídia (GC: row sem referência, com
+// ou sem arquivo no disco).
 func DeleteMediaByHash(ctx context.Context, shaHash string) error {
 	if _, err := GetDB().ExecContext(ctx, "DELETE FROM media WHERE sha_hash = $1", shaHash); err != nil {
 		return fmt.Errorf("falha ao remover registro de mídia: %w", err)

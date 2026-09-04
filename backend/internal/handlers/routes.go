@@ -132,9 +132,11 @@ func RegisterMessageRoutes(e *echo.Echo, cfg *config.Config) {
 	e.GET("/channels/:channel_id/messages", func(c echo.Context) error {
 		return ListMessagesHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
+	// POST /messages carrega attachments (multipart de até 100MB): limite de
+	// upload próprio, dispensado do limite global JSON (ver main.go).
 	e.POST("/messages", func(c echo.Context) error {
 		return CreateMessageHandler(cfg.BaseURL, c)
-	}, middleware.JWTMiddleware)
+	}, middleware.JWTMiddleware, middleware.BodyLimit(middleware.MaxUploadBodySize, nil))
 	e.PUT("/messages/:message_id", func(c echo.Context) error {
 		return UpdateMessageHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)

@@ -2,6 +2,10 @@ package services
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -430,5 +434,169 @@ func TestRunMaintenanceStartsAndStops(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Errorf("RunMaintenance não retornou após o cancelamento do contexto")
+	}
+}
+
+// TestCleanupStalePreviewRateBuckets garante que a limpeza remove os buckets
+// de preview por usuário sem uso há mais que previewRateUserTTL e mantém os
+// usados recentemente (o previewRateUsers não pode crescer sem limite).
+func TestCleanupStalePreviewRateBuckets(t *testing.T) {
+	oldTTL := previewRateUserTTL
+	previewRateUserTTL = time.Hour
+	t.Cleanup(func() { previewRateUserTTL = oldTTL })
+
+	staleBucket := newTokenBucket(10)
+	staleBucket.last = time.Now().Add(-2 * time.Hour) // sem uso há 2h
+	freshBucket := newTokenBucket(10)
+
+	previewRateUsers.Store("user_stale", staleBucket)
+	previewRateUsers.Store("user_fresh", freshBucket)
+	t.Cleanup(func() {
+		previewRateUsers.Delete("user_stale")
+		previewRateUsers.Delete("user_fresh")
+	})
+
+	removed := cleanupStalePreviewRateBuckets()
+	if removed != 1 {
+		t.Errorf("esperava 1 bucket removido, obtive %d", removed)
+	}
+	if _, ok := previewRateUsers.Load("user_stale"); ok {
+		t.Errorf("bucket sem uso há mais que o TTL deveria ter sido removido")
+	}
+	if _, ok := previewRateUsers.Load("user_fresh"); !ok {
+		t.Errorf("bucket usado recentemente deveria ter sido mantido")
+	}
+}
+
+// mediaHashOf calcula o hmac-sha256 (hex) do conteúdo, como StoreMediaFromBytes.
+func mediaHashOf(t *testing.T, content []byte) string {
+	t.Helper()
+	cfg := config.LoadConfig()
+	mac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
+	mac.Write(content)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// TestCleanupMediaUnreferenced garante que o GC remove mídia antiga sem
+// referência (row + arquivo) — o estado que sobra quando avatar/banner é
+// substituído, ícone trocado ou mensagem/emoji removido — e mantém: mídia
+// antiga ainda referenciada, mídia recente (janela de proteção) e blob
+// compartilhado ainda referenciado por outro usuário.
+func TestCleanupMediaUnreferenced(t *testing.T) {
+	withTempMediaDir(t)
+
+	// row antiga + arquivo, sem referência → row e arquivo removidos
+	unreferenced := randHex(32)
+	insertOldMediaRow(t, unreferenced)
+	unrefPath := writeMediaBlob(t, unreferenced, []byte("sem referência"))
+
+	// row antiga + arquivo, referenciada por avatar → mantida
+	referenced := randHex(32)
+	insertOldMediaRow(t, referenced)
+	writeMediaBlob(t, referenced, []byte("referenciado"))
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário de apoio: %v", err)
+	}
+	if _, err := storage.GetDB().ExecContext(testCtx(),
+		"UPDATE users SET avatar_media = $2 WHERE id = $1", user.ID, referenced); err != nil {
+		t.Fatalf("falha ao referenciar a mídia no avatar: %v", err)
+	}
+
+	// row recente + arquivo, sem referência (upload em andamento) → mantida
+	recent := randHex(32)
+	if _, _, err := storage.InsertMediaIfAbsent(testCtx(), recent, "image/png", 10); err != nil {
+		t.Fatalf("falha ao inserir row de mídia: %v", err)
+	}
+	writeMediaBlob(t, recent, []byte("recente"))
+
+	// blob compartilhado: banner do 1º usuário e avatar do 2º referenciam; o
+	// banner remove a referência → ainda referenciado pelo avatar → mantido
+	shared := randHex(32)
+	insertOldMediaRow(t, shared)
+	writeMediaBlob(t, shared, []byte("compartilhado"))
+	user2, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar 2º usuário de apoio: %v", err)
+	}
+	if _, err := storage.GetDB().ExecContext(testCtx(),
+		"UPDATE users SET banner_media = $2 WHERE id = $1", user.ID, shared); err != nil {
+		t.Fatalf("falha ao referenciar a mídia compartilhada no banner: %v", err)
+	}
+	if _, err := storage.GetDB().ExecContext(testCtx(),
+		"UPDATE users SET avatar_media = $2 WHERE id = $1", user2.ID, shared); err != nil {
+		t.Fatalf("falha ao referenciar a mídia compartilhada no avatar: %v", err)
+	}
+	if _, err := storage.GetDB().ExecContext(testCtx(),
+		"UPDATE users SET banner_media = NULL WHERE id = $1", user.ID); err != nil {
+		t.Fatalf("falha ao remover a referência do banner: %v", err)
+	}
+
+	if err := cleanupMedia(testCtx()); err != nil {
+		t.Fatalf("cleanupMedia retornou erro: %v", err)
+	}
+
+	if mediaRowExists(t, unreferenced) {
+		t.Errorf("row antiga sem referência deveria ter sido removida")
+	}
+	if _, err := os.Stat(unrefPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("arquivo sem referência deveria ter sido removido (stat err = %v)", err)
+	}
+	if !mediaRowExists(t, referenced) {
+		t.Errorf("row referenciada deveria ter sido mantida")
+	}
+	if !mediaRowExists(t, recent) {
+		t.Errorf("row recente (janela de proteção) deveria ter sido mantida")
+	}
+	if !mediaRowExists(t, shared) {
+		t.Errorf("blob compartilhado ainda referenciado deveria ter sido mantido")
+	}
+}
+
+// TestCleanupMediaAfterAvatarSwap garante o cenário de DoS de disco: trocar o
+// avatar repetidamente não acumula blobs — o avatar antigo (sem referência)
+// tem row e arquivo removidos pelo GC, e o avatar atual é mantido.
+func TestCleanupMediaAfterAvatarSwap(t *testing.T) {
+	withTempMediaDir(t)
+
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	// Dimensões incomuns: hashes não colidem com mídia de outros testes.
+	oldAvatar := pngAvatarBytes(131, 173)
+	newAvatar := pngAvatarBytes(149, 191)
+	for _, av := range [][]byte{oldAvatar, newAvatar} {
+		if err := UpdateAvatar(testCtx(), user.ID, base64.StdEncoding.EncodeToString(av), "png"); err != nil {
+			t.Fatalf("UpdateAvatar retornou erro: %v", err)
+		}
+	}
+
+	oldHash := mediaHashOf(t, oldAvatar)
+	newHash := mediaHashOf(t, newAvatar)
+
+	// Retrocede o created_at do blob antigo além da janela de proteção
+	// (simula uma troca feita há mais que mediaGracePeriod).
+	if _, err := storage.GetDB().ExecContext(testCtx(),
+		"UPDATE media SET created_at = now() - interval '2 hours' WHERE sha_hash = $1", oldHash); err != nil {
+		t.Fatalf("falha ao retroceder a row de mídia antiga: %v", err)
+	}
+
+	if err := cleanupMedia(testCtx()); err != nil {
+		t.Fatalf("cleanupMedia retornou erro: %v", err)
+	}
+
+	if mediaRowExists(t, oldHash) {
+		t.Errorf("avatar antigo (sem referência) deveria ter tido a row removida")
+	}
+	if _, err := os.Stat(mediaBlobPath(oldHash)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("arquivo do avatar antigo deveria ter sido removido (stat err = %v)", err)
+	}
+	if !mediaRowExists(t, newHash) {
+		t.Errorf("avatar atual deveria ter sido mantido")
+	}
+	if _, err := os.Stat(mediaBlobPath(newHash)); err != nil {
+		t.Errorf("arquivo do avatar atual deveria ter sido mantido: %v", err)
 	}
 }

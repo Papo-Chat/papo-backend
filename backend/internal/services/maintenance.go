@@ -19,9 +19,9 @@ import (
 const maintenanceInterval = 12 * time.Hour
 
 // mediaGracePeriod é a janela de proteção do GC de mídia: estados quebrados
-// (arquivo sem row, row sem arquivo, attachment sem mensagem) só são limpos
-// quando persistem por mais que esta janela, evitando apagar uploads em
-// andamento (a gravação não é atômica entre disco e banco).
+// (mídia sem referência, arquivo sem row, row sem arquivo, attachment sem
+// mensagem) só são limpos quando persistem por mais que esta janela, evitando
+// apagar uploads em andamento (a gravação não é atômica entre disco e banco).
 const mediaGracePeriod = time.Hour
 
 // auditPurgeBatchSize é o limite de rows por DELETE do purge de auditoria
@@ -64,6 +64,9 @@ func RunMaintenance(ctx context.Context, cfg *config.Config) {
 		if err := archiveUserConnections(jobCtx); err != nil {
 			utils.Errorf("manutenção: arquivamento de conexões de sessão: %v", err)
 		}
+		if removed := cleanupStalePreviewRateBuckets(); removed > 0 {
+			utils.Infof("manutenção: %d bucket(s) obsoleto(s) de rate limit de preview removido(s)", removed)
+		}
 	}
 
 	run()
@@ -85,8 +88,10 @@ func RunMaintenance(ctx context.Context, cfg *config.Config) {
 //  1. attachments órfãos (messages_id NULL) — órfãos de uma gravação
 //     incompleta de mensagem, nunca expostos pela API; a remoção libera a FK
 //     para a fase 2;
-//  2. rows da tabela media sem arquivo no disco — removidas quando sem
-//     referência; row referenciada com arquivo perdido é logada e mantida
+//  2. mídia antiga sem referência — avatar/banner substituído, ícone do
+//     servidor trocado, mensagem/emoji removido: a row é removida e o arquivo
+//     também, se existir (sem isso cada substituição acumularia blobs no
+//     disco); row ainda referenciada com arquivo perdido é logada e mantida
 //     (o conteúdo já está perdido e a FK impede a remoção);
 //  3. arquivos órfãos no disco (sem row na tabela media) — inclui
 //     temporários .upload-* de upload interrompido; diretórios vazios
@@ -102,59 +107,72 @@ func cleanupMedia(ctx context.Context) error {
 		utils.Infof("manutenção: %d attachment(s) órfão(s) removido(s)", removedAttachments)
 	}
 
-	deletedRows, err := cleanupMissingMediaFiles(ctx, cutoff)
+	staleRows, staleFiles, err := cleanupStaleMedia(ctx, cutoff)
 	if err != nil {
-		return fmt.Errorf("rows sem arquivo: %w", err)
+		return fmt.Errorf("mídia sem referência: %w", err)
 	}
 
-	deletedFiles, err := cleanupOrphanMediaFiles(ctx, cutoff)
+	orphanFiles, err := cleanupOrphanMediaFiles(ctx, cutoff)
 	if err != nil {
 		return fmt.Errorf("arquivos órfãos: %w", err)
 	}
 
-	if deletedRows > 0 || deletedFiles > 0 {
-		utils.Infof("manutenção: GC de mídia: %d row(s) sem arquivo e %d arquivo(s) órfão(s) removido(s)", deletedRows, deletedFiles)
+	if staleRows > 0 || staleFiles > 0 || orphanFiles > 0 {
+		utils.Infof("manutenção: GC de mídia: %d row(s) e %d arquivo(s) sem referência e %d arquivo(s) órfão(s) removido(s)",
+			staleRows, staleFiles, orphanFiles)
 	}
 	return nil
 }
 
-// cleanupMissingMediaFiles remove as rows da tabela media criadas antes do
-// cutoff cujo arquivo não existe no disco. Rows com referência (avatar,
-// banner, ícone, emoji, attachment, thumbnail, preview) não são removidas: o
-// conteúdo já está perdido e a FK impede o delete — o caso é logado para o
-// operador investigar.
-func cleanupMissingMediaFiles(ctx context.Context, cutoff time.Time) (int, error) {
+// cleanupStaleMedia remove da tabela media as rows criadas antes do cutoff
+// que perderam toda referência (avatar/banner substituído, ícone do servidor
+// trocado, mensagem com attachments removida, emoji removido) e o arquivo
+// correspondente, se existir. Rows ainda referenciadas são mantidas; as
+// referenciadas com arquivo perdido são logadas (o conteúdo já está perdido e
+// a FK impede o delete — o operador investiga).
+func cleanupStaleMedia(ctx context.Context, cutoff time.Time) (int, int, error) {
 	hashes, err := storage.ListMediaHashesBefore(ctx, cutoff)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
-	deleted := 0
+	deletedRows, deletedFiles := 0, 0
 	for _, hash := range hashes {
 		if ctx.Err() != nil {
-			return deleted, ctx.Err()
+			return deletedRows, deletedFiles, ctx.Err()
 		}
 
-		// Arquivo existe (ou stat falhou por outro motivo): mantém a row.
-		if _, err := os.Stat(mediaBlobPath(hash)); !errors.Is(err, os.ErrNotExist) {
-			continue
+		path := mediaBlobPath(hash)
+		_, statErr := os.Stat(path)
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			continue // stat falhou por outro motivo: mantém (conservador)
 		}
+		fileExists := statErr == nil
 
 		referenced, err := storage.MediaIsReferenced(ctx, hash)
 		if err != nil {
-			return deleted, err
+			return deletedRows, deletedFiles, err
 		}
 		if referenced {
-			utils.Errorf("manutenção: mídia %s sem arquivo e com referência: conteúdo perdido, row mantida (verificar backup)", hash)
+			if !fileExists {
+				utils.Errorf("manutenção: mídia %s sem arquivo e com referência: conteúdo perdido, row mantida (verificar backup)", hash)
+			}
 			continue
 		}
 
 		if err := storage.DeleteMediaByHash(ctx, hash); err != nil {
-			return deleted, err
+			return deletedRows, deletedFiles, err
 		}
-		deleted++
+		deletedRows++
+		if fileExists {
+			if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return deletedRows, deletedFiles, fmt.Errorf("falha ao remover arquivo de mídia sem referência %s: %w", hash, err)
+			}
+			removeEmptyDir(filepath.Dir(path))
+			deletedFiles++
+		}
 	}
-	return deleted, nil
+	return deletedRows, deletedFiles, nil
 }
 
 // mediaFile é um arquivo encontrado no varredura da pasta de mídia.
