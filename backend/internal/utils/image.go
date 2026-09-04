@@ -231,7 +231,7 @@ func generateGIFThumbnail(content []byte, maxDim int, ctx context.Context) ([]by
 			scaled = cloneNRGBA(canvas)
 		} else {
 			scaled = image.NewNRGBA(image.Rect(0, 0, TW, TH))
-			draw.CatmullRom.Scale(scaled, scaled.Bounds(), canvas, canvas.Bounds(), draw.Src, nil)
+			draw.ApproxBiLinear.Scale(scaled, scaled.Bounds(), canvas, canvas.Bounds(), draw.Src, nil)
 		}
 
 		outFrame := image.NewPaletted(image.Rect(0, 0, TW, TH), pal)
