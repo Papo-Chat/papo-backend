@@ -29,6 +29,9 @@ type User struct {
 	StatusMessage       *string    `db:"status_message" json:"status_message"`
 	StatusUpdatedAt     *time.Time `db:"status_updated_at" json:"status_updated_at"`
 	CreatedAt           time.Time  `db:"created_at" json:"created_at"`
+	// Roles são as roles atribuídas ao usuário (user_roles), resolvidas pelo
+	// service nas respostas whoami/profile (id, nome e cor de cada role).
+	Roles []RoleSummary `json:"roles"`
 }
 
 // UserSummary representa uma visão reduzida de usuário para listagens (GET /users),
@@ -41,6 +44,9 @@ type UserSummary struct {
 	StatusMessage   *string    `db:"status_message" json:"status_message"`
 	StatusUpdatedAt *time.Time `db:"status_updated_at" json:"status_updated_at"`
 	CreatedAt       time.Time  `db:"created_at" json:"created_at"`
+	// Roles são as roles atribuídas ao usuário (user_roles), resolvidas pelo
+	// service (id, nome e cor de cada role).
+	Roles []RoleSummary `json:"roles"`
 }
 
 // UserList é a resposta paginada de GET /users.

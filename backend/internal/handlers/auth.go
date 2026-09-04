@@ -318,16 +318,17 @@ type whoamiSettings struct {
 }
 
 type whoamiResponse struct {
-	ID              string         `json:"id"`
-	Username        string         `json:"username"`
-	Nickname        *string        `json:"nickname"`
-	AvatarBlob      []byte         `json:"avatar_blob"`
-	AvatarFormat    string         `json:"avatar_format"`
-	Status          *string        `json:"status"`
-	StatusMessage   *string        `json:"status_message"`
-	StatusUpdatedAt *time.Time     `json:"status_updated_at"`
-	CreatedAt       time.Time      `json:"created_at"`
-	Settings        whoamiSettings `json:"settings"`
+	ID              string               `json:"id"`
+	Username        string               `json:"username"`
+	Nickname        *string              `json:"nickname"`
+	AvatarBlob      []byte               `json:"avatar_blob"`
+	AvatarFormat    string               `json:"avatar_format"`
+	Status          *string              `json:"status"`
+	StatusMessage   *string              `json:"status_message"`
+	StatusUpdatedAt *time.Time           `json:"status_updated_at"`
+	CreatedAt       time.Time            `json:"created_at"`
+	Roles           []models.RoleSummary `json:"roles"`
+	Settings        whoamiSettings       `json:"settings"`
 	// ConnectionViolation indica que o reuso de um token de sessão foi
 	// detectado neste usuário (todas as conexões foram revogadas); o cliente
 	// usa a flag para avisar o usuário.
@@ -366,6 +367,7 @@ func WhoamiHandler(baseURL string, c echo.Context) error {
 		StatusMessage:   user.StatusMessage,
 		StatusUpdatedAt: user.StatusUpdatedAt,
 		CreatedAt:       user.CreatedAt,
+		Roles:           user.Roles,
 		Settings: whoamiSettings{
 			Version: settings.Version,
 			Config:  settings.Config,

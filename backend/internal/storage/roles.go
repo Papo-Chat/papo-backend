@@ -248,6 +248,77 @@ func GetRolesByUser(ctx context.Context, userID string) ([]models.Role, error) {
 	return roles, nil
 }
 
+// GetRoleSummariesByUser retorna as roles atribuídas a um usuário
+// (id, nome e cor), na ordem de criação.
+func GetRoleSummariesByUser(ctx context.Context, userID string) ([]models.RoleSummary, error) {
+	rows, err := GetDB().QueryContext(ctx,
+		`SELECT r.id, r.name, r.color
+		 FROM roles r
+		 JOIN user_roles ur ON ur.role_id = r.id
+		 WHERE ur.user_id = $1
+		 ORDER BY r.created_at, r.id`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar roles do usuário: %w", err)
+	}
+	defer rows.Close()
+
+	roles := make([]models.RoleSummary, 0)
+	for rows.Next() {
+		var role models.RoleSummary
+		if err := rows.Scan(&role.ID, &role.Name, &role.Color); err != nil {
+			return nil, fmt.Errorf("falha ao ler role: %w", err)
+		}
+		roles = append(roles, role)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao listar roles do usuário: %w", err)
+	}
+
+	return roles, nil
+}
+
+// GetRoleSummariesByUsers retorna as roles atribuídas a cada um dos usuários
+// informados (id, nome e cor), agrupadas por user_id. Todos os ids informados
+// aparecem no mapa (usuários sem roles recebem fatia vazia).
+func GetRoleSummariesByUsers(ctx context.Context, userIDs []string) (map[string][]models.RoleSummary, error) {
+	rolesByUser := make(map[string][]models.RoleSummary, len(userIDs))
+	for _, id := range userIDs {
+		rolesByUser[id] = make([]models.RoleSummary, 0)
+	}
+	if len(userIDs) == 0 {
+		return rolesByUser, nil
+	}
+
+	rows, err := GetDB().QueryContext(ctx,
+		`SELECT ur.user_id, r.id, r.name, r.color
+		 FROM user_roles ur
+		 JOIN roles r ON r.id = ur.role_id
+		 WHERE ur.user_id = ANY($1)
+		 ORDER BY ur.user_id, r.created_at, r.id`,
+		userIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar roles dos usuários: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID string
+		var role models.RoleSummary
+		if err := rows.Scan(&userID, &role.ID, &role.Name, &role.Color); err != nil {
+			return nil, fmt.Errorf("falha ao ler role: %w", err)
+		}
+		rolesByUser[userID] = append(rolesByUser[userID], role)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao listar roles dos usuários: %w", err)
+	}
+
+	return rolesByUser, nil
+}
+
 // GetUsersByRoles retorna os ids distintos dos usuários atribuídos a ao
 // menos uma das roles informadas.
 func GetUsersByRoles(ctx context.Context, roleIDs []string) ([]string, error) {

@@ -21,3 +21,11 @@ type Role struct {
 	Permissions RolePermissions `db:"permissions" json:"permissions"`
 	CreatedAt   time.Time       `db:"created_at" json:"created_at"`
 }
+
+// RoleSummary é a visão reduzida de role exposta nas respostas de usuário
+// (whoami, profile e listagem de usuários): id, nome e cor.
+type RoleSummary struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Color *string `json:"color"`
+}

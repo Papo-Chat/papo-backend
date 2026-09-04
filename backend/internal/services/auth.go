@@ -192,7 +192,8 @@ func RequireServerAccess(ctx context.Context, authCookie string) error {
 	return nil
 }
 
-// Whoami retorna o usuário autenticado e suas configurações.
+// Whoami retorna o usuário autenticado e suas configurações, incluindo as
+// roles atribuídas ao usuário.
 func Whoami(ctx context.Context, userID string) (models.User, models.UserSettings, error) {
 	if userID == "" {
 		return models.User{}, models.UserSettings{}, ErrUserNotFound
@@ -214,6 +215,12 @@ func Whoami(ctx context.Context, userID string) (models.User, models.UserSetting
 	if err != nil {
 		return models.User{}, models.UserSettings{}, err
 	}
+
+	roles, err := storage.GetRoleSummariesByUser(ctx, userID)
+	if err != nil {
+		return models.User{}, models.UserSettings{}, err
+	}
+	user.Roles = roles
 
 	return user, settings, nil
 }

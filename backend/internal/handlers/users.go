@@ -15,17 +15,18 @@ import (
 )
 
 type profileResponse struct {
-	ID              string     `json:"id"`
-	Username        string     `json:"username"`
-	Nickname        *string    `json:"nickname"`
-	AvatarBlob      []byte     `json:"avatar_blob"`
-	AvatarFormat    string     `json:"avatar_format"`
-	BannerMedia     *string    `json:"banner_media"`
-	Description     *string    `json:"description"`
-	Status          *string    `json:"status"`
-	StatusMessage   *string    `json:"status_message"`
-	StatusUpdatedAt *time.Time `json:"status_updated_at"`
-	CreatedAt       time.Time  `json:"created_at"`
+	ID              string               `json:"id"`
+	Username        string               `json:"username"`
+	Nickname        *string              `json:"nickname"`
+	AvatarBlob      []byte               `json:"avatar_blob"`
+	AvatarFormat    string               `json:"avatar_format"`
+	BannerMedia     *string              `json:"banner_media"`
+	Description     *string              `json:"description"`
+	Status          *string              `json:"status"`
+	StatusMessage   *string              `json:"status_message"`
+	StatusUpdatedAt *time.Time           `json:"status_updated_at"`
+	CreatedAt       time.Time            `json:"created_at"`
+	Roles           []models.RoleSummary `json:"roles"`
 }
 
 // ProfileHandler implementa GET /users/:user_id/profile.
@@ -67,6 +68,7 @@ func ProfileHandler(baseURL string, c echo.Context) error {
 		StatusMessage:   user.StatusMessage,
 		StatusUpdatedAt: user.StatusUpdatedAt,
 		CreatedAt:       user.CreatedAt,
+		Roles:           user.Roles,
 	})
 }
 
@@ -131,6 +133,7 @@ func ProfileBatchHandler(baseURL string, c echo.Context) error {
 			StatusMessage:   user.StatusMessage,
 			StatusUpdatedAt: user.StatusUpdatedAt,
 			CreatedAt:       user.CreatedAt,
+			Roles:           user.Roles,
 		})
 	}
 

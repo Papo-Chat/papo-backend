@@ -2073,6 +2073,11 @@ components:
         created_at:
           type: string
           format: date-time
+        roles:
+          type: array
+          description: Roles atribuídas ao usuário
+          items:
+            $ref: '#/components/schemas/RoleSummary'
 
     UserProfile:
       type: object
@@ -2115,6 +2120,11 @@ components:
         created_at:
           type: string
           format: date-time
+        roles:
+          type: array
+          description: Roles atribuídas ao usuário
+          items:
+            $ref: '#/components/schemas/RoleSummary'
 
     ProfileBatchRequest:
       type: object
@@ -2161,6 +2171,11 @@ components:
         created_at:
           type: string
           format: date-time
+        roles:
+          type: array
+          description: Roles atribuídas ao usuário
+          items:
+            $ref: '#/components/schemas/RoleSummary'
         settings:
           type: object
           properties:
@@ -2969,6 +2984,20 @@ components:
         created_at:
           type: string
           format: date-time
+
+    RoleSummary:
+      type: object
+      description: Visão reduzida de role exposta nas respostas de usuário (whoami, profile, listagem de usuários)
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        color:
+          type: string
+          nullable: true
+          example: '#FF0000'
 
     RolePermissions:
       type: object

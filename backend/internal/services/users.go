@@ -107,7 +107,8 @@ func validateUserConfig(config models.UserConfig) error {
 
 // Profile retorna o perfil do usuário, sem campos sensíveis
 // (password_hash, last_ip, banned) e sem as configurações. O blob do avatar
-// e o formato são resolvidos da tabela media e do disco.
+// e o formato são resolvidos da tabela media e do disco; as roles
+// atribuídas ao usuário são resolvidas de user_roles/roles.
 func Profile(ctx context.Context, userID string) (models.User, error) {
 	if userID == "" {
 		return models.User{}, ErrUserNotFound
@@ -124,6 +125,12 @@ func Profile(ctx context.Context, userID string) (models.User, error) {
 	if err := resolveAvatar(ctx, &user); err != nil {
 		return models.User{}, err
 	}
+
+	roles, err := storage.GetRoleSummariesByUser(ctx, userID)
+	if err != nil {
+		return models.User{}, err
+	}
+	user.Roles = roles
 
 	return user, nil
 }
@@ -173,9 +180,16 @@ func ProfilesBatch(ctx context.Context, ids []string) ([]models.User, error) {
 		return nil, err
 	}
 
+	foundIDs := make([]string, 0, len(users))
 	byID := make(map[string]models.User, len(users))
 	for _, user := range users {
 		byID[user.ID] = user
+		foundIDs = append(foundIDs, user.ID)
+	}
+
+	rolesByUser, err := storage.GetRoleSummariesByUsers(ctx, foundIDs)
+	if err != nil {
+		return nil, err
 	}
 
 	profiles := make([]models.User, 0, len(unique))
@@ -187,6 +201,7 @@ func ProfilesBatch(ctx context.Context, ids []string) ([]models.User, error) {
 		if err := resolveAvatar(ctx, &user); err != nil {
 			return nil, err
 		}
+		user.Roles = rolesByUser[id]
 		profiles = append(profiles, user)
 	}
 
@@ -194,7 +209,8 @@ func ProfilesBatch(ctx context.Context, ids []string) ([]models.User, error) {
 }
 
 // ListUsers lista os usuários cadastrados com keyset pagination, sem campos
-// sensíveis ou densos (password_hash, avatar, banned, last_ip).
+// sensíveis ou densos (password_hash, avatar, banned, last_ip), incluindo as
+// roles atribuídas a cada usuário.
 // Se since for fornecido, retorna apenas usuários criados após esse
 // timestamp (polling de novos usuários); se lastID for fornecido junto, o
 // cursor é o par (created_at, id) e usuários do mesmo timestamp com id maior
@@ -208,6 +224,18 @@ func ListUsers(ctx context.Context, since *time.Time, lastID string) (models.Use
 	hasMore := len(users) > userListLimit
 	if hasMore {
 		users = users[:userListLimit]
+	}
+
+	userIDs := make([]string, 0, len(users))
+	for _, user := range users {
+		userIDs = append(userIDs, user.ID)
+	}
+	rolesByUser, err := storage.GetRoleSummariesByUsers(ctx, userIDs)
+	if err != nil {
+		return models.UserList{}, err
+	}
+	for i := range users {
+		users[i].Roles = rolesByUser[users[i].ID]
 	}
 
 	return models.UserList{Users: users, HasMore: hasMore}, nil

@@ -721,6 +721,50 @@ func TestWhoamiNonexistentUser(t *testing.T) {
 	}
 }
 
+func TestWhoamiIncludesRoles(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	color := "#FF0000"
+	role, err := storage.CreateRole(testCtx(), newRandomRoleName(), &color, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+
+	got, _, err := Whoami(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("Whoami retornou erro: %v", err)
+	}
+	if len(got.Roles) != 1 {
+		t.Fatalf("esperava 1 role, obtive %d", len(got.Roles))
+	}
+	if got.Roles[0].ID != role.ID || got.Roles[0].Name != role.Name {
+		t.Errorf("role não confere: got %+v", got.Roles[0])
+	}
+	if got.Roles[0].Color == nil || *got.Roles[0].Color != color {
+		t.Errorf("esperava cor %q, obtive %v", color, got.Roles[0].Color)
+	}
+}
+
+func TestWhoamiNoRoles(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	got, _, err := Whoami(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("Whoami retornou erro: %v", err)
+	}
+	if got.Roles == nil || len(got.Roles) != 0 {
+		t.Errorf("esperava roles vazia (não nil), obtive %v", got.Roles)
+	}
+}
+
 // --- Profile ---
 
 func TestProfile(t *testing.T) {
@@ -806,6 +850,48 @@ func TestProfileNonexistentUser(t *testing.T) {
 	}
 }
 
+func TestProfileIncludesRoles(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	color := "#00FF00"
+	role, err := storage.CreateRole(testCtx(), newRandomRoleName(), &color, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+
+	got, err := Profile(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("Profile retornou erro: %v", err)
+	}
+	if len(got.Roles) != 1 {
+		t.Fatalf("esperava 1 role, obtive %d", len(got.Roles))
+	}
+	if got.Roles[0].ID != role.ID || got.Roles[0].Name != role.Name {
+		t.Errorf("role não confere: got %+v", got.Roles[0])
+	}
+	if got.Roles[0].Color == nil || *got.Roles[0].Color != color {
+		t.Errorf("esperava cor %q, obtive %v", color, got.Roles[0].Color)
+	}
+
+	// usuário sem roles retorna roles vazia (não nil)
+	other, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	gotOther, err := Profile(testCtx(), other.ID)
+	if err != nil {
+		t.Fatalf("Profile retornou erro: %v", err)
+	}
+	if gotOther.Roles == nil || len(gotOther.Roles) != 0 {
+		t.Errorf("esperava roles vazia (não nil), obtive %v", gotOther.Roles)
+	}
+}
+
 // --- ProfilesBatch ---
 
 func TestProfilesBatch(t *testing.T) {
@@ -836,6 +922,42 @@ func TestProfilesBatch(t *testing.T) {
 		if p.PasswordHash != "" {
 			t.Errorf("ProfilesBatch não deve retornar password_hash, obtive %q", p.PasswordHash)
 		}
+	}
+}
+
+func TestProfilesBatchIncludesRoles(t *testing.T) {
+	u1, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	u2, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	color := "#0000FF"
+	role, err := storage.CreateRole(testCtx(), newRandomRoleName(), &color, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), u1.ID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+
+	profiles, err := ProfilesBatch(testCtx(), []string{u1.ID, u2.ID})
+	if err != nil {
+		t.Fatalf("ProfilesBatch retornou erro: %v", err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("esperava 2 perfis, obtive %d", len(profiles))
+	}
+	if len(profiles[0].Roles) != 1 || profiles[0].Roles[0].ID != role.ID {
+		t.Errorf("primeiro perfil deveria ter a role atribuída: got %+v", profiles[0].Roles)
+	}
+	if profiles[0].Roles[0].Color == nil || *profiles[0].Roles[0].Color != color {
+		t.Errorf("esperava cor %q, obtive %v", color, profiles[0].Roles[0].Color)
+	}
+	if profiles[1].Roles == nil || len(profiles[1].Roles) != 0 {
+		t.Errorf("segundo perfil deveria ter roles vazia (não nil), obtive %v", profiles[1].Roles)
 	}
 }
 
@@ -1858,6 +1980,40 @@ func TestListUsers(t *testing.T) {
 	}
 	if got.CreatedAt.IsZero() {
 		t.Error("esperava created_at preenchido")
+	}
+}
+
+func TestListUsersIncludesRoles(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	color := "#123456"
+	role, err := storage.CreateRole(testCtx(), newRandomRoleName(), &color, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	if _, err := storage.AssignUserRole(testCtx(), user.ID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+
+	users, err := ListUsers(testCtx(), nil, "")
+	if err != nil {
+		t.Fatalf("ListUsers retornou erro: %v", err)
+	}
+	byID := make(map[string]models.UserSummary, len(users.Users))
+	for _, u := range users.Users {
+		byID[u.ID] = u
+	}
+	got, ok := byID[user.ID]
+	if !ok {
+		t.Fatalf("usuário %s não aparece na listagem", user.ID)
+	}
+	if len(got.Roles) != 1 || got.Roles[0].ID != role.ID || got.Roles[0].Name != role.Name {
+		t.Errorf("listagem não expôs a role atribuída: got %+v", got.Roles)
+	}
+	if got.Roles[0].Color == nil || *got.Roles[0].Color != color {
+		t.Errorf("esperava cor %q, obtive %v", color, got.Roles[0].Color)
 	}
 }
 

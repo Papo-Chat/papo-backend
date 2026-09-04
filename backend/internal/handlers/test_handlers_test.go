@@ -450,6 +450,65 @@ func TestWhoamiRouteWithAuth(t *testing.T) {
 	}
 }
 
+// TestWhoamiRouteIncludesRoles garante que GET /auth/whoami expõe as roles
+// atribuídas ao usuário (id, nome e cor).
+func TestWhoamiRouteIncludesRoles(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+
+	color := "#123456"
+	role, err := storage.CreateRole(context.Background(), "role_"+randHex(8), &color, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	if _, err := storage.AssignUserRole(context.Background(), userID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+
+	rec := do(t, e, http.MethodGet, "/auth/whoami", nil, authCookie(token))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Roles []models.RoleSummary `json:"roles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(resp.Roles) != 1 {
+		t.Fatalf("esperava 1 role, obtive %d", len(resp.Roles))
+	}
+	if resp.Roles[0].ID != role.ID || resp.Roles[0].Name != role.Name {
+		t.Errorf("role não confere: got %+v", resp.Roles[0])
+	}
+	if resp.Roles[0].Color == nil || *resp.Roles[0].Color != color {
+		t.Errorf("esperava cor %q, obtive %v", color, resp.Roles[0].Color)
+	}
+}
+
+// TestWhoamiRouteNoRoles garante que GET /auth/whoami responde roles vazia
+// (não null) para usuário sem roles.
+func TestWhoamiRouteNoRoles(t *testing.T) {
+	e := newApp()
+	_, token := registerAndLogin(t, e)
+
+	rec := do(t, e, http.MethodGet, "/auth/whoami", nil, authCookie(token))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Roles []models.RoleSummary `json:"roles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.Roles == nil || len(resp.Roles) != 0 {
+		t.Errorf("esperava roles vazia (não null), obtive %v", resp.Roles)
+	}
+}
+
 // assertWhoamiStatus afirma o status persistido retornado por GET /auth/whoami
 // (wantStatus vazio significa status nil).
 func assertWhoamiStatus(t *testing.T, e *echo.Echo, token, wantStatus string) {
@@ -624,6 +683,51 @@ func TestProfileRouteWithAuth(t *testing.T) {
 	}
 }
 
+// TestProfileRouteIncludesRoles garante que GET /users/:user_id/profile expõe
+// as roles atribuídas ao usuário (id, nome e cor).
+func TestProfileRouteIncludesRoles(t *testing.T) {
+	e := newApp()
+	userID, _ := registerAndLogin(t, e)
+
+	color := "#654321"
+	role, err := storage.CreateRole(context.Background(), "role_"+randHex(8), &color, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	if _, err := storage.AssignUserRole(context.Background(), userID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+
+	c := newContext(t, http.MethodGet, "/users/"+userID+"/profile", nil, "")
+	c.Set(middleware.UserIDContextKey, userID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(userID)
+	rec := recorder(c)
+
+	if err := ProfileHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ProfileHandler retornou erro: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Roles []models.RoleSummary `json:"roles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(resp.Roles) != 1 {
+		t.Fatalf("esperava 1 role, obtive %d", len(resp.Roles))
+	}
+	if resp.Roles[0].ID != role.ID || resp.Roles[0].Name != role.Name {
+		t.Errorf("role não confere: got %+v", resp.Roles[0])
+	}
+	if resp.Roles[0].Color == nil || *resp.Roles[0].Color != color {
+		t.Errorf("esperava cor %q, obtive %v", color, resp.Roles[0].Color)
+	}
+}
+
 // TestProfileBatchRouteWithAuth garante que POST /users/profileBatch é
 // roteado para o handler de batch (rota estática coexistindo com
 // /users/:user_id) e responde os perfis na ordem da requisição.
@@ -650,6 +754,50 @@ func TestProfileBatchRouteWithAuth(t *testing.T) {
 	}
 	if resp.Profiles[0].ID != userID {
 		t.Errorf("esperava id %q, obtive %q", userID, resp.Profiles[0].ID)
+	}
+}
+
+// TestProfileBatchRouteIncludesRoles garante que POST /users/profile_batch
+// expõe as roles atribuídas a cada usuário (id, nome e cor).
+func TestProfileBatchRouteIncludesRoles(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+
+	color := "#ABCDEF"
+	role, err := storage.CreateRole(context.Background(), "role_"+randHex(8), &color, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	if _, err := storage.AssignUserRole(context.Background(), userID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string][]string{"ids": {userID}})
+	rec := do(t, e, http.MethodPost, "/users/profile_batch", body, authCookie(token))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Profiles []struct {
+			ID    string               `json:"id"`
+			Roles []models.RoleSummary `json:"roles"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(resp.Profiles) != 1 {
+		t.Fatalf("esperava 1 perfil, obtive %d", len(resp.Profiles))
+	}
+	if len(resp.Profiles[0].Roles) != 1 {
+		t.Fatalf("esperava 1 role, obtive %d", len(resp.Profiles[0].Roles))
+	}
+	if resp.Profiles[0].Roles[0].ID != role.ID || resp.Profiles[0].Roles[0].Name != role.Name {
+		t.Errorf("role não confere: got %+v", resp.Profiles[0].Roles[0])
+	}
+	if resp.Profiles[0].Roles[0].Color == nil || *resp.Profiles[0].Roles[0].Color != color {
+		t.Errorf("esperava cor %q, obtive %v", color, resp.Profiles[0].Roles[0].Color)
 	}
 }
 
@@ -1040,6 +1188,54 @@ func TestListUsersRouteWithAuth(t *testing.T) {
 	for _, u := range resp.Users {
 		if u.ID == userID {
 			found = true
+		}
+	}
+	if !found {
+		t.Error("usuário autenticado não aparece na listagem")
+	}
+}
+
+// TestListUsersRouteIncludesRoles garante que GET /users expõe as roles
+// atribuídas a cada usuário (id, nome e cor).
+func TestListUsersRouteIncludesRoles(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+
+	color := "#FF5500"
+	role, err := storage.CreateRole(context.Background(), "role_"+randHex(8), &color, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	if _, err := storage.AssignUserRole(context.Background(), userID, role.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+
+	rec := do(t, e, http.MethodGet, "/users", nil, authCookie(token))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Users []struct {
+			ID    string               `json:"id"`
+			Roles []models.RoleSummary `json:"roles"`
+		} `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	found := false
+	for _, u := range resp.Users {
+		if u.ID != userID {
+			continue
+		}
+		found = true
+		if len(u.Roles) != 1 || u.Roles[0].ID != role.ID || u.Roles[0].Name != role.Name {
+			t.Errorf("listagem não expôs a role atribuída: got %+v", u.Roles)
+		}
+		if u.Roles[0].Color == nil || *u.Roles[0].Color != color {
+			t.Errorf("esperava cor %q, obtive %v", color, u.Roles[0].Color)
 		}
 	}
 	if !found {

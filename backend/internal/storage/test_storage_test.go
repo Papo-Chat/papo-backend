@@ -1910,6 +1910,90 @@ func TestGetRolesByUser(t *testing.T) {
 	}
 }
 
+func TestGetRoleSummariesByUser(t *testing.T) {
+	user := newTestUser(t)
+	_ = newTestServer(t, nil)
+	r1 := newTestRole(t)
+	r2 := newTestRole(t)
+	newTestRole(t)
+
+	if _, err := AssignUserRole(testCtx(), user.ID, r1.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+	if _, err := AssignUserRole(testCtx(), user.ID, r2.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+
+	roles, err := GetRoleSummariesByUser(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetRoleSummariesByUser retornou erro: %v", err)
+	}
+	if len(roles) != 2 {
+		t.Fatalf("esperava 2 roles, obtive %d", len(roles))
+	}
+	byID := make(map[string]models.RoleSummary, len(roles))
+	for _, r := range roles {
+		byID[r.ID] = r
+	}
+	for _, want := range []models.Role{r1, r2} {
+		got, ok := byID[want.ID]
+		if !ok {
+			t.Errorf("GetRoleSummariesByUser não retornou a role %s", want.ID)
+			continue
+		}
+		if got.Name != want.Name {
+			t.Errorf("esperava nome %q, obtive %q", want.Name, got.Name)
+		}
+		if got.Color == nil || *got.Color != "#123456" {
+			t.Errorf("esperava cor #123456, obtive %v", got.Color)
+		}
+	}
+
+	// usuário sem roles retorna fatia vazia (não nil)
+	empty, err := GetRoleSummariesByUser(testCtx(), newTestUser(t).ID)
+	if err != nil {
+		t.Fatalf("GetRoleSummariesByUser retornou erro: %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Errorf("esperava fatia vazia, obtive %v", empty)
+	}
+}
+
+func TestGetRoleSummariesByUsers(t *testing.T) {
+	u1 := newTestUser(t)
+	u2 := newTestUser(t)
+	_ = newTestServer(t, nil)
+	r1 := newTestRole(t)
+	r2 := newTestRole(t)
+
+	if _, err := AssignUserRole(testCtx(), u1.ID, r1.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+	if _, err := AssignUserRole(testCtx(), u1.ID, r2.ID); err != nil {
+		t.Fatalf("falha ao atribuir role: %v", err)
+	}
+
+	rolesByUser, err := GetRoleSummariesByUsers(testCtx(), []string{u1.ID, u2.ID})
+	if err != nil {
+		t.Fatalf("GetRoleSummariesByUsers retornou erro: %v", err)
+	}
+	if len(rolesByUser[u1.ID]) != 2 {
+		t.Errorf("esperava 2 roles para o primeiro usuário, obtive %d", len(rolesByUser[u1.ID]))
+	}
+	if len(rolesByUser[u2.ID]) != 0 {
+		t.Errorf("esperava 0 roles para o segundo usuário, obtive %d", len(rolesByUser[u2.ID]))
+	}
+
+	// entrada vazia retorna mapa vazio
+	empty, err := GetRoleSummariesByUsers(testCtx(), nil)
+	if err != nil {
+		t.Fatalf("GetRoleSummariesByUsers retornou erro: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("esperava mapa vazio, obtive %v", empty)
+	}
+}
+
 func TestGetUsersByRole(t *testing.T) {
 	u1 := newTestUser(t)
 	u2 := newTestUser(t)
