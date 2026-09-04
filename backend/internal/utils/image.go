@@ -36,7 +36,7 @@ const MaxThumbnailDimCeiling = 16384
 const MaxThumbnailSize = 1 << 20
 
 // MaxGIFFrames é o número máximo de frames de uma thumbnail de GIF animado.
-const MaxGIFFrames = 100
+const MaxGIFFrames = 300
 
 // MaxGIFThumbSize é o tamanho máximo (bytes) da thumbnail de GIF animado após
 // o re-encode.
@@ -162,25 +162,7 @@ func staticGIFFallback(content []byte, maxDim int) ([]byte, string, int, int, er
 // Antes de decodificar frames, um walker de blocos conta os frames e soma a
 // área dos sub-rectângulos (sem decodificar pixels): bloqueia frame bomb e
 // limita a memória de gif.DecodeAll (que retém todos os frames).
-func generateGIFThumbnail(
-	content []byte,
-	maxDim int,
-	ctx context.Context,
-) ([]byte, string, int, int, error) {
-	// Mantém o pre-check barato antes de gif.DecodeAll.
-	_, totalArea, ok := gifFrameInfo(content)
-	if !ok {
-		return staticGIFFallback(content, maxDim)
-	}
-
-	if totalArea > int64(config.LoadConfig().ThumbnailMaxPixels) {
-		return staticGIFFallback(content, maxDim)
-	}
-
-	if ctx.Err() != nil {
-		return nil, "", 0, 0, ctx.Err()
-	}
-
+func generateGIFThumbnail(content []byte, maxDim int, ctx context.Context) ([]byte, string, int, int, error) {
 	delays, totalArea, ok := gifFrameInfo(content)
 	if !ok || len(delays) == 0 {
 		return staticGIFFallback(content, maxDim)
@@ -189,6 +171,10 @@ func generateGIFThumbnail(
 	if len(delays) > MaxGIFFrames ||
 		totalArea > int64(config.LoadConfig().ThumbnailMaxPixels) {
 		return staticGIFFallback(content, maxDim)
+	}
+
+	if ctx.Err() != nil {
+		return nil, "", 0, 0, ctx.Err()
 	}
 
 	g, err := gif.DecodeAll(bytes.NewReader(content))
@@ -204,10 +190,6 @@ func generateGIFThumbnail(
 		return staticGIFFallback(content, maxDim)
 	}
 
-	if len(g.Image) > MaxGIFFrames {
-		return staticGIFFallback(content, maxDim)
-	}
-
 	W := g.Config.Width
 	H := g.Config.Height
 	if W <= 0 || H <= 0 {
@@ -216,14 +198,10 @@ func generateGIFThumbnail(
 
 	TW, TH, _ := scaleTarget(W, H, maxDim)
 
-	// Canvas lógico do GIF.
-	//
-	// É importante compor os frames originais ANTES do resize:
-	// frames GIF frequentemente representam apenas o delta em relação
-	// ao frame anterior.
 	canvas := image.NewNRGBA(image.Rect(0, 0, W, H))
 
 	frames := make([]*image.Paletted, 0, len(g.Image))
+	outDelays := make([]int, 0, len(g.Image))
 	disposals := make([]byte, 0, len(g.Image))
 
 	pal := gifThumbnailPalette()
@@ -238,105 +216,52 @@ func generateGIFThumbnail(
 			disposal = g.Disposal[i]
 		}
 
-		// DisposalPrevious precisa do estado ANTES de desenhar
-		// o frame atual.
 		var previous *image.NRGBA
 		if disposal == gif.DisposalPrevious {
 			previous = cloneNRGBA(canvas)
 		}
 
 		frameRect := frame.Bounds().Intersect(canvas.Bounds())
-
 		if !frameRect.Empty() {
-			// Os Bounds() do frame GIF já estão nas coordenadas
-			// do logical screen.
-			stddraw.Draw(
-				canvas,
-				frameRect,
-				frame,
-				frameRect.Min,
-				stddraw.Over,
-			)
+			stddraw.Draw(canvas, frameRect, frame, frameRect.Min, stddraw.Over)
 		}
 
-		// Neste ponto canvas representa exatamente a imagem que
-		// deveria estar visível para este frame.
-
 		var scaled *image.NRGBA
-
 		if TW == W && TH == H {
 			scaled = cloneNRGBA(canvas)
 		} else {
 			scaled = image.NewNRGBA(image.Rect(0, 0, TW, TH))
-
-			draw.CatmullRom.Scale(
-				scaled,
-				scaled.Bounds(),
-				canvas,
-				canvas.Bounds(),
-				draw.Src,
-				nil,
-			)
+			draw.CatmullRom.Scale(scaled, scaled.Bounds(), canvas, canvas.Bounds(), draw.Src, nil)
 		}
 
-		// Cada frame da thumbnail passa a ser um frame COMPLETO.
-		// Isso elimina erros causados por resize de sub-retângulos.
-		outFrame := image.NewPaletted(
-			image.Rect(0, 0, TW, TH),
-			pal,
-		)
-
-		stddraw.Draw(
-			outFrame,
-			outFrame.Bounds(),
-			scaled,
-			scaled.Bounds().Min,
-			stddraw.Src,
-		)
+		outFrame := image.NewPaletted(image.Rect(0, 0, TW, TH), pal)
+		stddraw.Draw(outFrame, outFrame.Bounds(), scaled, scaled.Bounds().Min, stddraw.Src)
 
 		frames = append(frames, outFrame)
 
 		delay := 10
-		if i < len(g.Delay) {
+		if i < len(g.Delay) && g.Delay[i] > 0 {
 			delay = g.Delay[i]
-			if delay <= 0 {
-				delay = 10
-			}
 		}
-		delays = append(delays, delay)
+		outDelays = append(outDelays, delay)
 
-		// Como cada frame produzido é full-frame, limpamos o canvas
-		// da thumbnail após cada frame. Assim o próximo frame não
-		// depende do anterior.
 		disposals = append(disposals, gif.DisposalBackground)
 
-		// Agora aplica o disposal ORIGINAL para obter corretamente
-		// o canvas usado na composição do próximo frame.
 		switch disposal {
 		case gif.DisposalBackground:
 			if !frameRect.Empty() {
-				stddraw.Draw(
-					canvas,
-					frameRect,
-					image.Transparent,
-					image.Point{},
-					stddraw.Src,
-				)
+				stddraw.Draw(canvas, frameRect, image.Transparent, image.Point{}, stddraw.Src)
 			}
-
 		case gif.DisposalPrevious:
 			if previous != nil {
 				canvas = previous
 			}
-
-		case gif.DisposalNone, 0:
-			// Mantém canvas como está.
 		}
 	}
 
 	out := &gif.GIF{
 		Image:     frames,
-		Delay:     delays,
+		Delay:     outDelays,
 		Disposal:  disposals,
 		LoopCount: g.LoopCount,
 		Config: image.Config{
@@ -344,8 +269,6 @@ func generateGIFThumbnail(
 			Width:      TW,
 			Height:     TH,
 		},
-
-		// Índice 0 da nossa palette é transparente.
 		BackgroundIndex: 0,
 	}
 
@@ -355,7 +278,6 @@ func generateGIFThumbnail(
 	}
 
 	thumb := buf.Bytes()
-
 	if len(thumb) > MaxGIFThumbSize {
 		return staticGIFFallback(content, maxDim)
 	}
