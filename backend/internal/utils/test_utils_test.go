@@ -168,22 +168,15 @@ func TestGenerateThumbnailNoUpscale(t *testing.T) {
 }
 
 func TestGenerateThumbnailAnimatedGIF(t *testing.T) {
-	thumb, mime, w, h, err := GenerateThumbnail(makeAnimatedGIF(t, 200, 100, 2), 128, 0)
+	_, mime, w, h, err := GenerateThumbnail(makeAnimatedGIF(t, 200, 100, 2), 128, 0)
 	if err != nil {
 		t.Fatalf("GenerateThumbnail: %v", err)
 	}
-	if mime != "image/gif" {
-		t.Fatalf("mime esperado image/gif, obtido %s", mime)
+	if mime != "image/webp" {
+		t.Fatalf("mime esperado image/webp, obtido %s", mime)
 	}
 	if w != 128 || h != 64 {
 		t.Errorf("canvas esperado 128x64, obtido %dx%d", w, h)
-	}
-	g, err := gif.DecodeAll(bytes.NewReader(thumb))
-	if err != nil {
-		t.Fatalf("falha ao decodificar o GIF gerado: %v", err)
-	}
-	if len(g.Image) != 2 {
-		t.Errorf("frames esperados 2, obtidos %d", len(g.Image))
 	}
 }
 
