@@ -174,38 +174,66 @@ func normalizeSDP(sdpStr string) string {
 // parseMidRoles mapeia o mid de cada m-line do offer para o papel da track
 // (audio / primeira vídeo = câmera / segunda vídeo = screen share). Seção 5.6:
 // determinístico, sem depender de label.
-func parseMidRoles(sdpStr string) map[string]trackRole {
-	roles := make(map[string]trackRole)
+func parseMidRoles(
+	sdpStr string,
+	previous map[string]trackRole,
+) (map[string]trackRole, map[string]trackRole) {
+	roles := cloneTrackRoles(previous)
+	active := make(map[string]trackRole)
+
 	var desc sdp.SessionDescription
 	if err := desc.UnmarshalString(normalizeSDP(sdpStr)); err != nil {
-		return roles
+		return roles, active
 	}
-	videoCount := 0
+
+	cameraKnown := hasRole(roles, roleCamera)
+
 	for _, media := range desc.MediaDescriptions {
-		if !mediaPublishes(media) {
-			continue
-		}
 		mid := ""
+
 		for _, a := range media.Attributes {
 			if a.Key == "mid" {
 				mid = a.Value
 				break
 			}
 		}
+
 		if mid == "" {
 			continue
 		}
-		switch media.MediaName.Media {
-		case "audio":
-			roles[mid] = roleAudio
-		case "video":
-			if videoCount == 0 {
-				roles[mid] = roleCamera
-			} else {
-				roles[mid] = roleScreen
+
+		role, known := roles[mid]
+
+		if !known {
+			// recvonly/inactive desconhecidos são slots do SFU ou
+			// transceivers que ainda não começaram a publicar.
+			if !mediaPublishes(media) {
+				continue
 			}
-			videoCount++
+
+			switch media.MediaName.Media {
+			case "audio":
+				role = roleAudio
+
+			case "video":
+				if !cameraKnown {
+					role = roleCamera
+					cameraKnown = true
+				} else {
+					role = roleScreen
+				}
+
+			default:
+				continue
+			}
+
+			roles[mid] = role
+		}
+
+		if mediaPublishes(media) {
+			active[mid] = role
 		}
 	}
-	return roles
+
+	return roles, active
 }

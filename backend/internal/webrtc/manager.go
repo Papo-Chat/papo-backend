@@ -348,11 +348,11 @@ func (m *Manager) Leave(channelID, userID, clientID string) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
-	room, _, err := m.clientPeer(channelID, userID, clientID)
+	room, peer, err := m.clientPeer(channelID, userID, clientID)
 	if err != nil {
 		return err
 	}
-	room.removePeer(userID)
+	room.removePeer(peer)
 	return nil
 }
 
@@ -390,7 +390,7 @@ func (m *Manager) ClientOffline(userID, clientID string) {
 		}
 		peer := room.peer(userID)
 		if peer != nil && peer.ownsClient(clientID) {
-			room.removePeer(userID)
+			room.removePeer(peer)
 		}
 	}
 }
@@ -596,12 +596,15 @@ func (m *Manager) UserOffline(userID string) {
 		if room == nil {
 			continue
 		}
-		if !room.hasPeer(userID) {
+
+		peer := room.peer(userID)
+		if peer == nil {
 			continue
 		}
-		room.removePeer(userID) // removePeer limpa userRooms (VOICE_MAX_ROOMS_PER_USER)
-	}
 
+		// removePeer também limpa userRooms.
+		room.removePeer(peer)
+	}
 	m.limiterMu.Lock()
 	delete(m.limiters, userID)
 	m.limiterMu.Unlock()

@@ -53,7 +53,17 @@ type Peer struct {
 	// forwardam via o fanout do publisher (nunca chamam ReadRTP diretamente).
 	fanouts map[string]*fanout
 
-	midRole map[string]trackRole // mid da m-line → papel (do offer atual)
+	// Identidade persistente do MID. Uma vez que um MID vira camera/screen/audio,
+	// ele mantém esse papel durante toda a vida da PeerConnection.
+	midRole map[string]trackRole
+
+	// MIDs que estão efetivamente publicando no offer atual.
+	activeMidRole map[string]trackRole
+
+	// MID ao qual cada TrackRemote armazenada pertence.
+	audioMID  string
+	videoMID  string
+	screenMID string
 
 	// slots de envio (servidor → cliente): N vídeo + K áudio (D5)
 	videoSlots []*slot
@@ -80,6 +90,7 @@ func newPeer(m *Manager, room *Room, userID, clientID string) *Peer {
 		signalingClient: clientID,
 		fanouts:         make(map[string]*fanout),
 		midRole:         make(map[string]trackRole),
+		activeMidRole:   make(map[string]trackRole),
 		renegQueue:      make(chan func() error, 64),
 		renegStop:       make(chan struct{}),
 	}
@@ -190,15 +201,39 @@ func (p *Peer) handleOffer(clientID, sdp string) error {
 	// dispara após ICE/DTLS, mas o mapa já deve estar correto). A conexão que
 	// enviou a oferta torna-se a dona do signaling (answer/ICE/erros vão a ela).
 	p.mu.Lock()
-	p.midRole = parseMidRoles(sdp)
+
+	previousRoles := cloneTrackRoles(p.midRole)
+	previousActive := cloneTrackRoles(p.activeMidRole)
+
 	firstOffer := len(p.videoSlots) == 0 && len(p.audioSlots) == 0
-	screenRemoved := p.screenTrack != nil && !hasRole(p.midRole, roleScreen)
+
+	p.mu.Unlock()
+
+	roles, activeRoles := parseMidRoles(sdp, previousRoles)
+
+	p.mu.Lock()
+
+	p.midRole = roles
+	p.activeMidRole = activeRoles
+
+	cameraStopped := hasRole(previousActive, roleCamera) &&
+		!hasRole(activeRoles, roleCamera)
+
+	screenStopped := hasRole(previousActive, roleScreen) &&
+		!hasRole(activeRoles, roleScreen)
+
 	p.mu.Unlock()
 
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{
 		Type: webrtc.SDPTypeOffer,
 		SDP:  sdp,
 	}); err != nil {
+		// Não deixe um SDP rejeitado contaminar o estado.
+		p.mu.Lock()
+		p.midRole = previousRoles
+		p.activeMidRole = previousActive
+		p.mu.Unlock()
+
 		return err
 	}
 
@@ -206,11 +241,14 @@ func (p *Peer) handleOffer(clientID, sdp string) error {
 		if err := p.allocateSlots(); err != nil {
 			return err
 		}
-	} else if screenRemoved {
-		p.mu.Lock()
-		p.screenTrack = nil
-		p.mu.Unlock()
-		p.releaseKind("screen")
+	}
+
+	if cameraStopped {
+		p.room.releasePublishedKind(p, "video")
+	}
+
+	if screenStopped {
+		p.room.releasePublishedKind(p, "screen")
 	}
 
 	answer, err := pc.CreateAnswer(nil)
@@ -291,7 +329,7 @@ func (p *Peer) setupPCEvents(pc *webrtc.PeerConnection) {
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			// A última conexão caiu: remove o peer da sala (libera slots,
 			// notifica os leitores). disconnected → aguarda recuperação.
-			p.room.removePeer(p.userID)
+			p.room.removePeer(p)
 		}
 	})
 }
@@ -317,16 +355,25 @@ func (p *Peer) onIncomingTrack(track *webrtc.TrackRemote, mid string) {
 	switch role {
 	case roleAudio:
 		oldFanout = p.fanouts["audio"]
+
 		p.audioTrack = track
+		p.audioMID = mid
+
 		newSSRC = uint32(track.SSRC())
 		oldSSRC = p.audioSSRC
 		p.audioSSRC = newSSRC
+
 	case roleCamera:
 		oldFanout = p.fanouts["video"]
+
 		p.videoTrack = track
+		p.videoMID = mid
+
 	case roleScreen:
 		oldFanout = p.fanouts["screen"]
+
 		p.screenTrack = track
+		p.screenMID = mid
 	}
 	p.mu.Unlock()
 
@@ -456,12 +503,33 @@ func (p *Peer) trackOfKind(kind string) *webrtc.TrackRemote {
 func (p *Peer) trackOfKindLocked(kind string) *webrtc.TrackRemote {
 	switch kind {
 	case "video":
+		if p.videoTrack == nil {
+			return nil
+		}
+		if p.activeMidRole[p.videoMID] != roleCamera {
+			return nil
+		}
 		return p.videoTrack
+
 	case "screen":
+		if p.screenTrack == nil {
+			return nil
+		}
+		if p.activeMidRole[p.screenMID] != roleScreen {
+			return nil
+		}
 		return p.screenTrack
+
 	case "audio":
+		if p.audioTrack == nil {
+			return nil
+		}
+		if p.activeMidRole[p.audioMID] != roleAudio {
+			return nil
+		}
 		return p.audioTrack
 	}
+
 	return nil
 }
 
@@ -518,29 +586,38 @@ func (p *Peer) stopAllFanouts() {
 // do publisher em um slot de vídeo (D5). Sem slot livre → ErrVoiceRoomFull
 // (o caminho de renegociação para adicionar slot é raro/fase 2).
 func (p *Peer) assignVideoSlot(pub *Peer, kind string) error {
-	// Resolve a track, a PC e o fanout do publisher ANTES de segurar p.mu
-	// (evita p.mu → pub.mu).
 	track := pub.trackOfKind(kind)
 	if track == nil {
 		return ErrVoiceNotFound
 	}
+
 	pubPC := pub.PC()
+
 	fanout := pub.fanoutFor(kind, track)
 	if fanout == nil {
 		return ErrVoiceNotFound
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
+
 	if p.closed {
+		p.mu.Unlock()
 		return ErrVoiceRoomClosed
 	}
+
 	slot := p.findVideoSlotFor(pub, kind)
 	if slot == nil {
+		p.mu.Unlock()
 		return ErrVoiceRoomFull
 	}
+
 	slot.assignWithFanout(pub, kind, track, fanout)
-	sendPLI(pubPC, track) // D7: keyframe na troca de conteúdo de slot de vídeo
+
+	p.mu.Unlock()
+
+	// Pion chamada com p.mu solto.
+	sendPLI(pubPC, track)
+
 	return nil
 }
 
@@ -594,12 +671,16 @@ func (p *Peer) releaseAllFrom(pub *Peer) {
 	}
 }
 
-// releaseKind libera todos os slots do kind (ex.: screen share encerrado).
-func (p *Peer) releaseKind(kind string) {
+func (p *Peer) releaseFrom(pub *Peer, kind string) {
+	if pub == nil {
+		return
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	for _, s := range p.videoSlots {
-		if s.kind == kind {
+		if s.owner == pub && s.kind == kind {
 			s.release()
 		}
 	}
@@ -731,4 +812,14 @@ func intFromU16Ptr(v *uint16) *int {
 	}
 	i := int(*v)
 	return &i
+}
+
+func cloneTrackRoles(src map[string]trackRole) map[string]trackRole {
+	dst := make(map[string]trackRole, len(src))
+
+	for mid, role := range src {
+		dst[mid] = role
+	}
+
+	return dst
 }
