@@ -69,7 +69,7 @@ func CreateEmojiHandler(baseURL string, c echo.Context) error {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
 			"name, format e image_blob são obrigatórios; name deve ter no máximo 32 caracteres; "+
-				"format deve ser GIF, JPEG ou PNG; image_blob deve ser base64 de uma imagem com no máximo 256kb")
+				"format deve ser GIF, JPEG/JPG, PNG ou WEBP; image_blob deve ser base64 de uma imagem com no máximo 256kb")
 	case errors.Is(err, services.ErrEmojiLimitReached):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"emoji-limit-reached", "Limite de emojis atingido",

@@ -1623,7 +1623,7 @@ func TestCreateServerRouteInvalidInput(t *testing.T) {
 	rec := do(t, e, http.MethodPost, "/server", body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG ou PNG de até 2MB; servidor privado (public=false) exige password")
+		"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG/JPG, PNG ou WEBP de até 2MB; servidor privado (public=false) exige password")
 }
 
 // --- helpers de setup para canais e roles ---
@@ -3485,6 +3485,115 @@ func newPreviewWithImageRoute(t *testing.T, e *echo.Echo, channelID, token strin
 		t.Fatalf("falha ao vincular preview à mensagem: %v", err)
 	}
 	return preview
+}
+
+// TestBroadcastLinkPreviewUpdatesChannelReadersOnly garante que
+// broadcastLinkPreviewUpdates distribui o evento link_preview_update
+// ({channel_id, message_id, preview}) apenas aos leitores do canal: o dono do
+// servidor recebe e usuário sem read_channel não recebe (fail-closed).
+func TestBroadcastLinkPreviewUpdatesChannelReadersOnly(t *testing.T) {
+	e := newApp()
+	cfg := config.LoadConfig()
+	RegisterWebSocketRoutes(e, cfg)
+	go websocket.GetHub().Run()
+
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	ownerID, ownerToken := registerAndLogin(t, e)
+	_, outsiderToken := registerAndLogin(t, e)
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+	role := createRoleFor(t, models.RolePermissions{})
+	// leitura restrita: só o dono do servidor (implícito) e usuários com role
+	// de read_channel leem o canal
+	if _, err := storage.UpdateChannelPermissions(context.Background(), channel.ID, role.ID,
+		models.ChannelPermission{ReadChannel: true}); err != nil {
+		t.Fatalf("falha ao atualizar permissões do canal: %v", err)
+	}
+
+	preview := newPreviewWithImageRoute(t, e, channel.ID, ownerToken)
+	refs, err := storage.ListMessageRefsByPreviewID(context.Background(), preview.ID)
+	if err != nil {
+		t.Fatalf("ListMessageRefsByPreviewID retornou erro: %v", err)
+	}
+	if len(refs) != 1 || refs[0].ChannelID != channel.ID {
+		t.Fatalf("esperava 1 ref no canal, obtive %+v", refs)
+	}
+
+	dial := func(token string) *ws.Conn {
+		header := http.Header{}
+		header.Set(echo.HeaderCookie, "Auth="+token)
+		wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+		conn, _, err := ws.DefaultDialer.Dial(wsURL, header)
+		if err != nil {
+			t.Fatalf("falha ao abrir conexão websocket: %v", err)
+		}
+		// primeiro evento: presence_sync da própria conexão
+		readWSMessage(t, conn)
+		return conn
+	}
+
+	// o outsider conecta antes: o presence_sync do dono já o inclui online,
+	// sem presence_update intermediário
+	outsiderConn := dial(outsiderToken)
+	defer outsiderConn.Close()
+	ownerConn := dial(ownerToken)
+	defer ownerConn.Close()
+
+	// o outsider recebe o presence_update do dono (que conectou depois)
+	readWSMessage(t, outsiderConn)
+
+	broadcastLinkPreviewUpdates(context.Background(), "test-req", []services.PreviewUpdate{{
+		Preview:  preview,
+		Messages: refs,
+	}})
+
+	data := readWSMessage(t, ownerConn)
+	var event struct {
+		Type      string `json:"type"`
+		ChannelID string `json:"channel_id"`
+		MessageID string `json:"message_id"`
+		Preview   struct {
+			ID            string  `json:"id"`
+			URL           string  `json:"url"`
+			ImageMimeType *string `json:"image_mime_type"`
+			ImageData     *string `json:"image_data"`
+		} `json:"preview"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		t.Fatalf("falha ao decodificar evento: %v", err)
+	}
+	if event.Type != "link_preview_update" {
+		t.Fatalf("esperava tipo link_preview_update, obtive %q (corpo: %s)", event.Type, data)
+	}
+	if event.ChannelID != channel.ID {
+		t.Errorf("esperava channel_id %s, obtive %s", channel.ID, event.ChannelID)
+	}
+	if event.MessageID != refs[0].MessageID {
+		t.Errorf("esperava message_id %s, obtive %s", refs[0].MessageID, event.MessageID)
+	}
+	if event.Preview.ID != preview.ID || event.Preview.URL != preview.URL {
+		t.Errorf("preview inesperado: %+v", event.Preview)
+	}
+	if event.Preview.ImageMimeType == nil || *event.Preview.ImageMimeType != "image/png" {
+		t.Errorf("esperava image_mime_type image/png, obtive %v", event.Preview.ImageMimeType)
+	}
+	if event.Preview.ImageData == nil {
+		t.Fatal("esperava image_data presente")
+	}
+
+	// não-leitor do canal: nenhum evento (fail-closed)
+	assertNoWSMessage(t, outsiderConn, 2*time.Second)
+}
+
+// assertNoWSMessage garante que nenhuma mensagem websocket chega em `wait`.
+func assertNoWSMessage(t *testing.T, conn *ws.Conn, wait time.Duration) {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(wait))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("não esperava nenhuma mensagem websocket, obtive uma")
+	}
 }
 
 // TestGetLinkPreviewRouteOwner garante que o dono do servidor busca o preview
@@ -5376,7 +5485,7 @@ func TestUpdateAvatarHandlerInvalidAvatar(t *testing.T) {
 				t.Fatalf("UpdateAvatarHandler retornou erro: %v", err)
 			}
 			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-				"avatar inválido: deve ser base64 de um GIF, JPEG ou PNG de até 2MB")
+				"avatar inválido: deve ser base64 de um GIF, JPEG/JPG, PNG ou WEBP de até 2MB")
 		})
 	}
 }
@@ -5540,7 +5649,7 @@ func TestUpdateBannerHandlerInvalidBanner(t *testing.T) {
 				t.Fatalf("UpdateBannerHandler retornou erro: %v", err)
 			}
 			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-				"banner inválido: deve ser base64 de um GIF, JPEG ou PNG de até 2MB")
+				"banner inválido: deve ser base64 de um GIF, JPEG/JPG, PNG ou WEBP de até 2MB")
 		})
 	}
 }
@@ -6505,7 +6614,7 @@ func TestUpdateServerHandlerInvalidInput(t *testing.T) {
 				t.Fatalf("UpdateServerHandler retornou erro: %v", err)
 			}
 			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-				"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG ou PNG de até 2MB servidor privado (public=false) exige password")
+				"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG/JPG, PNG ou WEBP de até 2MB servidor privado (public=false) exige password")
 		})
 	}
 
@@ -6718,7 +6827,7 @@ func TestCreateServerHandlerInvalidInput(t *testing.T) {
 				t.Fatalf("CreateServerHandler retornou erro: %v", err)
 			}
 			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-				"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG ou PNG de até 2MB; servidor privado (public=false) exige password")
+				"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG/JPG, PNG ou WEBP de até 2MB; servidor privado (public=false) exige password")
 		})
 	}
 
@@ -9865,7 +9974,7 @@ func TestCreateEmojiHandlerInvalidBody(t *testing.T) {
 		}
 		assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
 			"name, format e image_blob são obrigatórios; name deve ter no máximo 32 caracteres; "+
-				"format deve ser GIF, JPEG ou PNG; image_blob deve ser base64 de uma imagem com no máximo 256kb")
+				"format deve ser GIF, JPEG/JPG, PNG ou WEBP; image_blob deve ser base64 de uma imagem com no máximo 256kb")
 	}
 }
 

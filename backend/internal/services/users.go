@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -291,9 +290,9 @@ func UpdateUser(ctx context.Context, userID, nickname, status, description strin
 
 // UpdateAvatar valida e salva o avatar do usuário. Quando avatar e
 // avatar_format são vazios, o avatar é removido (referência media NULL).
-// Retorna ErrInvalidInput quando o avatar não é um GIF, JPEG ou PNG válido
-// de até 2MB com dimensões de até 512px e ErrUserNotFound quando o usuário
-// não existe.
+// Retorna ErrInvalidInput quando o avatar não é um GIF, JPEG, PNG ou WEBP
+// válido de até 2MB com dimensões de até 512px e ErrUserNotFound quando o
+// usuário não existe.
 func UpdateAvatar(ctx context.Context, userID, avatar, avatarFormat string) error {
 	if userID == "" {
 		return ErrUserNotFound
@@ -324,7 +323,7 @@ func UpdateAvatar(ctx context.Context, userID, avatar, avatarFormat string) erro
 		return ErrInvalidInput
 	}
 
-	upperFormat := strings.ToUpper(avatarFormat)
+	upperFormat := normalizeImageFormat(avatarFormat)
 	if !avatarContentMatchesFormat(decoded, upperFormat) {
 		return ErrInvalidInput
 	}
@@ -359,8 +358,8 @@ func UpdateAvatar(ctx context.Context, userID, avatar, avatarFormat string) erro
 // UpdateBanner valida e salva o banner do usuário (content-addressable,
 // como o avatar). Quando banner e banner_format são vazios, o banner é
 // removido (referência media NULL). Retorna ErrInvalidInput quando o banner
-// não é um GIF, JPEG ou PNG válido de até 2MB com dimensões de até 1024px e
-// ErrUserNotFound quando o usuário não existe.
+// não é um GIF, JPEG, PNG ou WEBP válido de até 2MB com dimensões de até
+// 1024px e ErrUserNotFound quando o usuário não existe.
 func UpdateBanner(ctx context.Context, userID, banner, bannerFormat string) error {
 	if userID == "" {
 		return ErrUserNotFound
@@ -391,7 +390,7 @@ func UpdateBanner(ctx context.Context, userID, banner, bannerFormat string) erro
 		return ErrInvalidInput
 	}
 
-	upperFormat := strings.ToUpper(bannerFormat)
+	upperFormat := normalizeImageFormat(bannerFormat)
 	if !avatarContentMatchesFormat(decoded, upperFormat) {
 		return ErrInvalidInput
 	}
@@ -578,8 +577,8 @@ func ChangePassword(ctx context.Context, userID, password string) error {
 }
 
 // avatarContentMatchesFormat confere se o conteúdo decodificado corresponde a
-// um dos formatos aceitos (GIF, JPEG, PNG) comparando o magic number, e se o
-// formato declarado é um dos aceitos.
+// um dos formatos aceitos (GIF, JPEG, PNG, WEBP) comparando o magic number, e
+// se o formato declarado é um dos aceitos.
 func avatarContentMatchesFormat(content []byte, format string) bool {
 	switch format {
 	case "PNG":
@@ -588,6 +587,8 @@ func avatarContentMatchesFormat(content []byte, format string) bool {
 		return len(content) >= 3 && bytes.Equal(content[:3], []byte{0xFF, 0xD8, 0xFF})
 	case "GIF":
 		return bytes.HasPrefix(content, []byte("GIF87a")) || bytes.HasPrefix(content, []byte("GIF89a"))
+	case "WEBP":
+		return len(content) >= 12 && bytes.Equal(content[:4], []byte("RIFF")) && bytes.Equal(content[8:12], []byte("WEBP"))
 	default:
 		return false
 	}

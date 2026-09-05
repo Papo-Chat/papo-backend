@@ -370,7 +370,7 @@ func UpdateAvatarHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"avatar inválido: deve ser base64 de um GIF, JPEG ou PNG de até 2MB")
+			"avatar inválido: deve ser base64 de um GIF, JPEG/JPG, PNG ou WEBP de até 2MB")
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "usuário não encontrado")
@@ -426,7 +426,7 @@ func UpdateBannerHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"banner inválido: deve ser base64 de um GIF, JPEG ou PNG de até 2MB")
+			"banner inválido: deve ser base64 de um GIF, JPEG/JPG, PNG ou WEBP de até 2MB")
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "usuário não encontrado")

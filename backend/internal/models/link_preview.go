@@ -22,6 +22,13 @@ type LinkPreview struct {
 	FetchedAt      time.Time `db:"fetched_at" json:"fetched_at"`
 }
 
+// PreviewMessageRef identifica uma mensagem vinculada a um link preview (e o
+// canal da mensagem) — alvo do evento link_preview_update.
+type PreviewMessageRef struct {
+	MessageID string
+	ChannelID string
+}
+
 // AttachmentThumbnail representa a tabela attachment_thumbnails.
 // Kind: 'preview' (512px / 128px GIF).
 // MediaShaHash referencia o blob da thumbnail na tabela media; MimeType vem

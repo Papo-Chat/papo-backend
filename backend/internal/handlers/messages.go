@@ -2,11 +2,14 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
+	"os"
 	"time"
 
 	"papo/internal/middleware"
+	"papo/internal/models"
 	"papo/internal/moderation"
 	"papo/internal/services"
 	"papo/internal/utils"
@@ -456,24 +459,29 @@ func broadcastChannelEventCtx(ctx context.Context, requestID, channelID string, 
 }
 
 // processNewMessagePreviews processa em background os link previews de uma
-// mensagem recém-criada e distribui os eventos new_preview (um por preview).
-// Best-effort: falhas são logadas e não afetam a mensagem já criada.
+// mensagem recém-criada e distribui os eventos new_preview (um por preview) e
+// link_preview_update (previews refetchados que atualizaram mensagens já
+// vinculadas). Best-effort: falhas são logadas e não afetam a mensagem já
+// criada.
 func processNewMessagePreviews(ctx context.Context, requestID, channelID, messageID, authorID, content string) {
-	for _, p := range services.ProcessMessagePreviews(ctx, messageID, authorID, content) {
+	previews, updates := services.ProcessMessagePreviews(ctx, messageID, authorID, content)
+	for _, p := range previews {
 		broadcastChannelEventCtx(ctx, requestID, channelID, websocket.NewPreviewOutbound{
 			Type:      websocket.EventTypeNewPreview,
 			MessageID: messageID,
 			PreviewID: p.ID,
 		})
 	}
+	broadcastLinkPreviewUpdates(ctx, requestID, updates)
 }
 
 // processEditedMessagePreviews processa em background os link previews de uma
-// mensagem editada e distribui os eventos new_preview (adicionados) e
-// remove_preview (removidos), um por preview. Best-effort: falhas são
-// logadas e não afetam a mensagem já editada.
+// mensagem editada e distribui os eventos new_preview (adicionados),
+// remove_preview (removidos) e link_preview_update (previews refetchados que
+// atualizaram mensagens já vinculadas). Best-effort: falhas são logadas e não
+// afetam a mensagem já editada.
 func processEditedMessagePreviews(ctx context.Context, requestID, channelID, messageID, authorID, content string) {
-	added, removed := services.ProcessEditedMessagePreviews(ctx, messageID, authorID, content)
+	added, removed, updates := services.ProcessEditedMessagePreviews(ctx, messageID, authorID, content)
 	for _, p := range added {
 		broadcastChannelEventCtx(ctx, requestID, channelID, websocket.NewPreviewOutbound{
 			Type:      websocket.EventTypeNewPreview,
@@ -488,6 +496,45 @@ func processEditedMessagePreviews(ctx context.Context, requestID, channelID, mes
 			PreviewID: p.ID,
 		})
 	}
+	broadcastLinkPreviewUpdates(ctx, requestID, updates)
+}
+
+// broadcastLinkPreviewUpdates distribui um evento link_preview_update por
+// mensagem vinculada a cada preview refetchado, apenas aos leitores do canal
+// da mensagem (broadcastChannelEventCtx). O objeto do preview é montado uma
+// única vez por preview (a imagem é lida do disco e reutilizada).
+func broadcastLinkPreviewUpdates(ctx context.Context, requestID string, updates []services.PreviewUpdate) {
+	for _, u := range updates {
+		preview := linkPreviewUpdateObject(u.Preview)
+		for _, ref := range u.Messages {
+			broadcastChannelEventCtx(ctx, requestID, ref.ChannelID, websocket.LinkPreviewUpdateOutbound{
+				Type:      websocket.EventTypeLinkPreviewUpdate,
+				ChannelID: ref.ChannelID,
+				MessageID: ref.MessageID,
+				Preview:   preview,
+			})
+		}
+	}
+}
+
+// linkPreviewUpdateObject monta o objeto do preview do evento
+// link_preview_update (mesma forma da resposta de GET /link-previews/:id):
+// campos públicos + image_data (base64) quando a thumbnail existe em disco.
+// Falha de leitura não bloqueia o evento (o preview segue sem a imagem).
+func linkPreviewUpdateObject(preview models.LinkPreview) websocket.LinkPreviewObject {
+	obj := websocket.LinkPreviewObject{LinkPreview: preview}
+	if preview.ImageMedia != nil {
+		data, err := os.ReadFile(services.MediaBlobPath(*preview.ImageMedia))
+		if errors.Is(err, os.ErrNotExist) {
+			// imagem ausente em disco: preview sem a imagem
+		} else if err != nil {
+			utils.Errorf("falha ao ler a imagem do preview %s: %v", preview.ID, err)
+		} else {
+			b64 := base64.StdEncoding.EncodeToString(data)
+			obj.ImageData = &b64
+		}
+	}
+	return obj
 }
 
 // derefString retorna o valor da ponteira de string ou "" quando nil.

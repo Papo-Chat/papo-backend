@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"strings"
 	"unicode/utf8"
 
 	"papo/internal/models"
@@ -72,12 +71,12 @@ func CreateServer(ctx context.Context, name string, ownerID *string) (models.Ser
 }
 
 // CreateServerWithIcon cria um novo servidor com ícone opcional. O ícone,
-// quando informado, deve ser base64 de um GIF, JPEG ou PNG de até 2MB
+// quando informado, deve ser base64 de um GIF, JPEG, PNG ou WEBP de até 2MB
 // (README). public nil significa servidor público (default do schema);
 // servidor privado (public=false) exige password não vazio. Retorna
 // ErrInvalidInput quando o nome está vazio ou acima de 32 caracteres, quando
-// o ícone não é um GIF, JPEG ou PNG válido de até 2MB com dimensões de até
-// 512px ou quando o servidor é privado sem senha.
+// o ícone não é um GIF, JPEG, PNG ou WEBP válido de até 2MB com dimensões de
+// até 512px ou quando o servidor é privado sem senha.
 // O sistema tem um único servidor (coluna singleton UNIQUE na tabela
 // servers): tentar criar um segundo servidor retorna ErrServerAlreadyCreated.
 // Com ícone, o singleton é verificado antes de gravar o blob (evita blob
@@ -94,7 +93,7 @@ func CreateServerWithIcon(ctx context.Context, name, icon, iconFormat string, pu
 			return models.Server{}, ErrInvalidInput
 		}
 
-		format := strings.ToUpper(iconFormat)
+		format := normalizeImageFormat(iconFormat)
 		if !avatarContentMatchesFormat(decoded, format) {
 			return models.Server{}, ErrInvalidInput
 		}
@@ -181,8 +180,8 @@ func serverPasswordHash(isPublic bool, password string) (*string, error) {
 // é privado (public=false), password não pode ser vazio.
 // Retorna ErrServerNotFound quando o servidor não existe, ErrInvalidInput
 // quando o nome está vazio ou acima de 32 caracteres, quando o ícone não é
-// um GIF, JPEG ou PNG válido de até 2MB com dimensões de até 512px ou quando
-// o servidor privado não tem senha.
+// um GIF, JPEG, PNG ou WEBP válido de até 2MB com dimensões de até 512px ou
+// quando o servidor privado não tem senha.
 func UpdateServer(ctx context.Context, actorID, name, icon, iconFormat string, public *bool, password *string) error {
 	if name == "" || utf8.RuneCountInString(name) > maxServerNameLength {
 		return ErrInvalidInput
@@ -203,7 +202,7 @@ func UpdateServer(ctx context.Context, actorID, name, icon, iconFormat string, p
 			return ErrInvalidInput
 		}
 
-		format := strings.ToUpper(iconFormat)
+		format := normalizeImageFormat(iconFormat)
 		if !avatarContentMatchesFormat(decoded, format) {
 			return ErrInvalidInput
 		}

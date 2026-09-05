@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -67,7 +66,7 @@ func ListEmojis(ctx context.Context, since *time.Time, lastID string) (models.Em
 }
 
 // CreateEmoji cria um novo emoji (README: POST /emojis).
-// imageBlob é base64 e format deve ser GIF, JPEG ou PNG (maiúsculas ou
+// imageBlob é base64 e format deve ser GIF, JPEG, PNG ou WEBP (maiúsculas ou
 // minúsculas); o conteúdo decodificado deve corresponder ao formato
 // declarado (magic number), ter no máximo 256kb e dimensões de até 512px.
 // Retorna ErrInvalidInput quando um campo está ausente ou inválido,
@@ -79,8 +78,8 @@ func CreateEmoji(ctx context.Context, name, format, imageBlob, createdBy string)
 		return models.Emoji{}, ErrInvalidInput
 	}
 
-	upperFormat := strings.ToUpper(format)
-	if upperFormat != "GIF" && upperFormat != "JPEG" && upperFormat != "PNG" {
+	upperFormat := normalizeImageFormat(format)
+	if upperFormat != "GIF" && upperFormat != "JPEG" && upperFormat != "PNG" && upperFormat != "WEBP" {
 		return models.Emoji{}, ErrInvalidInput
 	}
 

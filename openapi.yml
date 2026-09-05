@@ -407,7 +407,7 @@ paths:
   /users/{user_id}/avatar:
     put:
       tags: [Users]
-      summary: Atualiza o avatar (base64, GIF/JPEG/PNG, máx. 2MB)
+      summary: Atualiza o avatar (base64, GIF/JPEG/JPG/PNG/WEBP, máx. 2MB)
       parameters:
         - $ref: '#/components/parameters/UserId'
       requestBody:
@@ -424,7 +424,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/GenericResponse'
         '400':
-          description: Avatar inválido (base64 de GIF/JPEG/PNG até 2MB)
+          description: Avatar inválido (base64 de GIF/JPEG/JPG/PNG/WEBP até 2MB)
           content:
             application/problem+json:
               schema:
@@ -441,7 +441,7 @@ paths:
   /users/{user_id}/banner:
     put:
       tags: [Users]
-      summary: Atualiza o banner (base64, GIF/JPEG/PNG, máx. 2MB); corpo vazio remove o banner
+      summary: Atualiza o banner (base64, GIF/JPEG/JPG/PNG/WEBP, máx. 2MB); corpo vazio remove o banner
       parameters:
         - $ref: '#/components/parameters/UserId'
       requestBody:
@@ -458,7 +458,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/GenericResponse'
         '400':
-          description: Banner inválido (base64 de GIF/JPEG/PNG até 2MB)
+          description: Banner inválido (base64 de GIF/JPEG/JPG/PNG/WEBP até 2MB)
           content:
             application/problem+json:
               schema:
@@ -1891,6 +1891,7 @@ paths:
         | `attachment_moderation_update` | outbound  | `{ type: "attachment_moderation_update", channel_id, message_id, attachment_id, status }` (status: sensitive; o blocked exclui a mensagem e chega como `message_delete`) |
         | `message_pin`    | outbound  | `{ type: "message_pin", message_id, is_pinned }` (is_pinned: true quando a mensagem foi pinada, false quando a fixação foi removida) |
         | `react_update`   | outbound  | `{ type: "react_update", message_id, emoji_id, unicode, count }` (emoji_id/unicode: um é null; count = usuários que reagiram com aquele emoji, 0 quando a última foi removida) |
+        | `link_preview_update` | outbound | `{ type: "link_preview_update", channel_id, message_id, preview }` (preview: objeto completo do link preview, mesma forma de `GET /link-previews/{preview_id}` incluindo `image_data`; um evento por mensagem vinculada, distribuído aos leitores do canal quando o preview é refetchado com cache expirada) |
         | `new_notification` | unicast  | `{ type: "new_notification", id, user_id, message_id, message_content }` (id: row de notificação ou UUID efêmero quando a configuração all gera evento sem row; user_id: autor da mensagem; message_content: truncado a 512 caracteres) |
         | `channel_create` | outbound  | `{ type: "channel_create", channel_id, name, channel_type, position }`                 |
         | `channel_update` | outbound  | `{ type: "channel_update", channel_id, name, position }`                               |
@@ -2344,10 +2345,10 @@ components:
       properties:
         avatar:
           type: string
-          description: Base64 de GIF, JPEG ou PNG (máx. 2MB)
+          description: Base64 de GIF, JPEG/JPG, PNG ou WEBP (máx. 2MB)
         avatar_format:
           type: string
-          enum: [GIF, JPEG, PNG]
+          enum: [GIF, JPEG, JPG, PNG, WEBP]
 
     UpdateBannerRequest:
       type: object
@@ -2355,10 +2356,10 @@ components:
       properties:
         banner:
           type: string
-          description: Base64 de GIF, JPEG ou PNG (máx. 2MB); vazio remove o banner
+          description: Base64 de GIF, JPEG/JPG, PNG ou WEBP (máx. 2MB); vazio remove o banner
         banner_format:
           type: string
-          enum: [GIF, JPEG, PNG]
+          enum: [GIF, JPEG, JPG, PNG, WEBP]
           description: Vazio remove o banner
 
     UpdateStatusRequest:
@@ -2399,10 +2400,10 @@ components:
         icon_blob:
           type: string
           format: byte
-          description: Ícone em base64 (GIF/JPEG/PNG, máx. 2MB); vazio remove o ícone
+          description: Ícone em base64 (GIF/JPEG/JPG/PNG/WEBP, máx. 2MB); vazio remove o ícone
         icon_format:
           type: string
-          enum: [GIF, JPEG, PNG]
+          enum: [GIF, JPEG, JPG, PNG, WEBP]
         password:
           type: string
           description: Senha do servidor; obrigatória quando o servidor ficar privado (public=false)
@@ -2419,10 +2420,10 @@ components:
         icon_blob:
           type: string
           format: byte
-          description: Ícone em base64 (GIF/JPEG/PNG, máx. 2MB)
+          description: Ícone em base64 (GIF/JPEG/JPG/PNG/WEBP, máx. 2MB)
         icon_format:
           type: string
-          enum: [GIF, JPEG, PNG]
+          enum: [GIF, JPEG, JPG, PNG, WEBP]
         password:
           type: string
           description: Senha do servidor; obrigatória quando public=false
@@ -3137,7 +3138,7 @@ components:
           type: string
         format:
           type: string
-          enum: [GIF, JPEG, PNG]
+          enum: [GIF, JPEG, JPG, PNG, WEBP]
         image_blob:
           type: string
           format: byte
@@ -3159,7 +3160,7 @@ components:
           format: byte
         format:
           type: string
-          enum: [GIF, JPEG, PNG]
+          enum: [GIF, JPEG, JPG, PNG, WEBP]
 
     SearchResponse:
       type: object

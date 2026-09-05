@@ -22,6 +22,7 @@ func TestValidateImageValid(t *testing.T) {
 		{"png 512x512", makePNG(t, 512, 512)},
 		{"gif 10x10", makeGIF(t, 10, 10)},
 		{"jpeg 20x20", makeJPEG(t, 20, 20)},
+		{"webp 20x20", makeWebP(t, 20, 20)},
 	}
 
 	for _, tc := range cases {
@@ -100,6 +101,17 @@ func makeJPEG(t *testing.T, w, h int) []byte {
 		t.Fatalf("falha ao codificar JPEG: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// makeWebP gera um WebP válido usando o output do GenerateThumbnail (que
+// sai em WebP) — sem depender de encoder externo.
+func makeWebP(t *testing.T, w, h int) []byte {
+	t.Helper()
+	webp, _, _, _, err := GenerateThumbnail(makePNG(t, w, h), 512, 0)
+	if err != nil {
+		t.Fatalf("falha ao gerar WebP: %v", err)
+	}
+	return webp
 }
 
 func makeAnimatedGIF(t *testing.T, w, h, frames int) []byte {

@@ -89,7 +89,7 @@ func CreateServerHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG ou PNG de até 2MB; servidor privado (public=false) exige password")
+			"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG/JPG, PNG ou WEBP de até 2MB; servidor privado (public=false) exige password")
 	case errors.Is(err, services.ErrServerAlreadyCreated):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"server-already-exists", "Ação Proibida",
@@ -152,7 +152,7 @@ func UpdateServerHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG ou PNG de até 2MB servidor privado (public=false) exige password")
+			"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG/JPG, PNG ou WEBP de até 2MB servidor privado (public=false) exige password")
 	case err != nil:
 		utils.Errorf("request_id=%s falha ao atualizar o servidor: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)

@@ -128,6 +128,38 @@ func GetChannelIDByPreviewID(ctx context.Context, previewID string) (string, err
 	return channelID, nil
 }
 
+// ListMessageRefsByPreviewID retorna as mensagens atualmente vinculadas ao
+// preview (message_previews → messages) com o channel_id de cada uma (alvos
+// do evento link_preview_update). Slice vazio quando o preview não está
+// vinculado a nenhuma mensagem.
+func ListMessageRefsByPreviewID(ctx context.Context, previewID string) ([]models.PreviewMessageRef, error) {
+	rows, err := GetDB().QueryContext(ctx,
+		`SELECT mp.message_id, m.channel_id
+		 FROM message_previews mp
+		 JOIN messages m ON m.id = mp.message_id
+		 WHERE mp.preview_id = $1`,
+		previewID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar as mensagens do preview: %w", err)
+	}
+	defer rows.Close()
+
+	var refs []models.PreviewMessageRef
+	for rows.Next() {
+		var ref models.PreviewMessageRef
+		if err := rows.Scan(&ref.MessageID, &ref.ChannelID); err != nil {
+			return nil, fmt.Errorf("falha ao ler as mensagens do preview: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao listar as mensagens do preview: %w", err)
+	}
+
+	return refs, nil
+}
+
 // AddMessagePreviews vincula previews a uma mensagem nova. Ids duplicados
 // são ignorados (ON CONFLICT DO NOTHING).
 func AddMessagePreviews(ctx context.Context, messageID string, previewIDs []string) error {

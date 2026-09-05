@@ -224,53 +224,58 @@ func stripTrailingPunctuation(s string) string {
 // recente) ou faz fetch + parse + thumbnail (§6.2). Best-effort: qualquer
 // falha retorna erro (o chamador loga e segue sem preview).
 //
+// O segundo retorno indica se houve refetch (fetch + upsert, cache expirado
+// ou URL nova): true significa que a row do preview foi atualizada e as
+// mensagens já vinculadas a ele podem estar com o objeto defasado (evento
+// link_preview_update). Cache hit dentro do TTL → false.
+//
 // O ctx deve carregar o budget total da fase de previews (compartilhado
 // entre as URLs da mensagem, §6.1).
-func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.LinkPreview, error) {
+func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.LinkPreview, bool, error) {
 	cfg := config.LoadConfig()
 
 	// 1. Parse + validação inicial (rejeição rápida sem gastar rede).
 	u, err := utils.NormalizeURL(rawURL)
 	if err != nil {
-		return models.LinkPreview{}, err
+		return models.LinkPreview{}, false, err
 	}
 	normalized := u.String()
 
 	// 2. Cache (mesma URL normalizada, fetched_at dentro do TTL).
 	if cached, err := storage.GetPreviewByURL(ctx, normalized); err == nil {
 		if time.Since(cached.FetchedAt) < cfg.LinkPreviewCacheTTL {
-			return cached, nil
+			return cached, false, nil
 		}
 		// expirado → refetch (fall through; o upsert atualiza a row)
 	} else if !errors.Is(err, storage.ErrNotFound) {
-		return models.LinkPreview{}, err
+		return models.LinkPreview{}, false, err
 	}
 
 	// 3. Rate limit de URL-nova (global + por usuário).
 	if !previewRateAllow(userID) {
-		return models.LinkPreview{}, errors.New("rate limit de preview estourado")
+		return models.LinkPreview{}, false, errors.New("rate limit de preview estourado")
 	}
 
 	// 4. oEmbed first (host allowlistado) — falha → fallback para OG.
 	if oembedProviderHost(u.Hostname()) != "" {
 		if preview, err := fetchOEmbedPreview(ctx, cfg, u); err == nil {
-			return preview, nil
+			return preview, true, nil
 		}
 	}
 
 	// 5. robots.txt da origem.
 	if !RobotsAllowed(ctx, u) {
-		return models.LinkPreview{}, errors.New("origem não permitida pelo robots.txt")
+		return models.LinkPreview{}, false, errors.New("origem não permitida pelo robots.txt")
 	}
 
 	// 6. Fetch HTML (teto 5MB pós-descompressão).
 	if !acquireOutboundSlot() {
-		return models.LinkPreview{}, errors.New("semáforo outbound cheio")
+		return models.LinkPreview{}, false, errors.New("semáforo outbound cheio")
 	}
 	body, finalURL, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxPreviewHTMLBytes, normalized)
 	releaseOutboundSlot()
 	if err != nil {
-		return models.LinkPreview{}, err
+		return models.LinkPreview{}, false, err
 	}
 
 	// 7. Parse OpenGraph (og > twitter > fallbacks). Imagem relativa é
@@ -292,7 +297,8 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 		// sem imagem → preview só com title/description (aceitável, §6.2 passo 9)
 	}
 
-	return storage.UpsertPreview(ctx, preview)
+	preview, err = storage.UpsertPreview(ctx, preview)
+	return preview, err == nil, err
 }
 
 // fetchOEmbedPreview executa o fluxo oEmbed (§9.3): fetch do endpoint

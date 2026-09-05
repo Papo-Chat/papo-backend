@@ -37,6 +37,12 @@ func MediaBaseDir() string {
 	return mediaBaseDir
 }
 
+// MediaBlobPath retorna o caminho do blob no content-addressable storage
+// (media/<ab>/<cd>/<hash>).
+func MediaBlobPath(shaHash string) string {
+	return mediaBlobPath(shaHash)
+}
+
 // StoreMediaFromBytes grava o conteúdo em content-addressable storage e
 // registra a mídia na tabela media (deduplicação pelo hmac-sha256 do conteúdo).
 // Retorna o hmac-sha256 (hex) e o registro de mídia. Se o conteúdo já existe, o
@@ -144,6 +150,15 @@ func MediaContent(shaHash string) ([]byte, error) {
 	return data, nil
 }
 
+// normalizeImageFormat normaliza o rótulo de formato enviado na API:
+// maiúsculas e JPG → JPEG (sinônimo).
+func normalizeImageFormat(format string) string {
+	if strings.EqualFold(format, "JPG") {
+		return "JPEG"
+	}
+	return strings.ToUpper(format)
+}
+
 // mimeToFormat mapeia o MIME type da tabela media para o rótulo de formato
 // usado na API (avatar_format / icon_format / format do emoji).
 func mimeToFormat(mimeType string) string {
@@ -161,8 +176,8 @@ func mimeToFormat(mimeType string) string {
 	}
 }
 
-// formatToMime converte o rótulo de formato aceito na API (PNG, JPEG, GIF)
-// para o MIME type gravado na tabela media.
+// formatToMime converte o rótulo de formato aceito na API (PNG, JPEG, GIF,
+// WEBP) para o MIME type gravado na tabela media.
 func formatToMime(format string) string {
 	switch strings.ToUpper(format) {
 	case "PNG":

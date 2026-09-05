@@ -40,8 +40,6 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Suporte Cloudflare
 - [x] Detecção e moderação de imagens com conteúdo sensível
 - [x] Suporte WebRTC (Audio, Video, Transmissão)
-- [ ] Adicionar suporte nos endpoints com upload de imagens (avatar, banner, server icon e emoji) para WebP e JPG. (adicionar suporte a esses formatos a thumbnails nos attachments também)
-- [ ] Implementar ws event: outbound link_preview_update {channel_id, message_id, preview:{preview_object} } (somente usuarios com permissão para ver canal)
 
 ### V2:
 
@@ -250,7 +248,7 @@ Autenticação via o mesmo cookie `Auth` da API REST, validado no handshake.
 | Evento | Direção |
 |---|---|
 | `message`, `message_edit`, `message_delete`, `message_pin` | outbound |
-| `new_preview`, `remove_preview` | outbound |
+| `new_preview`, `remove_preview`, `link_preview_update` | outbound |
 | `channel_create`, `channel_update`, `channel_delete` | outbound |
 | `typing` | inbound / outbound |
 | `presence_sync` | unicast (snapshot no connect) |

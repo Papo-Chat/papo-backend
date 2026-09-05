@@ -3592,6 +3592,64 @@ func TestAddMessagePreviews(t *testing.T) {
 	}
 }
 
+// TestListMessageRefsByPreviewID garante que a listagem de mensagens
+// vinculadas a um preview retorna o par (message_id, channel_id) correto —
+// base do evento link_preview_update.
+func TestListMessageRefsByPreviewID(t *testing.T) {
+	author := newTestUser(t)
+	_ = newTestServer(t, nil)
+	channelA := newTestChannel(t)
+	channelB := newTestChannel(t)
+	msgA, err := CreateMessage(testCtx(), channelA.ID, author.ID, "msgA", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem A: %v", err)
+	}
+	msgB, err := CreateMessage(testCtx(), channelB.ID, author.ID, "msgB", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem B: %v", err)
+	}
+	p1 := newTestPreview(t, "https://refs.example.com/1")
+	p2 := newTestPreview(t, "https://refs.example.com/2")
+
+	if err := AddMessagePreviews(testCtx(), msgA.ID, []string{p1.ID, p2.ID}); err != nil {
+		t.Fatalf("AddMessagePreviews (A) retornou erro: %v", err)
+	}
+	if err := AddMessagePreviews(testCtx(), msgB.ID, []string{p1.ID}); err != nil {
+		t.Fatalf("AddMessagePreviews (B) retornou erro: %v", err)
+	}
+
+	refs, err := ListMessageRefsByPreviewID(testCtx(), p1.ID)
+	if err != nil {
+		t.Fatalf("ListMessageRefsByPreviewID retornou erro: %v", err)
+	}
+	want := map[string]string{msgA.ID: channelA.ID, msgB.ID: channelB.ID}
+	if len(refs) != len(want) {
+		t.Fatalf("esperava %d refs, obtive %d: %+v", len(want), len(refs), refs)
+	}
+	for _, ref := range refs {
+		if want[ref.MessageID] != ref.ChannelID {
+			t.Errorf("ref inesperada: %+v (canal esperado %s)", ref, want[ref.MessageID])
+		}
+	}
+
+	refs, err = ListMessageRefsByPreviewID(testCtx(), p2.ID)
+	if err != nil {
+		t.Fatalf("ListMessageRefsByPreviewID (p2) retornou erro: %v", err)
+	}
+	if len(refs) != 1 || refs[0].MessageID != msgA.ID || refs[0].ChannelID != channelA.ID {
+		t.Errorf("esperava apenas a ref de A para p2, obtive %+v", refs)
+	}
+
+	// preview inexistente: lista vazia, sem erro
+	refs, err = ListMessageRefsByPreviewID(testCtx(), randUUID())
+	if err != nil {
+		t.Fatalf("ListMessageRefsByPreviewID (inexistente) retornou erro: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("preview inexistente não deveria retornar refs, obtive %+v", refs)
+	}
+}
+
 func TestReplaceMessagePreviews(t *testing.T) {
 	author := newTestUser(t)
 	_ = newTestServer(t, nil)

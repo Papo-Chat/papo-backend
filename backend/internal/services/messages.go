@@ -294,15 +294,27 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 	}, nil
 }
 
+// PreviewUpdate é um link preview refetchado (cache expirado ou URL nova com
+// upsert) e as mensagens já vinculadas a ele — alvos do evento
+// link_preview_update (o objeto do preview mudou no banco e os clientes com a
+// versão antiga precisam atualizar).
+type PreviewUpdate struct {
+	Preview  models.LinkPreview
+	Messages []models.PreviewMessageRef
+}
+
 // crawlPreviews extrai URLs do content e obtém/cria os previews (best-effort:
 // qualquer falha é logada e a URL segue sem preview). O ctx carrega o budget
 // total compartilhado entre as URLs (§6.1). Não vincula nada à mensagem.
 // Retorna os previews obtidos (vazio quando não há URL no content ou todos
-// falharam).
-func crawlPreviews(ctx context.Context, authorID, content string) []models.LinkPreview {
+// falharam) e os updates (previews refetchados com as mensagens já
+// vinculadas, consultadas ANTES do vínculo da mensagem atual — na criação a
+// mensagem nova ainda não aparece; na edição os vínculos antigos ainda
+// estão em vigor).
+func crawlPreviews(ctx context.Context, authorID, content string) ([]models.LinkPreview, []PreviewUpdate) {
 	cfg := config.LoadConfig()
 	if !cfg.LinkPreviewEnabled || content == "" {
-		return nil
+		return nil, nil
 	}
 
 	budget := cfg.LinkPreviewTimeout
@@ -313,27 +325,42 @@ func crawlPreviews(ctx context.Context, authorID, content string) []models.LinkP
 	defer cancel()
 
 	var previews []models.LinkPreview
+	var updates []PreviewUpdate
 	for _, rawURL := range extractPreviewURLs(content, cfg.LinkPreviewMaxURLs) {
-		preview, err := GetOrCreatePreview(previewCtx, authorID, rawURL)
+		preview, refetched, err := GetOrCreatePreview(previewCtx, authorID, rawURL)
 		if err != nil {
 			utils.Errorf("link preview para %s pulado: %v", rawURL, err)
 			continue
 		}
 		previews = append(previews, preview)
+		if refetched {
+			// Refetch atualizou a row: as mensagens já vinculadas carregam o
+			// objeto antigo. Sem vínculos (URL nova) não há update.
+			refs, err := storage.ListMessageRefsByPreviewID(previewCtx, preview.ID)
+			if err != nil {
+				utils.Errorf("falha ao listar as mensagens do preview %s: %v", preview.ID, err)
+				continue
+			}
+			if len(refs) > 0 {
+				updates = append(updates, PreviewUpdate{Preview: preview, Messages: refs})
+			}
+		}
 	}
 
-	return previews
+	return previews, updates
 }
 
 // ProcessMessagePreviews processa em background os link previews de uma
 // mensagem recém-criada (best-effort) e vincula os obtidos. Chamado por uma
 // goroutine após a criação da mensagem (o crawl não pode bloquear a resposta
 // HTTP). Retorna os previews vinculados (vazio quando não há URL no content
-// ou todos falharam).
-func ProcessMessagePreviews(ctx context.Context, messageID, authorID, content string) []models.LinkPreview {
-	previews := crawlPreviews(ctx, authorID, content)
+// ou todos falharam) e os updates (previews refetchados com as mensagens já
+// vinculadas — alvos do evento link_preview_update; a mensagem nova não
+// aparece nos updates, pois o vínculo é gravado depois da consulta).
+func ProcessMessagePreviews(ctx context.Context, messageID, authorID, content string) ([]models.LinkPreview, []PreviewUpdate) {
+	previews, updates := crawlPreviews(ctx, authorID, content)
 	if len(previews) == 0 {
-		return nil
+		return nil, updates
 	}
 
 	previewIDs := make([]string, 0, len(previews))
@@ -342,22 +369,25 @@ func ProcessMessagePreviews(ctx context.Context, messageID, authorID, content st
 	}
 	if err := storage.AddMessagePreviews(ctx, messageID, previewIDs); err != nil {
 		utils.Errorf("falha ao vincular previews à mensagem %s: %v", messageID, err)
-		return nil
+		return nil, updates
 	}
 
-	return previews
+	return previews, updates
 }
 
 // ProcessEditedMessagePreviews processa em background os link previews de uma
 // mensagem editada (best-effort), substitui todos os vínculos e retorna os
-// previews adicionados e removidos (delta em relação aos vínculos anteriores).
+// previews adicionados e removidos (delta em relação aos vínculos anteriores)
+// e os updates (previews refetchados com as mensagens já vinculadas — alvos
+// do evento link_preview_update; a consulta roda com os vínculos antigos em
+// vigor, então a mensagem editada aparece quando ainda está vinculada).
 // Content vazio limpa os vínculos (todos os anteriores viram removidos).
 // Chamado por uma goroutine após a edição da mensagem.
-func ProcessEditedMessagePreviews(ctx context.Context, messageID, authorID, content string) (added, removed []models.LinkPreview) {
+func ProcessEditedMessagePreviews(ctx context.Context, messageID, authorID, content string) (added, removed []models.LinkPreview, updates []PreviewUpdate) {
 	old, err := storage.ListPreviewsByMessageIDs(ctx, []string{messageID})
 	if err != nil {
 		utils.Errorf("falha ao listar previews da mensagem %s: %v", messageID, err)
-		return nil, nil
+		return nil, nil, nil
 	}
 	oldSet := old[messageID]
 	oldByID := make(map[string]models.LinkPreview, len(oldSet))
@@ -365,7 +395,7 @@ func ProcessEditedMessagePreviews(ctx context.Context, messageID, authorID, cont
 		oldByID[p.ID] = p
 	}
 
-	newPreviews := crawlPreviews(ctx, authorID, content)
+	newPreviews, updates := crawlPreviews(ctx, authorID, content)
 	newByID := make(map[string]models.LinkPreview, len(newPreviews))
 	newIDs := make([]string, 0, len(newPreviews))
 	for _, p := range newPreviews {
@@ -378,7 +408,7 @@ func ProcessEditedMessagePreviews(ctx context.Context, messageID, authorID, cont
 	// permanecer.
 	if err := storage.ReplaceMessagePreviews(ctx, messageID, newIDs); err != nil {
 		utils.Errorf("falha ao substituir previews da mensagem %s: %v", messageID, err)
-		return nil, nil
+		return nil, nil, updates
 	}
 
 	for _, p := range newPreviews {
@@ -391,7 +421,7 @@ func ProcessEditedMessagePreviews(ctx context.Context, messageID, authorID, cont
 			removed = append(removed, p)
 		}
 	}
-	return added, removed
+	return added, removed, updates
 }
 
 // EditMessage edita o conteúdo de uma mensagem (README:

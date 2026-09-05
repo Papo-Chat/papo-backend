@@ -1172,6 +1172,16 @@ func gifAvatarBytes(width, height int) []byte {
 	return buf.Bytes()
 }
 
+// webpAvatarBytes gera um WebP válido nas dimensões dadas (output do
+// GenerateThumbnail — sem depender de encoder externo).
+func webpAvatarBytes(width, height int) []byte {
+	webp, _, _, _, err := utils.GenerateThumbnail(pngAvatarBytes(width, height), 512, 0)
+	if err != nil {
+		panic(err)
+	}
+	return webp
+}
+
 func TestUpdateAvatar(t *testing.T) {
 	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
@@ -1181,11 +1191,14 @@ func TestUpdateAvatar(t *testing.T) {
 	cases := []struct {
 		name   string
 		format string
+		expect string
 		avatar []byte
 	}{
-		{"PNG", "PNG", pngAvatarBytes(100, 100)},
-		{"JPEG", "JPEG", jpegAvatarBytes(100, 100)},
-		{"GIF", "GIF", gifAvatarBytes(100, 100)},
+		{"PNG", "PNG", "PNG", pngAvatarBytes(100, 100)},
+		{"JPEG", "JPEG", "JPEG", jpegAvatarBytes(100, 100)},
+		{"JPG (alias de JPEG)", "JPG", "JPEG", jpegAvatarBytes(100, 100)},
+		{"GIF", "GIF", "GIF", gifAvatarBytes(100, 100)},
+		{"WEBP", "WEBP", "WEBP", webpAvatarBytes(100, 100)},
 	}
 
 	for _, tc := range cases {
@@ -1212,8 +1225,8 @@ func TestUpdateAvatar(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Profile retornou erro: %v", err)
 			}
-			if profile.AvatarFormat != tc.format {
-				t.Errorf("esperava avatar_format %q, obtive %q", tc.format, profile.AvatarFormat)
+			if profile.AvatarFormat != tc.expect {
+				t.Errorf("esperava avatar_format %q, obtive %q", tc.expect, profile.AvatarFormat)
 			}
 			if !bytes.Equal(profile.AvatarBlob, tc.avatar) {
 				t.Errorf("avatar_blob não confere:\n got  %x\n want %x", profile.AvatarBlob, tc.avatar)
@@ -1336,6 +1349,7 @@ func TestUpdateBanner(t *testing.T) {
 		{"PNG", "PNG", pngAvatarBytes(100, 100)},
 		{"JPEG", "JPEG", jpegAvatarBytes(100, 100)},
 		{"GIF", "GIF", gifAvatarBytes(100, 100)},
+		{"WEBP", "WEBP", webpAvatarBytes(100, 100)},
 	}
 
 	for _, tc := range cases {
@@ -2333,6 +2347,7 @@ func TestCreateServerWithIconAllFormats(t *testing.T) {
 		{"PNG", "PNG", pngAvatarBytes(100, 100)},
 		{"JPEG", "JPEG", jpegAvatarBytes(100, 100)},
 		{"GIF", "GIF", gifAvatarBytes(100, 100)},
+		{"WEBP", "WEBP", webpAvatarBytes(100, 100)},
 	}
 
 	for _, tc := range cases {
@@ -5788,6 +5803,30 @@ func TestCreateEmoji(t *testing.T) {
 	if string(emoji.ImageBlob) != string(pngAvatarBytes(100, 100)) {
 		t.Error("image_blob retornado não corresponde ao conteúdo enviado")
 	}
+
+	webp := base64.StdEncoding.EncodeToString(webpAvatarBytes(100, 100))
+	emojiWebP, err := CreateEmoji(testCtx(), "emoji_"+randHex(8), "webp", webp, owner.ID)
+	if err != nil {
+		t.Fatalf("CreateEmoji (webp) retornou erro: %v", err)
+	}
+	if emojiWebP.Format != "WEBP" {
+		t.Errorf("esperava format normalizado para WEBP, obtive %q", emojiWebP.Format)
+	}
+	if string(emojiWebP.ImageBlob) != string(webpAvatarBytes(100, 100)) {
+		t.Error("image_blob (webp) retornado não corresponde ao conteúdo enviado")
+	}
+
+	jpg := base64.StdEncoding.EncodeToString(jpegAvatarBytes(100, 100))
+	emojiJPG, err := CreateEmoji(testCtx(), "emoji_"+randHex(8), "jpg", jpg, owner.ID)
+	if err != nil {
+		t.Fatalf("CreateEmoji (jpg) retornou erro: %v", err)
+	}
+	if emojiJPG.Format != "JPEG" {
+		t.Errorf("esperava format normalizado para JPEG, obtive %q", emojiJPG.Format)
+	}
+	if string(emojiJPG.ImageBlob) != string(jpegAvatarBytes(100, 100)) {
+		t.Error("image_blob (jpg) retornado não corresponde ao conteúdo enviado")
+	}
 }
 
 func TestCreateEmojiInvalidInput(t *testing.T) {
@@ -6912,9 +6951,12 @@ func TestGetOrCreatePreviewCacheHit(t *testing.T) {
 		t.Fatalf("UpsertPreview retornou erro: %v", err)
 	}
 
-	got, err := GetOrCreatePreview(ctx, user.ID, "https://cache-hit.example.com/pagina")
+	got, refetched, err := GetOrCreatePreview(ctx, user.ID, "https://cache-hit.example.com/pagina")
 	if err != nil {
 		t.Fatalf("GetOrCreatePreview com cache hit retornou erro (deveria evitar rede): %v", err)
+	}
+	if refetched {
+		t.Errorf("cache hit dentro do TTL não deve marcar refetch, obtive refetched=true")
 	}
 	if got.ID != seed.ID {
 		t.Errorf("esperava o mesmo id do preview em cache, obtive %s (esperado %s)", got.ID, seed.ID)
@@ -7054,9 +7096,12 @@ func TestCreateMessageLinksCachedPreview(t *testing.T) {
 	}
 
 	// simula o processamento em background (goroutine do handler)
-	added := ProcessMessagePreviews(ctx, msg.ID, author.ID, content)
+	added, updates := ProcessMessagePreviews(ctx, msg.ID, author.ID, content)
 	if len(added) != 1 {
 		t.Fatalf("esperava 1 preview processado, obtive %d", len(added))
+	}
+	if len(updates) != 0 {
+		t.Errorf("preview em cache (sem refetch) não deve gerar updates, obtive %v", updates)
 	}
 	if added[0].ID != seed.ID {
 		t.Errorf("esperava preview %s, obtive %s", seed.ID, added[0].ID)
@@ -7101,8 +7146,12 @@ func TestEditMessageReplacesPreviews(t *testing.T) {
 	if len(msg.Previews) != 0 {
 		t.Fatalf("criação não deve retornar previews, obtive %v", msg.Previews)
 	}
-	if added := ProcessMessagePreviews(ctx, msg.ID, author.ID, contentA); len(added) != 1 || added[0].ID != seedA.ID {
+	added, updates := ProcessMessagePreviews(ctx, msg.ID, author.ID, contentA)
+	if len(added) != 1 || added[0].ID != seedA.ID {
 		t.Fatalf("esperava preview A processado na criação, obtive %v", added)
+	}
+	if len(updates) != 0 {
+		t.Fatalf("preview em cache (sem refetch) não deve gerar updates, obtive %v", updates)
 	}
 
 	contentB := "agora https://edit-preview.example.com/b"
@@ -7113,12 +7162,15 @@ func TestEditMessageReplacesPreviews(t *testing.T) {
 	if len(edited.Previews) != 0 {
 		t.Errorf("edição não deve retornar previews, obtive %v", edited.Previews)
 	}
-	added, removed := ProcessEditedMessagePreviews(ctx, msg.ID, author.ID, contentB)
+	added, removed, updates := ProcessEditedMessagePreviews(ctx, msg.ID, author.ID, contentB)
 	if len(added) != 1 || added[0].ID != seedB.ID {
 		t.Errorf("esperava B adicionado após edição, obtive %v", added)
 	}
 	if len(removed) != 1 || removed[0].ID != seedA.ID {
 		t.Errorf("esperava A removido após edição, obtive %v", removed)
+	}
+	if len(updates) != 0 {
+		t.Errorf("previews em cache (sem refetch) não devem gerar updates, obtive %v", updates)
 	}
 	linked, err := storage.ListPreviewsByMessageIDs(ctx, []string{msg.ID})
 	if err != nil {
@@ -7135,12 +7187,15 @@ func TestEditMessageReplacesPreviews(t *testing.T) {
 	if len(cleared.Previews) != 0 {
 		t.Errorf("esperava previews limpos após content vazio, obtive %v", cleared.Previews)
 	}
-	added, removed = ProcessEditedMessagePreviews(ctx, msg.ID, author.ID, "")
+	added, removed, updates = ProcessEditedMessagePreviews(ctx, msg.ID, author.ID, "")
 	if len(added) != 0 {
 		t.Errorf("não esperava previews adicionados após content vazio, obtive %v", added)
 	}
 	if len(removed) != 1 || removed[0].ID != seedB.ID {
 		t.Errorf("esperava B removido após content vazio, obtive %v", removed)
+	}
+	if len(updates) != 0 {
+		t.Errorf("content vazio não deve gerar updates, obtive %v", updates)
 	}
 	linked, err = storage.ListPreviewsByMessageIDs(ctx, []string{msg.ID})
 	if err != nil {
