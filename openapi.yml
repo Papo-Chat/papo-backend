@@ -8,7 +8,7 @@ info:
     - Autenticação via cookie HttpOnly `Auth` (JWT).
     - Erros seguem RFC 7807 (`application/problem+json`) e toda resposta
       inclui o header `X-Request-ID`.
-  version: 0.9.6
+  version: 0.9.7
 servers:
   - url: http://localhost:8080
     description: Backend local

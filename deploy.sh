@@ -19,15 +19,15 @@
 #   ./deploy.sh --no-systemd   # sem o serviço systemd (roda manualmente)
 #
 # Variáveis de ambiente (opcionais):
-#   PAPA_PREFIX  diretório de instalação (padrão: /opt/papo)
-#   PAPA_REPO    repositório git (padrão: https://github.com/Papo-Chat/papo-backend.git)
-#   PAPA_BRANCH  branch para compilar (padrão: main)
+#   PAPO_PREFIX  diretório de instalação (padrão: /opt/papo)
+#   PAPO_REPO    repositório git (padrão: https://github.com/Papo-Chat/papo-backend.git)
+#   PAPO_BRANCH  branch para compilar (padrão: main)
 
 set -euo pipefail
 
-PREFIX="${PAPA_PREFIX:-/opt/papo}"
-REPO_URL="${PAPA_REPO:-https://github.com/Papo-Chat/papo-backend.git}"
-BRANCH="${PAPA_BRANCH:-main}"
+PREFIX="${PAPO_PREFIX:-/opt/papo}"
+REPO_URL="${PAPO_REPO:-https://github.com/Papo-Chat/papo-backend.git}"
+BRANCH="${PAPO_BRANCH:-main}"
 INSTALL_SYSTEMD=true
 
 # Versão mínima do Go exigida pelo backend/go.mod.
