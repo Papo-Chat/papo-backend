@@ -95,18 +95,14 @@ func (h *Hub) Run() {
 			// desregistrado (unregister duplicado é ignorado).
 			if removed {
 				c.closeSend()
-				if removed {
-					c.closeSend()
 
-					h.mu.RLock()
-					onClientOffline := h.onClientOffline
-					h.mu.RUnlock()
-					if onClientOffline != nil {
-						onClientOffline(c.userID, c.clientID)
-					}
-
-					h.presenceOffline(c)
+				h.mu.RLock()
+				onClientOffline := h.onClientOffline
+				h.mu.RUnlock()
+				if onClientOffline != nil {
+					onClientOffline(c.userID, c.clientID)
 				}
+
 				h.presenceOffline(c)
 			}
 		case <-h.stop:

@@ -62,19 +62,16 @@ func mediaPublishes(media *sdp.MediaDescription) bool {
 // sala (D6). O codec é identificado pelo encoding-name do rtpmap (ex.: "vp8"),
 // não pelo payload type. Sem m-line de vídeo (peer só com áudio) é válido.
 func checkVideoCodec(desc *sdp.SessionDescription, roomCodec string) error {
-	hasVideo := false
 	for _, media := range desc.MediaDescriptions {
 		if media.MediaName.Media != "video" || !mediaPublishes(media) {
 			continue
 		}
-		hasVideo = true
-		if videoMLineHasCodec(media, roomCodec) {
-			return nil
+
+		if !videoMLineHasCodec(media, roomCodec) {
+			return ErrVoiceCodecUnsupported
 		}
 	}
-	if hasVideo {
-		return ErrVoiceCodecUnsupported
-	}
+
 	return nil
 }
 

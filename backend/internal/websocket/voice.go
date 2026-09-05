@@ -115,7 +115,7 @@ func (c *Client) handleVoiceAnswer(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.ClientAnswer(event.ChannelID, c.userID, event.SDP, c.clientID); err != nil {
+	if err := m.ClientAnswer(event.ChannelID, c.userID, c.clientID, event.SDP); err != nil {
 		c.sendVoiceError(err)
 	}
 }
@@ -157,7 +157,7 @@ func (c *Client) handleTrackSubscribe(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.Subscribe(event.ChannelID, c.userID, event.PublisherID, event.Kind, c.clientID); err != nil {
+	if err := m.Subscribe(event.ChannelID, c.userID, c.clientID, event.PublisherID, event.Kind); err != nil {
 		c.sendVoiceError(err)
 	}
 }
@@ -175,7 +175,7 @@ func (c *Client) handleTrackUnsubscribe(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.Unsubscribe(event.ChannelID, c.userID, event.PublisherID, event.Kind, c.clientID); err != nil {
+	if err := m.Unsubscribe(event.ChannelID, c.userID, c.clientID, event.PublisherID, event.Kind); err != nil {
 		c.sendVoiceError(err)
 	}
 }
