@@ -1191,9 +1191,10 @@ paths:
       summary: Servidores ICE (STUN/TURN) do usuário
       description: >
         Retorna a lista de servidores ICE do usuário autenticado, no mesmo shape
-        de RTCIceServer do browser (passar direto para new
-        RTCPeerConnection({ iceServers })). TURN usa credencial efêmera RFC 5389
-        por usuário.
+        de RTCIceServer do browser (passar direto para
+        new RTCPeerConnection({ iceServers })). Quando TURN REST está configurado,
+        as credenciais são efêmeras e compatíveis com coturn
+        (username com expiração + Base64 HMAC-SHA1).
       responses:
         '200':
           description: Servidores ICE
@@ -1883,6 +1884,14 @@ paths:
       description: |
         Endpoint WebSocket: `ws://localhost:8080/ws`. O JWT do cookie `Auth`
         é validado no handshake. Eventos (conforme README):
+
+        
+        Semântica de conexão dos eventos de voz:
+        `voice_join` vincula o Peer WebRTC à conexão WebSocket que enviou o evento.
+        Os eventos de sinalização e controle dessa call devem ser enviados pela mesma conexão WebSocket.
+        `voice_answer`, `voice_offer` outbound, `voice_ice_candidate` outbound e erros de sinalização são enviados somente para a conexão dona da call, não para todas as abas/dispositivos do mesmo usuário.
+        Se a conexão WebSocket dona da call fechar, o Peer é removido mesmo que o mesmo usuário possua outra conexão WebSocket aberta.
+
         | Event            | Direction | Payload                                                                           |
         | ---------        | --------- | ---------------------------------------------------------------------             |
         | `message`        | outbound  | `{ type: "message", id, channel_id, author_id, content, attachments, created_at }`         |
@@ -1908,17 +1917,17 @@ paths:
         | `heartbeat_ack`  | outbound  | `{ type: "heartbeat_ack" }`                                                             |
         | `error`          | outbound  | `{ type: "error", message, code? }`                                                     |
         | `voice_join`     | inbound   | `{ type: "voice_join", channel_id }`                                                    |
-        | `voice_leave`    | inbound   | `{ type: "voice_leave", channel_id }`                                                   |
+        | `voice_leave` | outbound | `{ type: "voice_leave", channel_id, user_id }` (saída explícita, conexão WebSocket dona da call caiu, sessão revogada ou sala destruída) |
         | `voice_offer`    | inbound   | `{ type: "voice_offer", channel_id, sdp }` (client-offers-first; renegociações do servidor chegam como `voice_offer` outbound) |
         | `voice_answer`   | inbound   | `{ type: "voice_answer", channel_id, sdp }`                                             |
         | `voice_ice_candidate` | inbound | `{ type: "voice_ice_candidate", channel_id, candidate, sdp_mid?, sdp_mline_index? }`    |
-        | `track_subscribe`| inbound   | `{ type: "track_subscribe", channel_id, publisher_id, kind }` (kind: camera/screen; vídeo só é forwardado com subscribe explícito) |
-        | `track_unsubscribe` | inbound | `{ type: "track_unsubscribe", channel_id, publisher_id, kind }`                        |
-        | `voice_mute`     | inbound   | `{ type: "voice_mute", channel_id, muted }`                                             |
-        | `voice_camera`   | inbound   | `{ type: "voice_camera", channel_id, on }`                                              |
-        | `screen_share_start` | inbound | `{ type: "screen_share_start", channel_id }` (a track chega na renegociação seguinte)  |
-        | `screen_share_stop` | inbound | `{ type: "screen_share_stop", channel_id }`                                            |
-        | `voice_joined`   | unicast   | `{ type: "voice_joined", channel_id, members: (user_id, muted, camera_on, screen_sharing)[], active_speakers: user_id[] }` (estado inicial do late joiner) |
+        | `track_subscribe`   | inbound | `{ type: "track_subscribe", channel_id, publisher_id, kind }` (kind: video/screen; vídeo só é forwardado com subscribe explícito) |
+        | `track_unsubscribe` | inbound | `{ type: "track_unsubscribe", channel_id, publisher_id, kind }` (kind: video/screen) |
+        | `voice_mute` | inbound | `{ type: "voice_mute", channel_id, muted }` (mute autoritativo do servidor: usuário mutado não entra no active-speaker e seu áudio não é forwardado pelo SFU) |
+        | `voice_camera` | inbound | `{ type: "voice_camera", channel_id, on }` (deve ser enviado antes do `voice_offer` correspondente; o backend usa esse estado para identificar/validar a publicação de câmera) |
+        | `screen_share_start` | inbound | `{ type: "screen_share_start", channel_id }` (deve ser enviado antes do `voice_offer` que adiciona/publica a track de screen) |
+        | `screen_share_stop` | inbound | `{ type: "screen_share_stop", channel_id }` (deve ser enviado antes do `voice_offer` que remove/inativa a publicação de screen) |
+        | `voice_joined`   | unicast   | `{ type: "voice_joined", channel_id, members: (user_id, muted, camera_on, screen_sharing)[], active_speakers: user_id[] }` (estado inicial do late joiner, o peer novo começa com muted=true camera_on=false screen_sharing=false) |
         | `voice_answer`   | unicast   | `{ type: "voice_answer", channel_id, sdp }` (resposta ao `voice_offer` do cliente)      |
         | `voice_offer`    | unicast   | `{ type: "voice_offer", channel_id, sdp }` (renegociação iniciada pelo servidor)        |
         | `voice_ice_candidate` | unicast | `{ type: "voice_ice_candidate", channel_id, candidate, sdp_mid?, sdp_mline_index? }`    |
