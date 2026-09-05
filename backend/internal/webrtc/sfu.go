@@ -95,6 +95,7 @@ func (f *forwarder) finish() {
 // run consome os pacotes do fanout, traduz o SSN e escreve no slot. Termina
 // quando encerrado (done) ou quando o WriteRTP falha (PC fechada).
 func (f *forwarder) run() {
+	defer f.finish()
 	for {
 		select {
 		case <-f.done:
@@ -121,10 +122,10 @@ func (f *forwarder) run() {
 type fanout struct {
 	track *webrtc.TrackRemote
 
-	mu     sync.Mutex
-	subs   map[*forwarder]struct{}
-	done   chan struct{}
-	once   sync.Once
+	mu   sync.Mutex
+	subs map[*forwarder]struct{}
+	done chan struct{}
+	once sync.Once
 }
 
 func newFanout(track *webrtc.TrackRemote) *fanout {
@@ -181,6 +182,7 @@ func (f *fanout) destroy() {
 // forwarders. Termina quando a track encerra (publisher saiu, PC fechou ou
 // receiver resetado na renegociação).
 func (f *fanout) readLoop() {
+	defer f.destroy()
 	for {
 		select {
 		case <-f.done:

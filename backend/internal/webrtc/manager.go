@@ -246,16 +246,13 @@ func (m *Manager) getRoom(channelID string) *Room {
 
 // createRoom cria e registra a sala (o caller já validou os limites).
 func (m *Manager) createRoom(channelID string) *Room {
-	room := newRoom(m, channelID)
-
 	m.mu.Lock()
-	if existing, ok := m.rooms[channelID]; ok {
-		m.mu.Unlock()
+	defer m.mu.Unlock()
+	if existing := m.rooms[channelID]; existing != nil {
 		return existing
 	}
+	room := newRoom(m, channelID)
 	m.rooms[channelID] = room
-	m.mu.Unlock()
-
 	return room
 }
 
@@ -308,48 +305,94 @@ func (m *Manager) Join(channelID, userID, clientID string) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
-
-	m.userMu.Lock()
-	if _, ok := m.userRooms[userID][channelID]; ok {
-		m.userMu.Unlock()
-		return ErrVoiceAlreadyInRoom
-	}
-	if len(m.userRooms[userID]) >= m.cfg.VoiceMaxRoomsPerUser {
-		m.userMu.Unlock()
-		return ErrVoiceAlreadyInRoom
-	}
-	m.userMu.Unlock()
-
-	room := m.getRoom(channelID)
-	if room == nil {
-		room = m.createRoom(channelID)
-	}
-
-	if err := room.addPeer(userID, clientID); err != nil {
-		// Sala cheia: destrói a sala recém-criada se ficou vazia.
-		if room.peerCount() == 0 {
-			room.destroy()
-		}
+	if err := m.reserveUserRoom(userID, channelID); err != nil {
 		return err
 	}
-	m.trackUserRoom(userID, channelID, true)
-	return nil
+
+	for {
+		if m.stopped.Load() {
+			m.trackUserRoom(userID, channelID, false)
+			return ErrVoiceRoomClosed
+		}
+		room := m.getRoom(channelID)
+		if room == nil {
+			room = m.createRoom(channelID)
+		}
+		err := room.addPeer(userID, clientID)
+		if errors.Is(err, ErrVoiceRoomClosed) {
+			// O cleanup venceu a corrida e já removeu a Room do manager.
+			continue
+		}
+		if err != nil {
+			m.trackUserRoom(userID, channelID, false)
+			return err
+		}
+		return nil
+	}
+}
+
+func (m *Manager) clientPeer(channelID, userID, clientID string) (*Room, *Peer, error) {
+	room := m.getRoom(channelID)
+	if room == nil {
+		return nil, nil, ErrVoiceNotFound
+	}
+	peer := room.peer(userID)
+	if peer == nil || !peer.ownsClient(clientID) {
+		return nil, nil, ErrVoiceNotFound
+	}
+	return room, peer, nil
 }
 
 // Leave remove o usuário da sala de voz do canal (saída explícita).
-func (m *Manager) Leave(channelID, userID string) error {
+func (m *Manager) Leave(channelID, userID, clientID string) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
-	room := m.getRoom(channelID)
-	if room == nil {
-		return ErrVoiceNotFound
+	room, _, err := m.clientPeer(channelID, userID, clientID)
+	if err != nil {
+		return err
 	}
-	if !room.hasPeer(userID) {
-		return ErrVoiceNotFound
-	}
-	room.removePeer(userID) // removePeer limpa userRooms (VOICE_MAX_ROOMS_PER_USER)
+	room.removePeer(userID)
 	return nil
+}
+
+func (m *Manager) reserveUserRoom(userID, channelID string) error {
+	m.userMu.Lock()
+	defer m.userMu.Unlock()
+
+	set := m.userRooms[userID]
+	if set == nil {
+		set = make(map[string]struct{})
+		m.userRooms[userID] = set
+	}
+	if _, ok := set[channelID]; ok {
+		return ErrVoiceAlreadyInRoom
+	}
+	if len(set) >= m.cfg.VoiceMaxRoomsPerUser {
+		return ErrVoiceAlreadyInRoom
+	}
+	set[channelID] = struct{}{}
+	return nil
+}
+
+func (m *Manager) ClientOffline(userID, clientID string) {
+	m.userMu.Lock()
+	channelIDs := make([]string, 0, len(m.userRooms[userID]))
+	for id := range m.userRooms[userID] {
+		channelIDs = append(channelIDs, id)
+	}
+	m.userMu.Unlock()
+
+	for _, channelID := range channelIDs {
+		room := m.getRoom(channelID)
+		if room == nil {
+			continue
+		}
+		peer := room.peer(userID)
+		if peer != nil && peer.ownsClient(clientID) {
+			room.removePeer(userID)
+		}
+	}
 }
 
 // ClientOffer processa a oferta SDP do cliente (join, screen share ou mais
@@ -360,13 +403,9 @@ func (m *Manager) ClientOffer(channelID, userID, clientID, sdp string) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
-	room := m.getRoom(channelID)
-	if room == nil {
-		return ErrVoiceNotFound
-	}
-	peer := room.peer(userID)
-	if peer == nil {
-		return ErrVoiceNotFound
+	_, peer, err := m.clientPeer(channelID, userID, clientID)
+	if err != nil {
+		return err
 	}
 	if err := validateSDP(sdp, m.cfg, true); err != nil {
 		return err
@@ -376,17 +415,13 @@ func (m *Manager) ClientOffer(channelID, userID, clientID, sdp string) error {
 
 // ClientAnswer processa a resposta SDP do cliente a uma renegociação
 // iniciada pelo servidor.
-func (m *Manager) ClientAnswer(channelID, userID, sdp string) error {
+func (m *Manager) ClientAnswer(channelID, userID, clientID, sdp string) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
-	room := m.getRoom(channelID)
-	if room == nil {
-		return ErrVoiceNotFound
-	}
-	peer := room.peer(userID)
-	if peer == nil {
-		return ErrVoiceNotFound
+	_, peer, err := m.clientPeer(channelID, userID, clientID)
+	if err != nil {
+		return err
 	}
 	if err := validateSDP(sdp, m.cfg, false); err != nil {
 		return err
@@ -395,24 +430,17 @@ func (m *Manager) ClientAnswer(channelID, userID, sdp string) error {
 }
 
 // AddICECandidate entrega um candidate trickle de ICE do cliente.
-func (m *Manager) AddICECandidate(channelID, userID, candidate, sdpMid string, sdpMLineIndex int) error {
+func (m *Manager) AddICECandidate(channelID, userID, clientID, candidate, sdpMid string, sdpMLineIndex int) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
 	if err := validateCandidate(candidate); err != nil {
 		return err
 	}
-	room := m.getRoom(channelID)
-	if room == nil {
-		return ErrVoiceNotFound
+	_, peer, err := m.clientPeer(channelID, userID, clientID)
+	if err != nil {
+		return err
 	}
-	peer := room.peer(userID)
-	if peer == nil {
-		return ErrVoiceNotFound
-	}
-	// Entra na fila de renegociação (D4): o candidate é aplicado em sequência
-	// com o offer/answer, evitando corrida com SetRemoteDescription/CreateAnswer
-	// (pion não serializa signaling + candidatos entre goroutines).
 	return peer.enqueue(func() error {
 		return peer.addICECandidate(candidate, sdpMid, sdpMLineIndex)
 	})
@@ -420,59 +448,80 @@ func (m *Manager) AddICECandidate(channelID, userID, candidate, sdpMid string, s
 
 // Subscribe faz o subscriber começar a receber a track de vídeo/screen do
 // publisher em um slot de vídeo (vídeo sempre explícito, D5).
-func (m *Manager) Subscribe(channelID, subscriberID, publisherID, kind string) error {
+func (m *Manager) Subscribe(
+	channelID,
+	subscriberID,
+	clientID,
+	publisherID,
+	kind string,
+) error {
 	if err := m.checkSubscribe(subscriberID); err != nil {
 		return err
 	}
+
 	if kind != "video" && kind != "screen" {
 		return ErrVoiceInvalidSDP
 	}
-	room := m.getRoom(channelID)
-	if room == nil {
-		return ErrVoiceNotFound
+
+	// Valida que ESTA conexão WebSocket é dona do subscriber.
+	room, sub, err := m.clientPeer(channelID, subscriberID, clientID)
+	if err != nil {
+		return err
 	}
-	sub := room.peer(subscriberID)
+
+	// Publisher é apenas o alvo da assinatura.
 	pub := room.peer(publisherID)
-	if sub == nil || pub == nil {
+	if pub == nil {
 		return ErrVoiceNotFound
 	}
+
 	if sub == pub {
 		return ErrVoiceNotFound
 	}
+
 	if kind == "video" && !pub.hasActiveTrack("video") {
 		return ErrVoiceNotFound
 	}
+
 	if kind == "screen" && !pub.hasActiveTrack("screen") {
 		return ErrVoiceNotFound
 	}
+
 	return sub.assignVideoSlot(pub, kind)
 }
 
 // Unsubscribe para de forwardar a track de vídeo/screen do publisher para o
 // subscriber (o slot fica vazio, sem renegociação).
-func (m *Manager) Unsubscribe(channelID, subscriberID, publisherID, kind string) error {
+func (m *Manager) Unsubscribe(
+	channelID,
+	subscriberID,
+	clientID,
+	publisherID,
+	kind string,
+) error {
 	if err := m.checkSubscribe(subscriberID); err != nil {
 		return err
 	}
-	room := m.getRoom(channelID)
-	if room == nil {
-		return ErrVoiceNotFound
+
+	_, sub, err := m.clientPeer(channelID, subscriberID, clientID)
+	if err != nil {
+		return err
 	}
-	sub := room.peer(subscriberID)
-	if sub == nil {
-		return ErrVoiceNotFound
-	}
+
 	sub.releaseVideoSlot(publisherID, kind)
 	return nil
 }
 
 // SetMuted atualiza o estado do mic do usuário e notifica os leitores do
 // canal (o cliente para de enviar frames; os slots param de receber pacotes).
-func (m *Manager) SetMuted(channelID, userID string, muted bool) error {
+func (m *Manager) SetMuted(channelID, userID, clientID string, muted bool) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
-	room := m.getRoom(channelID)
+	room, _, err := m.clientPeer(channelID, userID, clientID)
+	if err != nil {
+		return err
+	}
 	if room == nil || !room.hasPeer(userID) {
 		return ErrVoiceNotFound
 	}
@@ -482,11 +531,14 @@ func (m *Manager) SetMuted(channelID, userID string, muted bool) error {
 
 // SetCameraOn atualiza o estado da câmera do usuário e notifica os leitores
 // do canal (o cliente para de enviar frames; idem mic).
-func (m *Manager) SetCameraOn(channelID, userID string, on bool) error {
+func (m *Manager) SetCameraOn(channelID, userID, clientID string, on bool) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
-	room := m.getRoom(channelID)
+	room, _, err := m.clientPeer(channelID, userID, clientID)
+	if err != nil {
+		return err
+	}
 	if room == nil || !room.hasPeer(userID) {
 		return ErrVoiceNotFound
 	}
@@ -497,11 +549,14 @@ func (m *Manager) SetCameraOn(channelID, userID string, on bool) error {
 // StartScreenShare atualiza o estado de screen share do usuário e notifica
 // os leitores do canal. A track nova chega na renegociação seguinte
 // (voice_offer com a m-line de vídeo adicional).
-func (m *Manager) StartScreenShare(channelID, userID string) error {
+func (m *Manager) StartScreenShare(channelID, userID, clientID string) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
-	room := m.getRoom(channelID)
+	room, _, err := m.clientPeer(channelID, userID, clientID)
+	if err != nil {
+		return err
+	}
 	if room == nil || !room.hasPeer(userID) {
 		return ErrVoiceNotFound
 	}
@@ -511,11 +566,14 @@ func (m *Manager) StartScreenShare(channelID, userID string) error {
 
 // StopScreenShare remove o estado de screen share do usuário (a track é
 // removida na renegociação seguinte).
-func (m *Manager) StopScreenShare(channelID, userID string) error {
+func (m *Manager) StopScreenShare(channelID, userID, clientID string) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
-	room := m.getRoom(channelID)
+	room, _, err := m.clientPeer(channelID, userID, clientID)
+	if err != nil {
+		return err
+	}
 	if room == nil || !room.hasPeer(userID) {
 		return ErrVoiceNotFound
 	}

@@ -28,7 +28,8 @@ type Hub struct {
 	// onUserOffline é chamado quando a última conexão de um usuário cai
 	// (o usuário ficou offline). O main.go injeta o gancho do manager de voz
 	// (remove o peer das salas de voz). Nil = nada a fazer.
-	onUserOffline func(userID string)
+	onUserOffline   func(userID string)
+	onClientOffline func(userID, clientID string)
 }
 
 // hub é o hub global de conexões WebSocket da aplicação.
@@ -94,6 +95,18 @@ func (h *Hub) Run() {
 			// desregistrado (unregister duplicado é ignorado).
 			if removed {
 				c.closeSend()
+				if removed {
+					c.closeSend()
+
+					h.mu.RLock()
+					onClientOffline := h.onClientOffline
+					h.mu.RUnlock()
+					if onClientOffline != nil {
+						onClientOffline(c.userID, c.clientID)
+					}
+
+					h.presenceOffline(c)
+				}
 				h.presenceOffline(c)
 			}
 		case <-h.stop:
@@ -323,6 +336,12 @@ func (h *Hub) presenceOnline(c *Client) {
 		Type:    EventTypePresenceSync,
 		Members: h.presence.OnlineMembers(),
 	})
+}
+
+func (h *Hub) SetOnClientOffline(fn func(userID, clientID string)) {
+	h.mu.Lock()
+	h.onClientOffline = fn
+	h.mu.Unlock()
 }
 
 // SetOnUserOffline injeta o gancho chamado quando a última conexão de um

@@ -240,6 +240,9 @@ func TestValidateCandidate(t *testing.T) {
 	if err := validateCandidate("candidate:2 1 UDP 1694498815 203.0.113.7 50000 typ srflx raddr 0.0.0.0 rport 0"); err != nil {
 		t.Errorf("candidate público: esperado nil, obtive %v", err)
 	}
+	if err := validateCandidate("candidate:3 1 UDP 2122260223 8f3c9a2d-1234-5678-abcd-0123456789ab.local 50000 typ host"); err != nil {
+		t.Errorf("candidate mDNS .local: esperado nil, obtive %v", err)
+	}
 	// loopback é rejeitado
 	if err := validateCandidate("candidate:1 1 UDP 2122260223 127.0.0.1 50000 typ host"); !errors.Is(err, ErrVoiceInvalidSDP) {
 		t.Errorf("loopback: esperado ErrVoiceInvalidSDP, obtive %v", err)
@@ -251,6 +254,207 @@ func TestValidateCandidate(t *testing.T) {
 	// campos insuficientes
 	if err := validateCandidate("candidate:1 1 UDP 2122260223"); !errors.Is(err, ErrVoiceInvalidSDP) {
 		t.Errorf("poucos campos: esperado ErrVoiceInvalidSDP, obtive %v", err)
+	}
+}
+
+func TestParseMidRolesIgnoresRecvonlySlots(t *testing.T) {
+	sdpStr := "v=0\n" +
+		"o=- 1 2 IN IP4 127.0.0.1\n" +
+		"s=-\n" +
+		"t=0 0\n" +
+		"a=group:BUNDLE 0 1 2\n" +
+		"m=audio 9 UDP/TLS/RTP/SAVPF 111\n" +
+		"c=IN IP4 127.0.0.1\n" +
+		"a=mid:0\n" +
+		"a=sendrecv\n" +
+		"a=rtpmap:111 opus/48000/2\n" +
+		"m=video 9 UDP/TLS/RTP/SAVPF 96\n" +
+		"c=IN IP4 127.0.0.1\n" +
+		"a=mid:1\n" +
+		"a=sendonly\n" +
+		"a=rtpmap:96 vp8/90000\n" +
+		"m=video 9 UDP/TLS/RTP/SAVPF 96\n" +
+		"c=IN IP4 127.0.0.1\n" +
+		"a=mid:2\n" +
+		"a=recvonly\n" +
+		"a=rtpmap:96 vp8/90000\n"
+
+	roles := parseMidRoles(sdpStr)
+
+	if roles["0"] != roleAudio {
+		t.Fatalf("mid 0 = %v, esperado roleAudio; roles=%#v", roles["0"], roles)
+	}
+	if roles["1"] != roleCamera {
+		t.Fatalf("mid 1 = %v, esperado roleCamera; roles=%#v", roles["1"], roles)
+	}
+	if _, ok := roles["2"]; ok {
+		t.Fatalf("m-line recvonly foi classificada: %#v", roles)
+	}
+	if hasRole(roles, roleScreen) {
+		t.Fatalf("slot recvonly foi confundido com screen share: %#v", roles)
+	}
+}
+
+func TestForwarderRunUnsubscribesOnExit(t *testing.T) {
+	f := newFanout(&webrtc.TrackRemote{})
+	fwd := newForwarder(&slot{}, nil, f)
+	f.subscribe(fwd)
+	close(fwd.ch)
+
+	done := make(chan struct{})
+	go func() {
+		fwd.run()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("forwarder não encerrou")
+	}
+
+	f.mu.Lock()
+	_, exists := f.subs[fwd]
+	f.mu.Unlock()
+	if exists {
+		t.Fatal("forwarder encerrado permaneceu em fanout.subs")
+	}
+}
+
+func TestPeerIsOwnedByJoiningClient(t *testing.T) {
+	cfg := &config.Config{
+		VoiceVideoCodec:         "vp8",
+		VoiceVideoSlots:         2,
+		VoiceAudioSlots:         2,
+		VoiceMaxRoomPeers:       10,
+		VoiceMaxRoomsPerUser:    1,
+		VoiceSignalRateLimit:    100,
+		VoiceSignalRateBurst:    100,
+		VoiceSubscribeRateLimit: 100,
+		VoiceSubscribeRateBurst: 100,
+		VoiceRoomCleanupGrace:   time.Hour,
+	}
+	m := testManager(t, cfg)
+	defer m.Shutdown()
+
+	if err := m.Join("ch", "u", "owner"); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	if err := m.Leave("ch", "u", "other-tab"); !errors.Is(err, ErrVoiceNotFound) {
+		t.Fatalf("outra aba conseguiu controlar peer: %v", err)
+	}
+	if !m.getRoom("ch").hasPeer("u") {
+		t.Fatal("peer foi removido pela aba errada")
+	}
+
+	m.ClientOffline("u", "other-tab")
+	if !m.getRoom("ch").hasPeer("u") {
+		t.Fatal("disconnect da aba errada removeu peer")
+	}
+
+	m.ClientOffline("u", "owner")
+	if m.getRoom("ch").hasPeer("u") {
+		t.Fatal("disconnect da aba dona não removeu peer")
+	}
+	if got := m.userRoomCount("u"); got != 0 {
+		t.Fatalf("userRooms stale: %d", got)
+	}
+}
+
+func TestValidateSDPIgnoresRecvonlyCodec(t *testing.T) {
+	cfg := &config.Config{VoiceVideoCodec: "vp8", VoiceVideoSlots: 6, VoiceAudioSlots: 4}
+	sdpStr := "v=0\no=- 1 2 IN IP4 127.0.0.1\ns=-\nt=0 0\n" +
+		"m=video 9 UDP/TLS/RTP/SAVPF 97\nc=IN IP4 127.0.0.1\na=mid:0\na=sendonly\na=rtpmap:97 h264/90000\n" +
+		"m=video 9 UDP/TLS/RTP/SAVPF 96\nc=IN IP4 127.0.0.1\na=mid:1\na=recvonly\na=rtpmap:96 vp8/90000\n"
+	if err := validateSDP(sdpStr, cfg, true); !errors.Is(err, ErrVoiceCodecUnsupported) {
+		t.Fatalf("recvonly VP8 mascarou publisher incompatível: %v", err)
+	}
+}
+
+func TestIncomingAudioStartsFanoutBeforeTopK(t *testing.T) {
+	pubClient, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pubClient.Close()
+	pubServer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pubServer.Close()
+
+	trackCh := make(chan *webrtc.TrackRemote, 1)
+	pubServer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		trackCh <- track
+	})
+
+	opus := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}
+	local, err := webrtc.NewTrackLocalStaticRTP(opus, "papo", "bootstrap-audio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pubClient.AddTrack(local); err != nil {
+		t.Fatal(err)
+	}
+	connectPCs(t, pubClient, pubServer)
+
+	go func() {
+		_ = local.WriteRTP(&rtp.Packet{Header: rtp.Header{Version: 2, SequenceNumber: 1}, Payload: []byte{1}})
+	}()
+
+	select {
+	case remote := <-trackCh:
+		m := testManager(t, nil)
+		r := &Room{m: m, channelID: "ch", peers: make(map[string]*Peer), scores: make(map[string]float64), tickerStop: make(chan struct{})}
+		p := newPeer(m, r, "pub", "client-1")
+		defer p.close()
+		p.midRole["0"] = roleAudio
+		p.onIncomingTrack(remote, "0")
+
+		p.mu.Lock()
+		f := p.fanouts["audio"]
+		p.mu.Unlock()
+		if f == nil || f.track != remote {
+			t.Fatal("track de áudio não iniciou fanout/reader antes do active-speaker")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnTrack não disparou")
+	}
+}
+
+func TestSameAudioSetRebindsChangedTrack(t *testing.T) {
+	m := testManager(t, nil)
+	r := &Room{m: m, channelID: "ch", peers: make(map[string]*Peer), scores: make(map[string]float64), tickerStop: make(chan struct{})}
+	pub := newPeer(m, r, "pub", "pub-client")
+	sub := newPeer(m, r, "sub", "sub-client")
+	defer sub.close()
+	defer pub.close()
+
+	track1 := &webrtc.TrackRemote{}
+	track2 := &webrtc.TrackRemote{}
+	f1 := newFanout(track1)
+	f2 := newFanout(track2)
+
+	pub.mu.Lock()
+	pub.fanouts["audio"] = f1
+	pub.mu.Unlock()
+
+	s := &slot{peer: sub}
+	sub.audioSlots = []*slot{s}
+	sub.setAudioSet([]string{"pub"}, []*Peer{pub}, []*webrtc.TrackRemote{track1})
+	if s.src != track1 {
+		t.Fatal("primeira track não foi vinculada")
+	}
+
+	pub.mu.Lock()
+	pub.fanouts["audio"] = f2
+	pub.mu.Unlock()
+	f1.destroy()
+
+	// userID/top-K é idêntico; apenas TrackRemote mudou.
+	sub.setAudioSet([]string{"pub"}, []*Peer{pub}, []*webrtc.TrackRemote{track2})
+	if s.src != track2 {
+		t.Fatal("top-K igual impediu rebind da nova TrackRemote")
 	}
 }
 
@@ -425,12 +629,9 @@ func TestRenegWorkerSurfacesErrors(t *testing.T) {
 		ssrcOwner: make(map[uint32]ssrcOwner),
 	}
 	room := &Room{m: m, channelID: "test-channel"}
-	peer := newPeer(m, room, "user-1")
+
+	peer := newPeer(m, room, "user-1", "conn-1")
 	defer peer.close()
-
-	// A conexão que originou o signaling (o offer definiu o signalingClient).
-	peer.setSignalingClient("conn-1")
-
 	// Simula uma operação de signaling que falha no worker (ex.: SDP inválido
 	// detectado só no processamento, ou AddICECandidate rejeitado).
 	if err := peer.enqueue(func() error { return ErrVoiceInvalidSDP }); err != nil {

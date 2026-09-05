@@ -168,7 +168,7 @@ func LoadConfig() *Config {
 		VoiceSubscribeRateLimit: getEnvInt("VOICE_SUBSCRIBE_RATE_LIMIT", 5),
 		VoiceSubscribeRateBurst: getEnvInt("VOICE_SUBSCRIBE_RATE_BURST", 10),
 		// 50000: porta fixa por padrão (deploy previsível). 0 desliga o mux.
-		VoiceICEUDPPort: getEnvInt("VOICE_ICE_UDP_PORT", 50000),
+		VoiceICEUDPPort: getEnvNonNegativeInt("VOICE_ICE_UDP_PORT", 50000),
 
 		ModerationEnabled:         getEnvBool("MODERATION_ENABLED", false),
 		ModerationWorkerCommand:   getEnv("MODERATION_WORKER_COMMAND", "python3"),
@@ -206,6 +206,16 @@ func getEnvInt(key string, defaultValue int) int {
 		logrus.Info("Valor inválido para " + key + ", usando padrão " + strconv.Itoa(defaultValue))
 	}
 
+	return defaultValue
+}
+
+func getEnvNonNegativeInt(key string, defaultValue int) int {
+	if value, exists := os.LookupEnv(key); exists {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 0 {
+			return parsed
+		}
+		logrus.Info("Valor inválido para " + key + ", usando padrão " + strconv.Itoa(defaultValue))
+	}
 	return defaultValue
 }
 

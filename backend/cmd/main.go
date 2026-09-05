@@ -92,6 +92,7 @@ func main() {
 		},
 	})
 	// Última conexão do usuário caiu: remove o peer das salas de voz.
+	hub.SetOnClientOffline(voiceMgr.ClientOffline)
 	hub.SetOnUserOffline(voiceMgr.UserOffline)
 
 	// Rotina de manutenção (GC de mídia + purge de auditoria): roda no boot e

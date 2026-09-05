@@ -81,7 +81,7 @@ func (c *Client) handleVoiceLeave(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.Leave(event.ChannelID, c.userID); err != nil {
+	if err := m.Leave(event.ChannelID, c.userID, c.clientID); err != nil {
 		c.sendVoiceError(err)
 	}
 }
@@ -115,7 +115,7 @@ func (c *Client) handleVoiceAnswer(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.ClientAnswer(event.ChannelID, c.userID, event.SDP); err != nil {
+	if err := m.ClientAnswer(event.ChannelID, c.userID, event.SDP, c.clientID); err != nil {
 		c.sendVoiceError(err)
 	}
 }
@@ -139,7 +139,7 @@ func (c *Client) handleVoiceICECandidate(raw []byte) {
 	if event.SDPMid != nil {
 		sdpMid = *event.SDPMid
 	}
-	if err := m.AddICECandidate(event.ChannelID, c.userID, event.Candidate, sdpMid, sdpMLineIndex); err != nil {
+	if err := m.AddICECandidate(event.ChannelID, c.userID, c.clientID, event.Candidate, sdpMid, sdpMLineIndex); err != nil {
 		c.sendVoiceError(err)
 	}
 }
@@ -157,7 +157,7 @@ func (c *Client) handleTrackSubscribe(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.Subscribe(event.ChannelID, c.userID, event.PublisherID, event.Kind); err != nil {
+	if err := m.Subscribe(event.ChannelID, c.userID, event.PublisherID, event.Kind, c.clientID); err != nil {
 		c.sendVoiceError(err)
 	}
 }
@@ -175,7 +175,7 @@ func (c *Client) handleTrackUnsubscribe(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.Unsubscribe(event.ChannelID, c.userID, event.PublisherID, event.Kind); err != nil {
+	if err := m.Unsubscribe(event.ChannelID, c.userID, event.PublisherID, event.Kind, c.clientID); err != nil {
 		c.sendVoiceError(err)
 	}
 }
@@ -191,7 +191,7 @@ func (c *Client) handleVoiceMute(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.SetMuted(event.ChannelID, c.userID, event.Muted); err != nil {
+	if err := m.SetMuted(event.ChannelID, c.userID, c.clientID, event.Muted); err != nil {
 		c.sendVoiceError(err)
 	}
 }
@@ -207,7 +207,7 @@ func (c *Client) handleVoiceCamera(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.SetCameraOn(event.ChannelID, c.userID, event.On); err != nil {
+	if err := m.SetCameraOn(event.ChannelID, c.userID, c.clientID, event.On); err != nil {
 		c.sendVoiceError(err)
 	}
 }
@@ -224,7 +224,7 @@ func (c *Client) handleScreenShareStart(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.StartScreenShare(event.ChannelID, c.userID); err != nil {
+	if err := m.StartScreenShare(event.ChannelID, c.userID, c.clientID); err != nil {
 		c.sendVoiceError(err)
 	}
 }
@@ -240,7 +240,7 @@ func (c *Client) handleScreenShareStop(raw []byte) {
 	if m == nil {
 		return
 	}
-	if err := m.StopScreenShare(event.ChannelID, c.userID); err != nil {
+	if err := m.StopScreenShare(event.ChannelID, c.userID, c.clientID); err != nil {
 		c.sendVoiceError(err)
 	}
 }

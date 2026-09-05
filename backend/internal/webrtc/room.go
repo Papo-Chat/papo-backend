@@ -173,6 +173,21 @@ func (r *Room) noteAudioLevel(userID string, level float64) {
 	}
 }
 
+func (r *Room) rebindPublishedTrack(pub *Peer, kind string, track *webrtc.TrackRemote) {
+	r.mu.Lock()
+	subs := make([]*Peer, 0, len(r.peers))
+	for _, sub := range r.peers {
+		if sub != pub {
+			subs = append(subs, sub)
+		}
+	}
+	r.mu.Unlock()
+
+	for _, sub := range subs {
+		sub.rebindVideoSlot(pub, kind, track)
+	}
+}
+
 // addPeer adiciona o usuário à sala (cria o peer sem PC — a PeerConnection
 // só existe após o voice_offer). Enforce de VOICE_MAX_ROOM_PEERS. clientID é a
 // conexão que pediu o join (o voice_joined vai só para ela).
@@ -191,7 +206,7 @@ func (r *Room) addPeer(userID, clientID string) error {
 		return ErrVoiceRoomFull
 	}
 
-	peer := newPeer(r.m, r, userID)
+	peer := newPeer(r.m, r, userID, clientID)
 	r.peers[userID] = peer
 	r.mu.Unlock()
 
@@ -425,21 +440,24 @@ func (r *Room) scheduleCleanupLocked() {
 	}
 	grace := r.m.GracePeriod()
 	r.cleanup = time.AfterFunc(grace, func() {
+		// Ordem de locks: manager -> room. Join nunca segura ambos ao mesmo tempo.
 		r.m.mu.Lock()
-		if cur := r.m.rooms[r.channelID]; cur != r {
-			// Sala substituída (novo join) ou removida: nada a fazer.
+		r.mu.Lock()
+
+		if cur := r.m.rooms[r.channelID]; cur != r || r.closed || len(r.peers) != 0 {
+			r.mu.Unlock()
 			r.m.mu.Unlock()
 			return
 		}
-		r.m.mu.Unlock()
-		r.mu.Lock()
-		empty := len(r.peers) == 0 && !r.closed
+
+		// Verificação + fechamento + remoção precisam ser uma única transição.
+		r.closed = true
+		r.cleanup = nil
+		close(r.tickerStop)
+		delete(r.m.rooms, r.channelID)
+
 		r.mu.Unlock()
-		if !empty {
-			return
-		}
-		r.m.removeRoom(r.channelID)
-		r.destroy()
+		r.m.mu.Unlock()
 		utils.Infof("webrtc: sala de voz %s destruída (vazia após %s)", r.channelID, grace)
 	})
 }

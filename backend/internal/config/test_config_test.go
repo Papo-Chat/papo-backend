@@ -33,3 +33,10 @@ func TestThumbnailEnabled(t *testing.T) {
 		})
 	}
 }
+
+func TestGetEnvNonNegativeIntAllowsZero(t *testing.T) {
+	t.Setenv("VOICE_ICE_UDP_PORT", "0")
+	if got := getEnvNonNegativeInt("VOICE_ICE_UDP_PORT", 50000); got != 0 {
+		t.Fatalf("got %d, want 0", got)
+	}
+}

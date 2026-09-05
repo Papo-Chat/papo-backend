@@ -45,13 +45,26 @@ func validateSDP(sdpStr string, cfg *config.Config, checkCodec bool) error {
 	return nil
 }
 
+func mediaPublishes(media *sdp.MediaDescription) bool {
+	for _, a := range media.Attributes {
+		switch a.Key {
+		case "sendonly", "sendrecv":
+			return true
+		case "recvonly", "inactive":
+			return false
+		}
+	}
+	// RFC: ausência de direction equivale a sendrecv.
+	return true
+}
+
 // checkVideoCodec verifica se a m-line de vídeo do offer contém o codec da
 // sala (D6). O codec é identificado pelo encoding-name do rtpmap (ex.: "vp8"),
 // não pelo payload type. Sem m-line de vídeo (peer só com áudio) é válido.
 func checkVideoCodec(desc *sdp.SessionDescription, roomCodec string) error {
 	hasVideo := false
 	for _, media := range desc.MediaDescriptions {
-		if media.MediaName.Media != "video" {
+		if media.MediaName.Media != "video" || !mediaPublishes(media) {
 			continue
 		}
 		hasVideo = true
@@ -84,6 +97,23 @@ func videoMLineHasCodec(media *sdp.MediaDescription, codec string) bool {
 	return false
 }
 
+func validICEHostname(host string) bool {
+	if len(host) == 0 || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // validateCandidate valida um candidate trickle de ICE (seção 5.9): tamanho,
 // formato e rejeição de addresses loopback/unspecified. IPs privados são
 // permitidos (D15 — self-hosted/LAN é o caso principal).
@@ -107,6 +137,13 @@ func validateCandidate(raw string) error {
 	}
 	ip := net.ParseIP(addr)
 	if ip == nil {
+		host := strings.TrimSuffix(strings.ToLower(addr), ".")
+		if !strings.HasSuffix(host, ".local") || !validICEHostname(host) {
+			return ErrVoiceInvalidSDP
+		}
+		return nil
+	}
+	if ip.IsLoopback() || ip.IsUnspecified() {
 		return ErrVoiceInvalidSDP
 	}
 	if ip.IsLoopback() || ip.IsUnspecified() {
@@ -148,6 +185,9 @@ func parseMidRoles(sdpStr string) map[string]trackRole {
 	}
 	videoCount := 0
 	for _, media := range desc.MediaDescriptions {
+		if !mediaPublishes(media) {
+			continue
+		}
 		mid := ""
 		for _, a := range media.Attributes {
 			if a.Key == "mid" {
