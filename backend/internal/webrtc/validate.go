@@ -241,7 +241,7 @@ func parseMidRoles(
 			}
 
 			audioActive = true
-
+			active[mid] = role
 		case roleCamera:
 			if cameraOn {
 				if cameraActive {

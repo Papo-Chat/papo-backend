@@ -30,19 +30,36 @@ type slot struct {
 	translator ssnTranslator
 }
 
+func (t *ssnTranslator) resetSource() {
+	t.mu.Lock()
+	t.owner = nil
+	t.mu.Unlock()
+}
+
 // assignWithFanout faz o slot forwardar a track do publisher via o fanout
 // dela (o caller segura o peer.mu do SUBSCRIBER; o fanout já foi resolvido no
 // publisher sem segurar este lock — ver Peer.fanoutFor). Se já havia
 // forwarder, ele é terminado (o slot muda de ocupante/track).
-func (s *slot) assignWithFanout(owner *Peer, kind string, track *webrtc.TrackRemote, fanout *fanout) {
+func (s *slot) assignWithFanout(
+	owner *Peer,
+	kind string,
+	track *webrtc.TrackRemote,
+	fanout *fanout,
+) {
 	if s.fwd != nil {
 		s.fwd.finish()
 		s.fwd = nil
 	}
+
+	// Toda nova atribuição representa uma nova fronteira RTP.
+	// O próximo pacote deve continuar a sequência do slot.
+	s.translator.resetSource()
+
 	s.owner = owner
 	s.kind = kind
 	s.src = track
 	s.fwd = newForwarder(s, owner, kind, fanout)
+
 	fanout.subscribe(s.fwd)
 	s.fwd.start()
 }

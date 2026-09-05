@@ -142,6 +142,10 @@ a=rtpmap:96 vp8/90000`
 		t.Fatalf("offer com screen: %v", err)
 	}
 
+	if active["0"] != roleAudio {
+		t.Fatalf("audio conhecido deixou de ficar ativo: %#v", active)
+	}
+
 	if roles["1"] != roleCamera {
 		t.Fatalf("mid 1 perdeu roleCamera: %#v", roles)
 	}
