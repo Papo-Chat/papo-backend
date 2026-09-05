@@ -237,15 +237,22 @@ func (r *Room) addPeer(userID, clientID string) error {
 // removePeer remove o usuário da sala: libera os slots que ele ocupava nos
 // demais subscribers (vídeo + áudio), fecha a PeerConnection e notifica os
 // leitores (voice_leave). Se a sala fica vazia, agenda a destruição (D11).
-func (r *Room) removePeer(userID string) {
-	r.mu.Lock()
-	peer := r.peers[userID]
+func (r *Room) removePeer(peer *Peer) {
 	if peer == nil {
+		return
+	}
+
+	r.mu.Lock()
+
+	current := r.peers[peer.userID]
+
+	if current != peer {
 		r.mu.Unlock()
 		return
 	}
-	delete(r.peers, userID)
-	delete(r.scores, userID)
+
+	delete(r.peers, peer.userID)
+	delete(r.scores, peer.userID)
 	if len(r.peers) == 0 {
 		r.scheduleCleanupLocked()
 	}
@@ -268,7 +275,7 @@ func (r *Room) removePeer(userID string) {
 	// ponto por onde um peer sai da sala (saída explícita, WS offline, falha
 	// de ICE/PC). Sem isso, uma falha de PC deixa entry stale em userRooms e
 	// o usuário não consegue reentrar (ErrVoiceAlreadyInRoom).
-	r.m.trackUserRoom(userID, r.channelID, false)
+	r.m.trackUserRoom(peer.userID, r.channelID, false)
 
 	// Libera os slots de vídeo que o peer publicava nos demais subscribers e
 	// resincroniza o áudio (o top-K já não inclui o peer que saiu).
@@ -281,8 +288,25 @@ func (r *Room) removePeer(userID string) {
 	r.m.broadcastVoice(r.channelID, VoiceLeave{
 		Type:      EventTypeVoiceLeave,
 		ChannelID: r.channelID,
-		UserID:    userID,
+		UserID:    peer.userID,
 	})
+}
+
+func (r *Room) releasePublishedKind(pub *Peer, kind string) {
+	r.mu.Lock()
+
+	subs := make([]*Peer, 0, len(r.peers))
+	for _, sub := range r.peers {
+		if sub != pub {
+			subs = append(subs, sub)
+		}
+	}
+
+	r.mu.Unlock()
+
+	for _, sub := range subs {
+		sub.releaseFrom(pub, kind)
+	}
 }
 
 // hasPeer indica se o usuário está na sala.
