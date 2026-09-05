@@ -1396,9 +1396,9 @@ func TestUpdateBannerAllows1024px(t *testing.T) {
 	}
 
 	// 1025px é rejeitado
-	banner = base64.StdEncoding.EncodeToString(pngAvatarBytes(1025, 100))
+	banner = base64.StdEncoding.EncodeToString(pngAvatarBytes(2049, 100))
 	if err := UpdateBanner(testCtx(), user.ID, banner, "PNG"); !errors.Is(err, ErrInvalidInput) {
-		t.Errorf("esperava ErrInvalidInput para banner de 1025px, obtive %v", err)
+		t.Errorf("esperava ErrInvalidInput para banner de 2049px, obtive %v", err)
 	}
 }
 

@@ -407,7 +407,7 @@ paths:
   /users/{user_id}/avatar:
     put:
       tags: [Users]
-      summary: Atualiza o avatar (base64, GIF/JPEG/JPG/PNG/WEBP, máx. 2MB)
+      summary: Atualiza o avatar (base64, GIF/JPEG/JPG/PNG/WEBP, máx. 2MB, 512px)
       parameters:
         - $ref: '#/components/parameters/UserId'
       requestBody:
@@ -441,7 +441,7 @@ paths:
   /users/{user_id}/banner:
     put:
       tags: [Users]
-      summary: Atualiza o banner (base64, GIF/JPEG/JPG/PNG/WEBP, máx. 2MB); corpo vazio remove o banner
+      summary: Atualiza o banner (base64, GIF/JPEG/JPG/PNG/WEBP, máx. 2MB, 512px); corpo vazio remove o banner
       parameters:
         - $ref: '#/components/parameters/UserId'
       requestBody:
@@ -1588,7 +1588,7 @@ paths:
           $ref: '#/components/responses/InternalError'
     post:
       tags: [Emojis]
-      summary: Cria emoji
+      summary: Cria emoji (GIF/JPEG/JPG/PNG/WEBP, máx. 256kb, 512px)
       requestBody:
         required: true
         content:
@@ -2368,7 +2368,7 @@ components:
       properties:
         avatar:
           type: string
-          description: Base64 de GIF, JPEG/JPG, PNG ou WEBP (máx. 2MB)
+          description: Base64 de GIF, JPEG/JPG, PNG ou WEBP (máx. 2MB, 512px)
         avatar_format:
           type: string
           enum: [GIF, JPEG, JPG, PNG, WEBP]
@@ -2379,7 +2379,7 @@ components:
       properties:
         banner:
           type: string
-          description: Base64 de GIF, JPEG/JPG, PNG ou WEBP (máx. 2MB); vazio remove o banner
+          description: Base64 de GIF, JPEG/JPG, PNG ou WEBP (máx. 2MB, 2048px); vazio remove o banner
         banner_format:
           type: string
           enum: [GIF, JPEG, JPG, PNG, WEBP]
@@ -2423,7 +2423,7 @@ components:
         icon_blob:
           type: string
           format: byte
-          description: Ícone em base64 (GIF/JPEG/JPG/PNG/WEBP, máx. 2MB); vazio remove o ícone
+          description: Ícone em base64 (GIF/JPEG/JPG/PNG/WEBP, máx. 2MB, 512px); vazio remove o ícone
         icon_format:
           type: string
           enum: [GIF, JPEG, JPG, PNG, WEBP]
@@ -2443,7 +2443,7 @@ components:
         icon_blob:
           type: string
           format: byte
-          description: Ícone em base64 (GIF/JPEG/JPG/PNG/WEBP, máx. 2MB)
+          description: Ícone em base64 (GIF/JPEG/JPG/PNG/WEBP, máx. 2MB, 512px)
         icon_format:
           type: string
           enum: [GIF, JPEG, JPG, PNG, WEBP]
@@ -3227,6 +3227,7 @@ components:
     CreateEmojiRequest:
       type: object
       required: [name, image_blob, format]
+      description: Base64 de GIF, JPEG/JPG, PNG ou WEBP (máx. 2MB, 2048px); vazio remove o banner
       properties:
         name:
           type: string

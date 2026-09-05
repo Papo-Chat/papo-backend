@@ -24,8 +24,8 @@ const maxAvatarBytes = 2 << 20
 const maxBannerBytes = 2 << 20
 
 // maxBannerDimension é a dimensão máxima (px) de largura ou altura de um
-// banner (1024px, README).
-const maxBannerDimension = 1024
+// banner (2048px, README).
+const maxBannerDimension = 2048
 
 // maxNicknameLength é o tamanho máximo do nickname de um usuário
 // (32 caracteres, README).

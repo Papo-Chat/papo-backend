@@ -5633,7 +5633,7 @@ func TestUpdateBannerHandlerInvalidBanner(t *testing.T) {
 		{"base64 inválido", "!!!nao-e-base64!!!", "PNG"},
 		{"formato não aceito", base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)), "BMP"},
 		{"conteúdo não corresponde ao formato", base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)), "GIF"},
-		{"dimensão acima de 1024px", base64.StdEncoding.EncodeToString(pngAvatarBytes(1025, 100)), "PNG"},
+		{"dimensão acima de 2048px", base64.StdEncoding.EncodeToString(pngAvatarBytes(2049, 100)), "PNG"},
 	}
 
 	for _, tc := range cases {
