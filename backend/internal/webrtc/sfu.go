@@ -88,6 +88,8 @@ type forwarder struct {
 	ch   chan *rtp.Packet
 	done chan struct{}
 	once sync.Once
+
+	wasMuted bool
 }
 
 func newForwarder(
@@ -132,8 +134,19 @@ func (f *forwarder) run() {
 				return
 			}
 
-			if f.kind == "audio" && f.owner.isMuted() {
-				continue
+			if f.kind == "audio" {
+				if f.owner.isMuted() {
+					f.wasMuted = true
+					continue
+				}
+
+				if f.wasMuted {
+					// O SSN da fonte avançou enquanto os pacotes eram
+					// descartados. Recalcula o offset para continuar
+					// exatamente após o último SSN enviado pelo slot.
+					f.slot.translator.resetSource()
+					f.wasMuted = false
+				}
 			}
 
 			f.slot.translator.translate(pkt, f.owner)

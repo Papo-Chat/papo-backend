@@ -46,13 +46,23 @@ func TestSSNTranslator(t *testing.T) {
 	ownerB := &Peer{}
 
 	// slot novo (ownerA): mantém o SSN do publisher (offset 0)
-	tr.translate(&rtp.Packet{Header: rtp.Header{SequenceNumber: 100}}, ownerA)
-	if got := 100; got != 100 {
-		t.Fatalf("primeiro pacote: SSN = %d, esperado 100", got)
+	pkt := &rtp.Packet{
+		Header: rtp.Header{
+			SequenceNumber: 100,
+		},
+	}
+
+	tr.translate(pkt, ownerA)
+
+	if pkt.Header.SequenceNumber != 100 {
+		t.Fatalf(
+			"primeiro pacote: SSN = %d, esperado 100",
+			pkt.Header.SequenceNumber,
+		)
 	}
 
 	// mesmo owner: sequência continua
-	pkt := &rtp.Packet{Header: rtp.Header{SequenceNumber: 101}}
+	pkt = &rtp.Packet{Header: rtp.Header{SequenceNumber: 101}}
 	tr.translate(pkt, ownerA)
 	if pkt.Header.SequenceNumber != 101 {
 		t.Fatalf("mesmo owner: SSN = %d, esperado 101", pkt.Header.SequenceNumber)
@@ -70,6 +80,24 @@ func TestSSNTranslator(t *testing.T) {
 	tr.translate(pkt, ownerB)
 	if pkt.Header.SequenceNumber != 103 {
 		t.Fatalf("mesmo owner (B): SSN = %d, esperado 103", pkt.Header.SequenceNumber)
+	}
+
+	// Mesmo owner, mas nova fronteira RTP.
+	tr.resetSource()
+
+	pkt = &rtp.Packet{
+		Header: rtp.Header{
+			SequenceNumber: 500,
+		},
+	}
+
+	tr.translate(pkt, ownerB)
+
+	if pkt.Header.SequenceNumber != 104 {
+		t.Fatalf(
+			"resetSource: SSN = %d, esperado 104",
+			pkt.Header.SequenceNumber,
+		)
 	}
 }
 
