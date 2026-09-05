@@ -1,6 +1,7 @@
 package webrtc
 
 import (
+	"fmt"
 	"sync"
 
 	"papo/internal/models"
@@ -481,32 +482,52 @@ func (p *Peer) allocateSlots() error {
 
 	videoSlots := make([]*slot, 0, n)
 	for i := 0; i < n; i++ {
-		track, err := webrtc.NewTrackLocalStaticRTP(videoCodec, "papo", "papo-video")
+		track, err := webrtc.NewTrackLocalStaticRTP(
+			videoCodec,
+			fmt.Sprintf("papo-video-%d", i),
+			"papo-video",
+		)
 		if err != nil {
 			return err
 		}
+
 		t, err := pc.AddTransceiverFromTrack(track, webrtc.RTPTransceiverInit{
 			Direction: webrtc.RTPTransceiverDirectionSendonly,
 		})
 		if err != nil {
 			return err
 		}
-		videoSlots = append(videoSlots, &slot{peer: p, sender: t.Sender(), local: track})
+
+		videoSlots = append(videoSlots, &slot{
+			peer:   p,
+			sender: t.Sender(),
+			local:  track,
+		})
 	}
 
 	audioSlots := make([]*slot, 0, k)
 	for i := 0; i < k; i++ {
-		track, err := webrtc.NewTrackLocalStaticRTP(audioCodec, "papo", "papo-audio")
+		track, err := webrtc.NewTrackLocalStaticRTP(
+			audioCodec,
+			fmt.Sprintf("papo-audio-%d", i),
+			"papo-audio",
+		)
 		if err != nil {
 			return err
 		}
+
 		t, err := pc.AddTransceiverFromTrack(track, webrtc.RTPTransceiverInit{
 			Direction: webrtc.RTPTransceiverDirectionSendonly,
 		})
 		if err != nil {
 			return err
 		}
-		audioSlots = append(audioSlots, &slot{peer: p, sender: t.Sender(), local: track})
+
+		audioSlots = append(audioSlots, &slot{
+			peer:   p,
+			sender: t.Sender(),
+			local:  track,
+		})
 	}
 
 	p.mu.Lock()
