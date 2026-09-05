@@ -243,31 +243,26 @@ func parseMidRoles(
 			audioActive = true
 
 		case roleCamera:
-			// Front precisa ter explicitado que câmera está ligada.
-			if !cameraOn {
-				return roles, active, ErrVoiceInvalidSDP
-			}
+			if cameraOn {
+				if cameraActive {
+					return roles, active, ErrVoiceInvalidSDP
+				}
 
-			if cameraActive {
-				return roles, active, ErrVoiceInvalidSDP
+				cameraActive = true
+				active[mid] = role
 			}
-
-			cameraActive = true
 
 		case roleScreen:
-			// Front precisa ter explicitado screen share.
-			if !screenOn {
-				return roles, active, ErrVoiceInvalidSDP
+			if screenOn {
+				if screenActive {
+					return roles, active, ErrVoiceInvalidSDP
+				}
+
+				screenActive = true
+				active[mid] = role
 			}
 
-			if screenActive {
-				return roles, active, ErrVoiceInvalidSDP
-			}
-
-			screenActive = true
 		}
-
-		active[mid] = role
 	}
 
 	// Agora classifica apenas MIDs novos que estejam publicando.

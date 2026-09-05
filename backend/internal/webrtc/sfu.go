@@ -42,7 +42,7 @@ func (s *slot) assignWithFanout(owner *Peer, kind string, track *webrtc.TrackRem
 	s.owner = owner
 	s.kind = kind
 	s.src = track
-	s.fwd = newForwarder(s, owner, fanout)
+	s.fwd = newForwarder(s, owner, kind, fanout)
 	fanout.subscribe(s.fwd)
 	s.fwd.start()
 }
@@ -65,16 +65,24 @@ func (s *slot) release() {
 type forwarder struct {
 	slot   *slot
 	owner  *Peer
+	kind   string
 	fanout *fanout
-	ch     chan *rtp.Packet
-	done   chan struct{}
-	once   sync.Once
+
+	ch   chan *rtp.Packet
+	done chan struct{}
+	once sync.Once
 }
 
-func newForwarder(slot *slot, owner *Peer, fanout *fanout) *forwarder {
+func newForwarder(
+	slot *slot,
+	owner *Peer,
+	kind string,
+	fanout *fanout,
+) *forwarder {
 	return &forwarder{
 		slot:   slot,
 		owner:  owner,
+		kind:   kind,
 		fanout: fanout,
 		ch:     make(chan *rtp.Packet, forwarderBuffer),
 		done:   make(chan struct{}),
@@ -96,15 +104,23 @@ func (f *forwarder) finish() {
 // quando encerrado (done) ou quando o WriteRTP falha (PC fechada).
 func (f *forwarder) run() {
 	defer f.finish()
+
 	for {
 		select {
 		case <-f.done:
 			return
+
 		case pkt, ok := <-f.ch:
 			if !ok {
 				return
 			}
+
+			if f.kind == "audio" && f.owner.isMuted() {
+				continue
+			}
+
 			f.slot.translator.translate(pkt, f.owner)
+
 			if err := f.slot.local.WriteRTP(pkt); err != nil {
 				return
 			}

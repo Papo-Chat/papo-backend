@@ -356,7 +356,16 @@ func (r *Room) setMuted(userID string, muted bool) {
 	if peer == nil {
 		return
 	}
-	r.broadcastState(peer.updateState(&muted, nil, nil))
+
+	state := peer.updateState(&muted, nil, nil)
+
+	if muted {
+		r.mu.Lock()
+		delete(r.scores, userID)
+		r.mu.Unlock()
+	}
+
+	r.broadcastState(state)
 }
 
 // setCameraOn atualiza o estado da câmera e notifica os leitores do canal.

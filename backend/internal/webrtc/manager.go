@@ -200,9 +200,16 @@ func (m *Manager) reportAudioLevel(ssrc uint32, level float64) {
 	m.ssrcMu.Lock()
 	o, ok := m.ssrcOwner[ssrc]
 	m.ssrcMu.Unlock()
+
 	if !ok {
 		return
 	}
+
+	peer := o.room.peer(o.userID)
+	if peer == nil || peer.isMuted() {
+		return
+	}
+
 	o.room.noteAudioLevel(o.userID, level)
 }
 
@@ -403,14 +410,26 @@ func (m *Manager) ClientOffer(channelID, userID, clientID, sdp string) error {
 	if err := m.checkSignal(userID); err != nil {
 		return err
 	}
+
 	_, peer, err := m.clientPeer(channelID, userID, clientID)
 	if err != nil {
 		return err
 	}
+
 	if err := validateSDP(sdp, m.cfg, true); err != nil {
 		return err
 	}
-	return peer.enqueue(func() error { return peer.handleOffer(clientID, sdp) })
+
+	cameraOn, screenOn := peer.mediaIntent()
+
+	return peer.enqueue(func() error {
+		return peer.handleOffer(
+			clientID,
+			sdp,
+			cameraOn,
+			screenOn,
+		)
+	})
 }
 
 // ClientAnswer processa a resposta SDP do cliente a uma renegociação

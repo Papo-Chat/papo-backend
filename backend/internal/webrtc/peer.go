@@ -88,14 +88,24 @@ func newPeer(m *Manager, room *Room, userID, clientID string) *Peer {
 		room:            room,
 		userID:          userID,
 		signalingClient: clientID,
-		fanouts:         make(map[string]*fanout),
-		midRole:         make(map[string]trackRole),
-		activeMidRole:   make(map[string]trackRole),
-		renegQueue:      make(chan func() error, 64),
-		renegStop:       make(chan struct{}),
+
+		muted: true,
+
+		fanouts:       make(map[string]*fanout),
+		midRole:       make(map[string]trackRole),
+		activeMidRole: make(map[string]trackRole),
+		renegQueue:    make(chan func() error, 64),
+		renegStop:     make(chan struct{}),
 	}
 	go p.renegWorker()
 	return p
+}
+
+func (p *Peer) isMuted() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.muted
 }
 
 // renegWorker processa a fila de renegociação sequencialmente (D4 — pion não
@@ -185,7 +195,12 @@ func (p *Peer) ensurePC() bool {
 // handleOffer processa a oferta SDP do cliente (join, screen share ou mais
 // slots) e responde com voice_answer + trickle ICE. clientID é a conexão que
 // enviou a oferta: ela passa a ser a "dona" do signaling da PC.
-func (p *Peer) handleOffer(clientID, sdp string) error {
+func (p *Peer) handleOffer(
+	clientID,
+	sdp string,
+	cameraOn,
+	screenOn bool,
+) error {
 	if !p.ownsClient(clientID) {
 		return ErrVoiceNotFound
 	}
@@ -204,9 +219,6 @@ func (p *Peer) handleOffer(clientID, sdp string) error {
 
 	previousRoles := cloneTrackRoles(p.midRole)
 	previousActive := cloneTrackRoles(p.activeMidRole)
-
-	cameraOn := p.cameraOn
-	screenOn := p.screenSharing
 
 	firstOffer := len(p.videoSlots) == 0 && len(p.audioSlots) == 0
 
@@ -743,6 +755,13 @@ func sendPLI(pc *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	_ = pc.WriteRTCP([]rtcp.Packet{
 		&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())},
 	})
+}
+
+func (p *Peer) mediaIntent() (cameraOn, screenOn bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.cameraOn, p.screenSharing
 }
 
 // state retorna o estado de voz do peer (p/ voice_joined e voice_state_update).
