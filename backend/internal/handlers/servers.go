@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"papo/internal/config"
 	"papo/internal/middleware"
 	"papo/internal/models"
 	"papo/internal/services"
@@ -84,7 +85,11 @@ func CreateServerHandler(baseURL string, c echo.Context) error {
 	}
 	password := req.Password
 
+	cfg := config.LoadConfig()
 	_, err := services.CreateServerWithIcon(c.Request().Context(), req.Name, req.IconBlob, req.IconFormat, req.Public, password, &userID)
+	if resp, ok := passwordPolicyResponse(c, baseURL, err, cfg.MinPasswordLength); ok {
+		return resp
+	}
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -145,7 +150,12 @@ func UpdateServerHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	switch err := services.UpdateServer(c.Request().Context(), userID, req.Name, req.IconBlob, req.IconFormat, req.Public, req.Password); {
+	cfg := config.LoadConfig()
+	err := services.UpdateServer(c.Request().Context(), userID, req.Name, req.IconBlob, req.IconFormat, req.Public, req.Password)
+	if resp, ok := passwordPolicyResponse(c, baseURL, err, cfg.MinPasswordLength); ok {
+		return resp
+	}
+	switch {
 	case errors.Is(err, services.ErrServerNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "servidor não encontrado")

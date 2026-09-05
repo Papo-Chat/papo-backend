@@ -40,6 +40,10 @@ func Register(ctx context.Context, username, password, ip string) (models.User, 
 		return models.User{}, ErrInvalidInput
 	}
 
+	if err := utils.ValidatePassword(password, cfg.MinPasswordLength); err != nil {
+		return models.User{}, err
+	}
+
 	banned, err := storage.HasBannedUserByIP(ctx, ip)
 	if err != nil {
 		return models.User{}, err

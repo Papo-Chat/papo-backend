@@ -29,6 +29,24 @@ type registerResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// passwordPolicyResponse envia o problem+json específico quando o erro do
+// service é de política de senha (tamanho mínimo, maiúscula, especial).
+// Retorna (nil, false) quando o erro não é de política de senha.
+func passwordPolicyResponse(c echo.Context, baseURL string, err error, minLen int) (error, bool) {
+	switch {
+	case errors.Is(err, utils.ErrPasswordTooShort):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+			fmt.Sprintf("campo 'password' deve ter no mínimo %d caracteres", minLen)), true
+	case errors.Is(err, utils.ErrPasswordNoUppercase):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+			"campo 'password' deve conter ao menos 1 letra maiúscula"), true
+	case errors.Is(err, utils.ErrPasswordNoSpecial):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+			"campo 'password' deve conter ao menos 1 caractere especial"), true
+	}
+	return nil, false
+}
+
 // RegisterHandler implementa POST /auth/register.
 func RegisterHandler(baseURL string, c echo.Context) error {
 	//Lê a configuração do tamanho máximo dos campos
@@ -69,6 +87,9 @@ func RegisterHandler(baseURL string, c echo.Context) error {
 	}
 
 	user, err := services.Register(c.Request().Context(), req.Username, req.Password, c.RealIP())
+	if resp, ok := passwordPolicyResponse(c, baseURL, err, cfg.MinPasswordLength); ok {
+		return resp
+	}
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,

@@ -4170,7 +4170,7 @@ func newRandomUsername() string {
 }
 
 func newRandomPassword() string {
-	return "pw" + randHex(4)
+	return "Pw!" + randHex(4)
 }
 
 func newRandomIP() string {
@@ -4423,6 +4423,35 @@ func TestRegisterHandlerPasswordTooLong(t *testing.T) {
 
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
 		"campo 'password' deve ter no máximo "+strconv.Itoa(MaxPasswordLength)+" caracteres")
+}
+
+func TestRegisterHandlerPasswordPolicy(t *testing.T) {
+	minLen := config.LoadConfig().MinPasswordLength
+
+	cases := []struct {
+		name       string
+		password   string
+		wantDetail string
+	}{
+		{"abaixo do mínimo", "A!" + strings.Repeat("a", minLen-3),
+			"campo 'password' deve ter no mínimo " + strconv.Itoa(minLen) + " caracteres"},
+		{"sem maiúscula", "a!" + strings.Repeat("a", minLen-2),
+			"campo 'password' deve conter ao menos 1 letra maiúscula"},
+		{"sem especial", "A" + strings.Repeat("a", minLen-1),
+			"campo 'password' deve conter ao menos 1 caractere especial"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]string{"username": newRandomUsername(), "password": tc.password})
+			c := newContext(t, http.MethodPost, "/auth/register", body, newRandomIP())
+			rec := recorder(c)
+			if err := RegisterHandler(testBaseURL, c); err != nil {
+				t.Fatalf("RegisterHandler retornou erro: %v", err)
+			}
+			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", tc.wantDetail)
+		})
+	}
 }
 
 func TestRegisterHandlerUsernameTaken(t *testing.T) {
@@ -6250,6 +6279,45 @@ func TestChangePasswordHandlerPasswordTooLong(t *testing.T) {
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "campo 'password' é obrigatório")
 }
 
+func TestChangePasswordHandlerPasswordPolicy(t *testing.T) {
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	if err := storage.SetUserResetPassword(testCtx(), user.ID); err != nil {
+		t.Fatalf("falha ao marcar reset_password: %v", err)
+	}
+
+	minLen := config.LoadConfig().MinPasswordLength
+	cases := []struct {
+		name       string
+		password   string
+		wantDetail string
+	}{
+		{"abaixo do mínimo", "A!" + strings.Repeat("a", minLen-3),
+			"campo 'password' deve ter no mínimo " + strconv.Itoa(minLen) + " caracteres"},
+		{"sem maiúscula", "a!" + strings.Repeat("a", minLen-2),
+			"campo 'password' deve conter ao menos 1 letra maiúscula"},
+		{"sem especial", "A" + strings.Repeat("a", minLen-1),
+			"campo 'password' deve conter ao menos 1 caractere especial"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]string{"password": tc.password})
+			c := newContext(t, http.MethodPut, "/users/"+user.ID+"/password", body, "")
+			c.Set(middleware.UserIDContextKey, user.ID)
+			c.SetParamNames("user_id")
+			c.SetParamValues(user.ID)
+			rec := recorder(c)
+			if err := ChangePasswordHandler(testBaseURL, c); err != nil {
+				t.Fatalf("ChangePasswordHandler retornou erro: %v", err)
+			}
+			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", tc.wantDetail)
+		})
+	}
+}
+
 func TestChangePasswordHandlerForbiddenOtherUser(t *testing.T) {
 	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
@@ -6631,6 +6699,48 @@ func TestUpdateServerHandlerInvalidInput(t *testing.T) {
 	}
 }
 
+func TestUpdateServerHandlerPasswordPolicy(t *testing.T) {
+	cleanServers(testCtx())
+	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+	if _, err := storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID); err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	minLen := config.LoadConfig().MinPasswordLength
+	cases := []struct {
+		name       string
+		password   string
+		wantDetail string
+	}{
+		{"abaixo do mínimo", "A!" + strings.Repeat("a", minLen-3),
+			"campo 'password' deve ter no mínimo " + strconv.Itoa(minLen) + " caracteres"},
+		{"sem maiúscula", "a!" + strings.Repeat("a", minLen-2),
+			"campo 'password' deve conter ao menos 1 letra maiúscula"},
+		{"sem especial", "A" + strings.Repeat("a", minLen-1),
+			"campo 'password' deve conter ao menos 1 caractere especial"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{
+				"name":     "srv_" + randHex(4),
+				"public":   false,
+				"password": tc.password,
+			})
+			c := newContext(t, http.MethodPut, "/server", body, "")
+			c.Set(middleware.UserIDContextKey, owner.ID)
+			rec := recorder(c)
+			if err := UpdateServerHandler(testBaseURL, c); err != nil {
+				t.Fatalf("UpdateServerHandler retornou erro: %v", err)
+			}
+			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", tc.wantDetail)
+		})
+	}
+}
+
 // --- CreateServerHandler ---
 
 func TestCreateServerHandlerSuccess(t *testing.T) {
@@ -6838,6 +6948,45 @@ func TestCreateServerHandlerInvalidInput(t *testing.T) {
 	}
 	if len(after) != len(before) {
 		t.Errorf("tentativas inválidas não deveriam criar servidores: %d antes, %d depois", len(before), len(after))
+	}
+}
+
+func TestCreateServerHandlerPasswordPolicy(t *testing.T) {
+	cleanServers(testCtx())
+	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+
+	minLen := config.LoadConfig().MinPasswordLength
+	cases := []struct {
+		name       string
+		password   string
+		wantDetail string
+	}{
+		{"abaixo do mínimo", "A!" + strings.Repeat("a", minLen-3),
+			"campo 'password' deve ter no mínimo " + strconv.Itoa(minLen) + " caracteres"},
+		{"sem maiúscula", "a!" + strings.Repeat("a", minLen-2),
+			"campo 'password' deve conter ao menos 1 letra maiúscula"},
+		{"sem especial", "A" + strings.Repeat("a", minLen-1),
+			"campo 'password' deve conter ao menos 1 caractere especial"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{
+				"name":     "srv_" + randHex(4),
+				"public":   false,
+				"password": tc.password,
+			})
+			c := newContext(t, http.MethodPost, "/server", body, "")
+			c.Set(middleware.UserIDContextKey, owner.ID)
+			rec := recorder(c)
+			if err := CreateServerHandler(testBaseURL, c); err != nil {
+				t.Fatalf("CreateServerHandler retornou erro: %v", err)
+			}
+			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", tc.wantDetail)
+		})
 	}
 }
 

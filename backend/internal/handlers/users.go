@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"papo/internal/config"
 	"papo/internal/middleware"
 	"papo/internal/models"
 	"papo/internal/services"
@@ -557,7 +558,12 @@ func ChangePasswordHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	switch err := services.ChangePassword(c.Request().Context(), userID, req.Password); {
+	cfg := config.LoadConfig()
+	err := services.ChangePassword(c.Request().Context(), userID, req.Password)
+	if resp, ok := passwordPolicyResponse(c, baseURL, err, cfg.MinPasswordLength); ok {
+		return resp
+	}
+	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "campo 'password' é obrigatório")

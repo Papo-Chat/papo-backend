@@ -514,6 +514,7 @@ paths:
     put:
       tags: [Users]
       summary: Altera a própria senha e reinicia a flag de reset de senha
+      description: Senha precisa ter no mínimo 8 caracteres, 1 letra maíscula + 1 caractere especial
       parameters:
         - $ref: '#/components/parameters/UserId'
       requestBody:
@@ -2068,6 +2069,7 @@ components:
           type: string
         password:
           type: string
+          description: Precisa ter no mínimo 8 caracteres, 1 letra maíscula + 1 caractere especial
 
     RegisterResponse:
       type: object
@@ -2400,7 +2402,7 @@ components:
       properties:
         password:
           type: string
-          description: Nova senha do usuário
+          description: Nova senha do usuário, precisa ter no mínimo 8 caracteres, 1 letra maíscula + 1 caractere especial
 
     BanUserRequest:
       type: object
@@ -2429,7 +2431,7 @@ components:
           enum: [GIF, JPEG, JPG, PNG, WEBP]
         password:
           type: string
-          description: Senha do servidor; obrigatória quando o servidor ficar privado (public=false)
+          description: Senha do servidor precisa ter no mínimo 8 caracteres, 1 letra maíscula + 1 caractere especial; obrigatória quando o servidor ficar privado (public=false)
         public:
           type: boolean
           description: Servidor público; ausente mantém a visibilidade atual
@@ -2449,7 +2451,7 @@ components:
           enum: [GIF, JPEG, JPG, PNG, WEBP]
         password:
           type: string
-          description: Senha do servidor; obrigatória quando public=false
+          description: Senha do servidor, precisa ter no mínimo 8 caracteres, 1 letra maíscula + 1 caractere especial; obrigatória quando public=false
         public:
           type: boolean
           description: Servidor público; ausente significa público (default do schema)

@@ -426,3 +426,39 @@ func TestReadLimitedBody(t *testing.T) {
 		t.Errorf("corpo acima do limite deveria retornar ErrBodyTooLarge, obtive %v", err)
 	}
 }
+
+func TestValidatePassword(t *testing.T) {
+	cases := []struct {
+		name     string
+		password string
+		minLen   int
+		wantErr  error
+	}{
+		{"válida", "Abcdef!1", 8, nil},
+		{"exatamente o mínimo", "Abcde!f", 7, nil},
+		{"abaixo do mínimo", "Abc!1", 8, ErrPasswordTooShort},
+		{"sem maiúscula", "abcdef!1", 8, ErrPasswordNoUppercase},
+		{"sem especial", "Abcdefg1", 8, ErrPasswordNoSpecial},
+		{"especial sublinhado", "Abcdef_1", 8, nil},
+		{"especial espaço", "Abcdef 1", 8, nil},
+		{"só maiúscula e números", "ABCDEFG1", 8, ErrPasswordNoSpecial},
+		{"maiúscula e especial no fim", "abcdef!A", 8, nil},
+		{"minúsculas acentuadas não são maiúscula", "çñãõ!1ab", 8, ErrPasswordNoUppercase},
+		{"símbolo unicode é especial", "Abcdef€1", 8, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidatePassword(tc.password, tc.minLen)
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("ValidatePassword(%q) retornou erro inesperado: %v", tc.password, err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("ValidatePassword(%q) = %v, esperado %v", tc.password, err, tc.wantErr)
+			}
+		})
+	}
+}

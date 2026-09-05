@@ -19,6 +19,7 @@ type Config struct {
 	HMACSecret        string
 	BaseURL           string
 	MaxUsernameLength int
+	MinPasswordLength int
 	MaxPasswordLength int
 	AuthRateLimit     int
 	AuthRateBurst     int
@@ -117,6 +118,7 @@ func LoadConfig() *Config {
 		HMACSecret:        getEnv("HMAC_SECRET", ""),
 		BaseURL:           getEnv("BASE_URL", "https://papo.com/"),
 		MaxUsernameLength: getEnvInt("MAX_USERNAME_LENGTH", 16),
+		MinPasswordLength: getEnvInt("MIN_PASSWORD_LENGTH", 8),
 		MaxPasswordLength: getEnvInt("MAX_PASSWORD_LENGTH", 64),
 		AuthRateLimit:     getEnvInt("AUTH_RATE_LIMIT", 5),
 		AuthRateBurst:     getEnvInt("AUTH_RATE_BURST", 10),

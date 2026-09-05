@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
+	"papo/internal/config"
 	"papo/internal/models"
 	"papo/internal/storage"
 	"papo/internal/utils"
@@ -157,14 +158,20 @@ func CreateServerWithIcon(ctx context.Context, name, icon, iconFormat string, pu
 
 // serverPasswordHash resolve o password_hash a partir do estado final do
 // servidor: público não tem senha (nil), privado exige senha não vazia
-// (hash bcrypt). Retorna ErrInvalidInput quando o servidor privado não tem
-// senha.
+// (hash bcrypt) conforme à política de senha (tamanho mínimo, maiúscula,
+// especial). Retorna ErrInvalidInput quando o servidor privado não tem
+// senha e os erros de utils quando a senha viola a política.
 func serverPasswordHash(isPublic bool, password string) (*string, error) {
 	if isPublic {
 		return nil, nil
 	}
 	if password == "" {
 		return nil, ErrInvalidInput
+	}
+
+	cfg := config.LoadConfig()
+	if err := utils.ValidatePassword(password, cfg.MinPasswordLength); err != nil {
+		return nil, err
 	}
 
 	hash, err := utils.HashPassword(password)

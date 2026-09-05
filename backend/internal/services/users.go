@@ -554,6 +554,10 @@ func ChangePassword(ctx context.Context, userID, password string) error {
 		return ErrInvalidInput
 	}
 
+	if err := utils.ValidatePassword(password, cfg.MinPasswordLength); err != nil {
+		return err
+	}
+
 	passwordHash, err := utils.HashPassword(password)
 	if err != nil {
 		return fmt.Errorf("falha ao gerar hash da senha: %w", err)

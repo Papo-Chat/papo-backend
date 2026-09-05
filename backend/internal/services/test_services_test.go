@@ -297,7 +297,7 @@ func newRandomUsername() string {
 }
 
 func newRandomPassword() string {
-	return "pw" + randHex(4)
+	return "Pw!" + randHex(4)
 }
 
 func newRandomIP() string {
@@ -406,12 +406,102 @@ func TestRegisterInvalidInput(t *testing.T) {
 	}
 }
 
+// passwordPolicyCases retorna senhas que violam cada regra da política
+// (tamanho mínimo, maiúscula, especial) usando o minLen configurado.
+func passwordPolicyCases() []struct {
+	name     string
+	password string
+	wantErr  error
+} {
+	minLen := config.LoadConfig().MinPasswordLength
+	return []struct {
+		name     string
+		password string
+		wantErr  error
+	}{
+		{"abaixo do mínimo", "A!" + strings.Repeat("a", minLen-3), utils.ErrPasswordTooShort},
+		{"sem maiúscula", "a!" + strings.Repeat("a", minLen-2), utils.ErrPasswordNoUppercase},
+		{"sem especial", "A" + strings.Repeat("a", minLen-1), utils.ErrPasswordNoSpecial},
+	}
+}
+
+func TestRegisterPasswordPolicy(t *testing.T) {
+	for _, tc := range passwordPolicyCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Register(testCtx(), newRandomUsername(), tc.password, newRandomIP())
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("esperava %v, obtive %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestChangePasswordPasswordPolicy(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+	if err := storage.SetUserResetPassword(testCtx(), user.ID); err != nil {
+		t.Fatalf("falha ao marcar reset_password: %v", err)
+	}
+
+	for _, tc := range passwordPolicyCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ChangePassword(testCtx(), user.ID, tc.password)
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("esperava %v, obtive %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestCreateServerWithIconPasswordPolicy(t *testing.T) {
+	cleanServers(testCtx())
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+
+	for _, tc := range passwordPolicyCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			pw := tc.password
+			_, err := CreateServerWithIcon(testCtx(), newRandomServerName(), "", "", false, &pw, &owner.ID)
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("esperava %v, obtive %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestUpdateServerPasswordPolicy(t *testing.T) {
+	cleanServers(testCtx())
+	t.Cleanup(func() { cleanServers(testCtx()) })
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário dono: %v", err)
+	}
+	if _, err := storage.CreateServer(testCtx(), newRandomServerName(), &owner.ID); err != nil {
+		t.Fatalf("falha ao criar servidor: %v", err)
+	}
+
+	pub := false
+	for _, tc := range passwordPolicyCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			pw := tc.password
+			err := UpdateServer(testCtx(), owner.ID, newRandomServerName(), "", "", &pub, &pw)
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("esperava %v, obtive %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestRegisterBoundaryLengths(t *testing.T) {
 	//Lê a configuração do tamanho máximo dos campos
 	MaxPasswordLength, MaxUsernameLength := getMaxLenFields()
 
 	username := strings.Repeat("a", MaxUsernameLength)
-	password := strings.Repeat("b", MaxPasswordLength)
+	password := "A!" + strings.Repeat("b", MaxPasswordLength-2)
 
 	user, err := Register(testCtx(), username, password, newRandomIP())
 	if err != nil {
@@ -523,7 +613,7 @@ func TestLoginBoundaryLengths(t *testing.T) {
 	MaxPasswordLength, MaxUsernameLength := getMaxLenFields()
 
 	username := strings.Repeat("a", MaxUsernameLength-2) + randHex(1)
-	password := strings.Repeat("b", MaxPasswordLength)
+	password := "A!" + strings.Repeat("b", MaxPasswordLength-2)
 	ip := newRandomIP()
 
 	if _, err := Register(testCtx(), username, password, ip); err != nil {
@@ -2079,7 +2169,7 @@ func TestChangePasswordBoundaryLengths(t *testing.T) {
 		t.Fatalf("SetUserResetPassword retornou erro: %v", err)
 	}
 
-	boundaryPassword := strings.Repeat("b", MaxPasswordLength)
+	boundaryPassword := "A!" + strings.Repeat("b", MaxPasswordLength-2)
 
 	err = storage.SetUserResetPassword(testCtx(), user.ID)
 
@@ -2487,12 +2577,13 @@ func TestGetServer(t *testing.T) {
 		t.Fatalf("falha ao criar canal: %v", err)
 	}
 
-	// member_count é o total de usuários (storage)
-	users, err := ListUsers(testCtx(), nil, "")
+	// member_count é o total de usuários (storage); conta todos via storage
+	// para não depender do limite de paginação da camada de service
+	users, err := storage.ListUsers(testCtx(), nil, "", 0)
 	if err != nil {
 		t.Fatalf("ListUsers retornou erro: %v", err)
 	}
-	wantMembers := len(users.Users)
+	wantMembers := len(users)
 
 	summary, err := GetServer(testCtx())
 	if err != nil {

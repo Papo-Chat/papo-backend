@@ -465,7 +465,7 @@ func newRandomUsername() string {
 }
 
 func newRandomPassword() string {
-	return "pw" + randHex(4)
+	return "Pw!" + randHex(4)
 }
 
 func newRandomIP() string {
