@@ -491,16 +491,14 @@ func (p *Peer) allocateSlots() error {
 			return err
 		}
 
-		t, err := pc.AddTransceiverFromTrack(track, webrtc.RTPTransceiverInit{
-			Direction: webrtc.RTPTransceiverDirectionSendonly,
-		})
+		sender, err := pc.AddTrack(track)
 		if err != nil {
 			return err
 		}
 
 		videoSlots = append(videoSlots, &slot{
 			peer:   p,
-			sender: t.Sender(),
+			sender: sender,
 			local:  track,
 		})
 	}
@@ -516,16 +514,14 @@ func (p *Peer) allocateSlots() error {
 			return err
 		}
 
-		t, err := pc.AddTransceiverFromTrack(track, webrtc.RTPTransceiverInit{
-			Direction: webrtc.RTPTransceiverDirectionSendonly,
-		})
+		sender, err := pc.AddTrack(track)
 		if err != nil {
 			return err
 		}
 
 		audioSlots = append(audioSlots, &slot{
 			peer:   p,
-			sender: t.Sender(),
+			sender: sender,
 			local:  track,
 		})
 	}

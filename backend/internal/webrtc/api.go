@@ -66,7 +66,9 @@ func videoCodecCapability(name string) (webrtc.RTPCodecParameters, bool) {
 // newSharedAPI monta a API compartilhada (D6/D9):
 //   - MediaEngine: opus (áudio) + codec de vídeo da sala (D6);
 //   - header extensions: audio-level (RFC 6464, detecção de active speaker) e
-//     abs-send-time (insumo do GCC); o TWCC já vem dos defaults;
+//     abs-send-time (insumo do GCC);
+//     TWCC feedback vem dos defaults; a extensão TWCC nos pacotes
+//     de saída é registrada explicitamente abaixo para o GCC send-side.
 //   - interceptors: NACK/RTX (ambos sentidos) + RTCP reports + TWCC + stats
 //     (RegisterDefaultInterceptors), GCC (SendSideBWE) alimentando o pacer
 //     (limita o bitrate enviado a cada subscriber) e o interceptor de
@@ -130,8 +132,13 @@ func newSharedAPI(cfg *config.Config, m *Manager) (*webrtcAPI, error) {
 		return nil, err
 	}
 
-	// Pacer por último: innermost no caminho de saída (vê o stream final,
-	// já com RTX do NACK) e aplica o limite de bitrate do GCC.
+	// O GCC send-side precisa que cada RTP de saída carregue
+	// transport-wide sequence number.
+	if err := webrtc.ConfigureTWCCHeaderExtensionSender(mediaEngine, registry); err != nil {
+		return nil, err
+	}
+
+	// Pacer por último.
 	registry.Add(pacer)
 
 	// Audio-level (RFC 6464): observa os pacotes de áudio recebidos e
