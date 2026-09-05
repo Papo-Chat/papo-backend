@@ -130,7 +130,7 @@ Versão leve:
      THUMBNAIL_ENABLED=false
 ```
 
-## Rodando localmente ou em VPS Simples
+## Rodando para desenvolvimento
 
 ```bash
 # banco
@@ -148,6 +148,16 @@ goose up
 chmod +x build-and-run.sh
 ./build-and-run.sh
 ```
+
+## Deploy em Sistema Linux (BD + Serviço SYSTEMD)
+* Instala o servidor em /opt/papo com todos os pré-requisitos, roda o pg em docker, cria segredos em runtime
+
+```bash
+# backend
+chmod +x deploy.sh
+./deploy.sh
+```
+
 
 Backend sobe em `http://localhost:8080`, WebSocket em `ws://localhost:8080/ws`.
 

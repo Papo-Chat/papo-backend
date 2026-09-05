@@ -9,9 +9,10 @@ services:
       POSTGRES_DB: ${DB_NAME:-papo}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../migrations:/docker-entrypoint-initdb.d
     ports:
-      - "${DB_PORT:-5432}:5432"
+      # Somente localhost: o backend conecta via localhost e o banco não deve
+      # ser acessível de fora do host.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     networks:
       - papo_network
 
