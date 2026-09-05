@@ -128,7 +128,9 @@ install_go() {
     local version url
     version="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -n1)"
     [[ -n "$version" ]] || die "falha ao descobrir a versão estável do Go"
-    url="https://go.dev/dl/${version}.linux-${arch}.tar.gz"
+    # dl.google.com serve o tarball E o .sha256 diretamente; go.dev/dl não
+    # redireciona o .sha256 (devolve HTML, golang/go#41894).
+    url="https://dl.google.com/go/${version}.linux-${arch}.tar.gz"
 
     echo "    Instalando Go $version ($arch)..."
     local tmp
@@ -346,7 +348,8 @@ install_systemd() {
     local state
     state="$(systemctl is-system-running 2>/dev/null || true)"
     case "$state" in
-        running|degraded|startup) ;;
+        # starting/initializing: boot em andamento — o systemd está lá.
+        running|degraded|starting|initializing) ;;
         *) die "systemd não está disponível neste sistema (use --no-systemd)" ;;
     esac
 
