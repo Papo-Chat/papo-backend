@@ -143,9 +143,6 @@ func validateCandidate(raw string) error {
 	if ip.IsLoopback() || ip.IsUnspecified() {
 		return ErrVoiceInvalidSDP
 	}
-	if ip.IsLoopback() || ip.IsUnspecified() {
-		return ErrVoiceInvalidSDP
-	}
 
 	return nil
 }
@@ -177,16 +174,20 @@ func normalizeSDP(sdpStr string) string {
 func parseMidRoles(
 	sdpStr string,
 	previous map[string]trackRole,
-) (map[string]trackRole, map[string]trackRole) {
+	cameraOn bool,
+	screenOn bool,
+) (map[string]trackRole, map[string]trackRole, error) {
 	roles := cloneTrackRoles(previous)
 	active := make(map[string]trackRole)
 
 	var desc sdp.SessionDescription
 	if err := desc.UnmarshalString(normalizeSDP(sdpStr)); err != nil {
-		return roles, active
+		return roles, active, ErrVoiceInvalidSDP
 	}
 
 	cameraKnown := hasRole(roles, roleCamera)
+	screenKnown := hasRole(roles, roleScreen)
+	audioKnown := hasRole(roles, roleAudio)
 
 	for _, media := range desc.MediaDescriptions {
 		mid := ""
@@ -202,38 +203,74 @@ func parseMidRoles(
 			continue
 		}
 
-		role, known := roles[mid]
-
-		if !known {
-			// recvonly/inactive desconhecidos são slots do SFU ou
-			// transceivers que ainda não começaram a publicar.
-			if !mediaPublishes(media) {
-				continue
-			}
-
-			switch media.MediaName.Media {
-			case "audio":
-				role = roleAudio
-
-			case "video":
-				if !cameraKnown {
-					role = roleCamera
-					cameraKnown = true
-				} else {
-					role = roleScreen
+		// MID já conhecido mantém sua identidade para sempre.
+		if role, known := roles[mid]; known {
+			// Proteção adicional: um MID conhecido não pode mudar
+			// de audio para video ou vice-versa.
+			switch role {
+			case roleAudio:
+				if media.MediaName.Media != "audio" {
+					return roles, active, ErrVoiceInvalidSDP
 				}
-
-			default:
-				continue
+			case roleCamera, roleScreen:
+				if media.MediaName.Media != "video" {
+					return roles, active, ErrVoiceInvalidSDP
+				}
 			}
 
-			roles[mid] = role
+			if mediaPublishes(media) {
+				active[mid] = role
+			}
+
+			continue
 		}
 
-		if mediaPublishes(media) {
-			active[mid] = role
+		// MID desconhecido que não publica não precisa de role.
+		// Normalmente são slots recvonly/inactive do SFU.
+		if !mediaPublishes(media) {
+			continue
+		}
+
+		switch media.MediaName.Media {
+		case "audio":
+			// Não aceitamos uma segunda publicação de áudio.
+			if audioKnown {
+				return roles, active, ErrVoiceInvalidSDP
+			}
+
+			roles[mid] = roleAudio
+			active[mid] = roleAudio
+			audioKnown = true
+
+		case "video":
+			switch {
+			// Backend sabe que a intenção atual é câmera.
+			case cameraOn &&
+				!cameraKnown &&
+				(!screenOn || screenKnown):
+
+				roles[mid] = roleCamera
+				active[mid] = roleCamera
+				cameraKnown = true
+
+			// Backend sabe que a intenção atual é screen share.
+			case screenOn &&
+				!screenKnown &&
+				(!cameraOn || cameraKnown):
+
+				roles[mid] = roleScreen
+				active[mid] = roleScreen
+				screenKnown = true
+
+			default:
+				// Exemplos:
+				// cameraOn=false, screenOn=false -> vídeo inesperado
+				// cameraOn=true, screenOn=true e nenhum conhecido -> ambíguo
+				// camera já conhecida + novo vídeo sem screenOn -> inesperado
+				return roles, active, ErrVoiceInvalidSDP
+			}
 		}
 	}
 
-	return roles, active
+	return roles, active, nil
 }

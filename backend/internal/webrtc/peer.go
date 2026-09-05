@@ -205,11 +205,22 @@ func (p *Peer) handleOffer(clientID, sdp string) error {
 	previousRoles := cloneTrackRoles(p.midRole)
 	previousActive := cloneTrackRoles(p.activeMidRole)
 
+	cameraOn := p.cameraOn
+	screenOn := p.screenSharing
+
 	firstOffer := len(p.videoSlots) == 0 && len(p.audioSlots) == 0
 
 	p.mu.Unlock()
 
-	roles, activeRoles := parseMidRoles(sdp, previousRoles)
+	roles, activeRoles, err := parseMidRoles(
+		sdp,
+		previousRoles,
+		cameraOn,
+		screenOn,
+	)
+	if err != nil {
+		return err
+	}
 
 	p.mu.Lock()
 

@@ -74,35 +74,140 @@ func TestSSNTranslator(t *testing.T) {
 }
 
 func TestParseMidRoles(t *testing.T) {
-	sdp := `v=0
+	cameraSDP := `v=0
 o=- 1 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0 1
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 127.0.0.1
+a=mid:0
+a=sendrecv
+a=rtpmap:111 opus/48000/2
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 127.0.0.1
+a=mid:1
+a=sendonly
+a=rtpmap:96 vp8/90000`
+
+	roles, active, err := parseMidRoles(
+		cameraSDP,
+		nil,
+		true,  // cameraOn
+		false, // screenOn
+	)
+	if err != nil {
+		t.Fatalf("primeiro offer: %v", err)
+	}
+
+	if roles["0"] != roleAudio {
+		t.Fatalf("mid 0 = %v, esperado audio", roles["0"])
+	}
+	if roles["1"] != roleCamera {
+		t.Fatalf("mid 1 = %v, esperado camera", roles["1"])
+	}
+	if active["1"] != roleCamera {
+		t.Fatalf("camera não ficou ativa")
+	}
+
+	// Depois o usuário inicia screen share.
+	screenSDP := `v=0
+o=- 1 3 IN IP4 127.0.0.1
 s=-
 t=0 0
 a=group:BUNDLE 0 1 2
 m=audio 9 UDP/TLS/RTP/SAVPF 111
 c=IN IP4 127.0.0.1
 a=mid:0
+a=sendrecv
+a=rtpmap:111 opus/48000/2
 m=video 9 UDP/TLS/RTP/SAVPF 96
 c=IN IP4 127.0.0.1
 a=mid:1
+a=sendonly
 a=rtpmap:96 vp8/90000
 m=video 9 UDP/TLS/RTP/SAVPF 96
 c=IN IP4 127.0.0.1
 a=mid:2
+a=sendonly
 a=rtpmap:96 vp8/90000`
 
-	roles := parseMidRoles(sdp)
-	if roles["0"] != roleAudio {
-		t.Errorf("mid 0 = %d, esperado roleAudio", roles["0"])
+	roles, active, err = parseMidRoles(
+		screenSDP,
+		roles, // identidade da câmera já conhecida
+		true,  // cameraOn
+		true,  // screenOn
+	)
+	if err != nil {
+		t.Fatalf("offer com screen: %v", err)
 	}
+
 	if roles["1"] != roleCamera {
-		t.Errorf("mid 1 = %d, esperado roleCamera (1ª vídeo)", roles["1"])
+		t.Fatalf("mid 1 perdeu roleCamera: %#v", roles)
 	}
 	if roles["2"] != roleScreen {
-		t.Errorf("mid 2 = %d, esperado roleScreen (2ª vídeo)", roles["2"])
+		t.Fatalf("mid 2 = %v, esperado screen", roles["2"])
 	}
-	if len(roles) != 3 {
-		t.Errorf("esperava 3 mids, obtive %d", len(roles))
+	if active["2"] != roleScreen {
+		t.Fatalf("screen não ficou ativa")
+	}
+}
+
+func TestParseMidRolesRejectsAmbiguousVideo(t *testing.T) {
+	sdpStr := "v=0\n" +
+		"o=- 1 2 IN IP4 127.0.0.1\n" +
+		"s=-\n" +
+		"t=0 0\n" +
+		"m=video 9 UDP/TLS/RTP/SAVPF 96\n" +
+		"c=IN IP4 127.0.0.1\n" +
+		"a=mid:1\n" +
+		"a=sendonly\n" +
+		"a=rtpmap:96 VP8/90000\n"
+
+	_, _, err := parseMidRoles(
+		sdpStr,
+		nil,
+		true, // cameraOn
+		true, // screenOn
+	)
+
+	if !errors.Is(err, ErrVoiceInvalidSDP) {
+		t.Fatalf("esperado ErrVoiceInvalidSDP, recebido %v", err)
+	}
+}
+
+func TestParseMidRolesScreenAsFirstVideo(t *testing.T) {
+	sdpStr := `v=0
+o=- 1 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 127.0.0.1
+a=mid:0
+a=sendrecv
+a=rtpmap:111 opus/48000/2
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 127.0.0.1
+a=mid:3
+a=sendonly
+a=rtpmap:96 vp8/90000`
+
+	roles, active, err := parseMidRoles(
+		sdpStr,
+		nil,
+		false, // câmera desligada
+		true,  // screen explicitamente ligado
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if roles["3"] != roleScreen {
+		t.Fatalf("mid 3 = %v, esperado screen", roles["3"])
+	}
+
+	if active["3"] != roleScreen {
+		t.Fatalf("screen não ficou ativa")
 	}
 }
 
@@ -258,40 +363,63 @@ func TestValidateCandidate(t *testing.T) {
 }
 
 func TestParseMidRolesIgnoresRecvonlySlots(t *testing.T) {
-	sdpStr := "v=0\n" +
-		"o=- 1 2 IN IP4 127.0.0.1\n" +
-		"s=-\n" +
-		"t=0 0\n" +
-		"a=group:BUNDLE 0 1 2\n" +
-		"m=audio 9 UDP/TLS/RTP/SAVPF 111\n" +
-		"c=IN IP4 127.0.0.1\n" +
-		"a=mid:0\n" +
-		"a=sendrecv\n" +
-		"a=rtpmap:111 opus/48000/2\n" +
-		"m=video 9 UDP/TLS/RTP/SAVPF 96\n" +
-		"c=IN IP4 127.0.0.1\n" +
-		"a=mid:1\n" +
-		"a=sendonly\n" +
-		"a=rtpmap:96 vp8/90000\n" +
-		"m=video 9 UDP/TLS/RTP/SAVPF 96\n" +
-		"c=IN IP4 127.0.0.1\n" +
-		"a=mid:2\n" +
-		"a=recvonly\n" +
-		"a=rtpmap:96 vp8/90000\n"
+	sdpStr := `v=0
+o=- 1 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0 1 2
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 127.0.0.1
+a=mid:0
+a=sendrecv
+a=rtpmap:111 opus/48000/2
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 127.0.0.1
+a=mid:1
+a=sendonly
+a=rtpmap:96 vp8/90000
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 127.0.0.1
+a=mid:2
+a=recvonly
+a=rtpmap:96 vp8/90000`
 
-	roles := parseMidRoles(sdpStr)
+	roles, active, err := parseMidRoles(
+		sdpStr,
+		nil,
+		true,  // cameraOn
+		false, // screenOn
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if roles["0"] != roleAudio {
-		t.Fatalf("mid 0 = %v, esperado roleAudio; roles=%#v", roles["0"], roles)
+		t.Fatalf("mid 0 = %v, esperado roleAudio", roles["0"])
 	}
+
 	if roles["1"] != roleCamera {
-		t.Fatalf("mid 1 = %v, esperado roleCamera; roles=%#v", roles["1"], roles)
+		t.Fatalf("mid 1 = %v, esperado roleCamera", roles["1"])
 	}
+
 	if _, ok := roles["2"]; ok {
-		t.Fatalf("m-line recvonly foi classificada: %#v", roles)
+		t.Fatalf("recvonly recebeu role: %#v", roles)
 	}
+
+	if active["0"] != roleAudio {
+		t.Fatalf("audio não ficou ativo: %#v", active)
+	}
+
+	if active["1"] != roleCamera {
+		t.Fatalf("camera não ficou ativa: %#v", active)
+	}
+
+	if _, ok := active["2"]; ok {
+		t.Fatalf("recvonly ficou ativo: %#v", active)
+	}
+
 	if hasRole(roles, roleScreen) {
-		t.Fatalf("slot recvonly foi confundido com screen share: %#v", roles)
+		t.Fatalf("slot recvonly foi confundido com screen: %#v", roles)
 	}
 }
 
