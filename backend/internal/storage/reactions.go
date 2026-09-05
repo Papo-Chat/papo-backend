@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"papo/internal/models"
 )
@@ -168,19 +169,71 @@ func derefString(s *string) string {
 	return *s
 }
 
-// ListReactionsByMessage lista os tipos de reação de uma mensagem agrupados
-// por emoji, com a lista de usuários que reagiram. As linhas são lidas
-// individualmente e agrupadas em Go (sem array_agg), seguindo a convenção do
-// restante do storage.
-func ListReactionsByMessage(ctx context.Context, messageID string) ([]models.MessageReactionGroup, error) {
-	rows, err := GetDB().QueryContext(ctx,
-		"SELECT emoji_id, unicode, user_id FROM message_reactions WHERE message_id = $1 ORDER BY user_id",
-		messageID,
-	)
+// ListReactionsByMessage lista as reações de uma mensagem agrupadas por tipo
+// de emoji, em ordem decrescente de criação, paginadas como as demais
+// listagens: limit reações por página (padrão e máximo 100) e has_more quando
+// existe próxima página (é buscada 1 row a mais que o limite; a row extra é
+// excluída da página). Se since for fornecido, retorna apenas reações criadas
+// após esse timestamp; se lastID for fornecido junto, o cursor é o par
+// (created_at, id) e o filtro retorna as reações anteriores ao cursor na
+// ordem decrescente (created_at, id), incluindo as do mesmo timestamp com id
+// menor que lastID (evita pular reações com timestamp igual). As linhas da
+// página são lidas individualmente e agrupadas em Go (sem array_agg),
+// seguindo a convenção do restante do storage; o count de cada grupo é o
+// número de usuários do grupo na página.
+func ListReactionsByMessage(ctx context.Context, messageID string, since *time.Time, lastID string, limit int) ([]models.MessageReactionGroup, bool, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	fetch := limit + 1
+
+	query := "SELECT id, emoji_id, unicode, user_id, created_at FROM message_reactions WHERE message_id = $1"
+	args := []any{messageID}
+
+	if since != nil {
+		if lastID != "" {
+			query += " AND (created_at < $2 OR (created_at = $2 AND id < $3))"
+			args = append(args, *since, lastID)
+			query += " ORDER BY created_at DESC, id DESC LIMIT $4"
+		} else {
+			query += " AND created_at > $2"
+			args = append(args, *since)
+			query += " ORDER BY created_at DESC, id DESC LIMIT $3"
+		}
+	} else {
+		query += " ORDER BY created_at DESC, id DESC LIMIT $2"
+	}
+	args = append(args, fetch)
+
+	rows, err := GetDB().QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("falha ao listar reações: %w", err)
+		return nil, false, fmt.Errorf("falha ao listar reações: %w", err)
 	}
 	defer rows.Close()
+
+	type pageRow struct {
+		id        string
+		emojiID   *string
+		unicode   *string
+		userID    string
+		createdAt time.Time
+	}
+	page := make([]pageRow, 0, fetch)
+	for rows.Next() {
+		var row pageRow
+		if err := rows.Scan(&row.id, &row.emojiID, &row.unicode, &row.userID, &row.createdAt); err != nil {
+			return nil, false, fmt.Errorf("falha ao ler reação: %w", err)
+		}
+		page = append(page, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("falha ao listar reações: %w", err)
+	}
+
+	hasMore := len(page) > limit
+	if hasMore {
+		page = page[:limit]
+	}
 
 	type reactionKey struct {
 		emojiID string
@@ -188,31 +241,66 @@ func ListReactionsByMessage(ctx context.Context, messageID string) ([]models.Mes
 	}
 	groups := []models.MessageReactionGroup{}
 	index := map[reactionKey]int{}
-	for rows.Next() {
-		var emojiID, unicode, userID *string
-		if err := rows.Scan(&emojiID, &unicode, &userID); err != nil {
-			return nil, fmt.Errorf("falha ao ler reação: %w", err)
-		}
-		key := reactionKey{emojiID: derefString(emojiID), unicode: derefString(unicode)}
+	for _, row := range page {
+		key := reactionKey{emojiID: derefString(row.emojiID), unicode: derefString(row.unicode)}
 		i, ok := index[key]
 		if !ok {
 			groups = append(groups, models.MessageReactionGroup{
-				EmojiID: emojiID,
-				Unicode: unicode,
-				Users:   []string{},
+				EmojiID: row.emojiID,
+				Unicode: row.unicode,
+				Users:   []models.MessageReactionUser{},
 			})
 			i = len(groups) - 1
 			index[key] = i
 		}
-		groups[i].Users = append(groups[i].Users, *userID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("falha ao listar reações: %w", err)
+		groups[i].Users = append(groups[i].Users, models.MessageReactionUser{
+			ID:        row.id,
+			UserID:    row.userID,
+			CreatedAt: row.createdAt,
+		})
 	}
 	for i := range groups {
 		groups[i].Count = len(groups[i].Users)
 	}
-	return groups, nil
+	return groups, hasMore, nil
+}
+
+// UserReactionsByMessages retorna as reações de um usuário em cada mensagem
+// informada (expostas como user_reactions nas respostas de mensagem). O mapa
+// é populado com slice vazio para todas as mensagens informadas (o JSON
+// responde [] e nunca null); a ordem é decrescente de criação.
+func UserReactionsByMessages(ctx context.Context, messageIDs []string, userID string) (map[string][]models.MessageUserReaction, error) {
+	reactions := make(map[string][]models.MessageUserReaction, len(messageIDs))
+	for _, id := range messageIDs {
+		reactions[id] = []models.MessageUserReaction{}
+	}
+	if len(messageIDs) == 0 {
+		return reactions, nil
+	}
+
+	rows, err := GetDB().QueryContext(ctx,
+		`SELECT message_id, id, emoji_id, unicode
+		 FROM message_reactions WHERE message_id = ANY($1) AND user_id = $2
+		 ORDER BY created_at DESC, id DESC`,
+		messageIDs, userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar reações do usuário: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var messageID string
+		var reaction models.MessageUserReaction
+		if err := rows.Scan(&messageID, &reaction.ID, &reaction.EmojiID, &reaction.Unicode); err != nil {
+			return nil, fmt.Errorf("falha ao ler reação do usuário: %w", err)
+		}
+		reactions[messageID] = append(reactions[messageID], reaction)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao listar reações do usuário: %w", err)
+	}
+	return reactions, nil
 }
 
 // ReactionCountsByMessages retorna a contagem de tipos de reação de cada

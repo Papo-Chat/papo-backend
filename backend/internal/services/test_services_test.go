@@ -8024,7 +8024,7 @@ func TestListMessageReactions(t *testing.T) {
 		t.Fatalf("AddReactionToMessage (u1) retornou erro: %v", err)
 	}
 
-	list, err := ListMessageReactions(testCtx(), channel.ID, message.ID, owner.ID)
+	list, err := ListMessageReactions(testCtx(), channel.ID, message.ID, owner.ID, nil, "")
 	if err != nil {
 		t.Fatalf("ListMessageReactions retornou erro: %v", err)
 	}
@@ -8047,7 +8047,7 @@ func TestListMessageReactions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMessage (vazia) retornou erro: %v", err)
 	}
-	list, err = ListMessageReactions(testCtx(), channel.ID, empty.ID, owner.ID)
+	list, err = ListMessageReactions(testCtx(), channel.ID, empty.ID, owner.ID, nil, "")
 	if err != nil {
 		t.Fatalf("ListMessageReactions (vazia) retornou erro: %v", err)
 	}
@@ -8068,25 +8068,25 @@ func TestListMessageReactionsErrors(t *testing.T) {
 	// Torna o canal "fechado" para que o actor, sem read_channel, seja negado.
 	grantChannelPermission(t, channel, owner, models.ChannelPermission{ReadChannel: true})
 
-	if _, err := ListMessageReactions(testCtx(), channel.ID, randUUID(), owner.ID); !errors.Is(err, ErrMessageNotFound) {
+	if _, err := ListMessageReactions(testCtx(), channel.ID, randUUID(), owner.ID, nil, ""); !errors.Is(err, ErrMessageNotFound) {
 		t.Errorf("esperava ErrMessageNotFound, obtive %v", err)
 	}
 	// canal da URL divergente do canal real da mensagem: a checagem de
 	// pertencimento da mensagem precede a de existência do canal.
-	if _, err := ListMessageReactions(testCtx(), randUUID(), message.ID, owner.ID); !errors.Is(err, ErrMessageNotFound) {
+	if _, err := ListMessageReactions(testCtx(), randUUID(), message.ID, owner.ID, nil, ""); !errors.Is(err, ErrMessageNotFound) {
 		t.Errorf("esperava ErrMessageNotFound para canal divergente, obtive %v", err)
 	}
-	if _, err := ListMessageReactions(testCtx(), channel.ID, message.ID, actor.ID); !errors.Is(err, ErrPermissionDenied) {
+	if _, err := ListMessageReactions(testCtx(), channel.ID, message.ID, actor.ID, nil, ""); !errors.Is(err, ErrPermissionDenied) {
 		t.Errorf("esperava ErrPermissionDenied, obtive %v", err)
 	}
-	if _, err := ListMessageReactions(testCtx(), "", message.ID, owner.ID); !errors.Is(err, ErrInvalidInput) {
+	if _, err := ListMessageReactions(testCtx(), "", message.ID, owner.ID, nil, ""); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 	}
 }
 
-func containsServiceReactionUser(users []string, id string) bool {
+func containsServiceReactionUser(users []models.MessageReactionUser, id string) bool {
 	for _, u := range users {
-		if u == id {
+		if u.UserID == id {
 			return true
 		}
 	}

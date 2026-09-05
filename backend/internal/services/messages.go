@@ -109,9 +109,14 @@ func ListMessages(ctx context.Context, channelID, userID string, since *time.Tim
 	if err != nil {
 		return models.MessageList{}, err
 	}
+	userReactions, err := storage.UserReactionsByMessages(ctx, messageIDs, userID)
+	if err != nil {
+		return models.MessageList{}, err
+	}
 	for i := range messages {
 		messages[i].Previews = previewsByMessage[messages[i].ID]
 		messages[i].Reactions = reactionCounts[messages[i].ID]
+		messages[i].UserReactions = userReactions[messages[i].ID]
 		setAttachmentThumbnails(&messages[i].Attachments, thumbnails)
 	}
 
@@ -288,9 +293,11 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 		})
 	}
 
+	// A mensagem acabou de ser criada: ninguém pode ter reagido a ela ainda.
 	return models.MessageWithAttachment{
-		Message:     message,
-		Attachments: messageAttachments,
+		Message:       message,
+		Attachments:   messageAttachments,
+		UserReactions: []models.MessageUserReaction{},
 	}, nil
 }
 
@@ -495,6 +502,10 @@ func EditMessage(ctx context.Context, messageID, authorID, content string) (mode
 	if err != nil {
 		return models.MessageWithAttachment{}, err
 	}
+	userReactions, err := storage.UserReactionsByMessages(ctx, []string{updated.ID}, authorID)
+	if err != nil {
+		return models.MessageWithAttachment{}, err
+	}
 
 	RecordAudit(ctx, AuditEntry{
 		ActorID:    authorID,
@@ -505,9 +516,10 @@ func EditMessage(ctx context.Context, messageID, authorID, content string) (mode
 	})
 
 	return models.MessageWithAttachment{
-		Message:     updated,
-		Attachments: messageAttachments,
-		Reactions:   reactionCounts[updated.ID],
+		Message:       updated,
+		Attachments:   messageAttachments,
+		Reactions:     reactionCounts[updated.ID],
+		UserReactions: userReactions[updated.ID],
 	}, nil
 }
 
@@ -792,9 +804,14 @@ func ListPinnedMessages(ctx context.Context, channelID, userID string) (models.P
 	if err != nil {
 		return models.PinnedMessageList{}, err
 	}
+	userReactions, err := storage.UserReactionsByMessages(ctx, messageIDs, userID)
+	if err != nil {
+		return models.PinnedMessageList{}, err
+	}
 	for i := range messages {
 		messages[i].Previews = previewsByMessage[messages[i].ID]
 		messages[i].Reactions = reactionCounts[messages[i].ID]
+		messages[i].UserReactions = userReactions[messages[i].ID]
 		setAttachmentThumbnails(&messages[i].Attachments, thumbnails)
 	}
 

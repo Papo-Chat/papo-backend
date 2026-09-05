@@ -21,18 +21,39 @@ type MessageReactionSummary struct {
 	Count   int     `json:"count"`
 }
 
+// MessageReactionUser é um usuário que reagiu a uma mensagem, com os dados
+// da reação usados como cursor de paginação (id, created_at) no GET de
+// reações.
+type MessageReactionUser struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // MessageReactionGroup é um tipo de reação em uma mensagem com a lista de
-// usuários que reagiram (GET de reações).
+// usuários que reagiram (GET de reações). Count é o número de usuários do
+// grupo na página retornada (o total do emoji está em `reactions` do corpo
+// da mensagem).
 type MessageReactionGroup struct {
-	EmojiID *string  `json:"emoji_id"`
-	Unicode *string  `json:"unicode"`
-	Count   int      `json:"count"`
-	Users   []string `json:"users"`
+	EmojiID *string               `json:"emoji_id"`
+	Unicode *string               `json:"unicode"`
+	Count   int                   `json:"count"`
+	Users   []MessageReactionUser `json:"users"`
 }
 
 // MessageReactionList é a resposta de
-// GET /channels/:channel_id/messages/:message_id/reactions.
+// GET /channels/:channel_id/messages/:message_id/reactions (paginada por
+// (created_at, id), 100 reações por página).
 type MessageReactionList struct {
 	MessageID string                 `json:"message_id"`
 	Reactions []MessageReactionGroup `json:"reactions"`
+	HasMore   bool                   `json:"has_more"`
+}
+
+// MessageUserReaction é a reação do usuário autenticado a uma mensagem
+// (exposta como user_reactions nas respostas de mensagem).
+type MessageUserReaction struct {
+	ID      string  `json:"id"`
+	EmojiID *string `json:"emoji_id"`
+	Unicode *string `json:"unicode"`
 }

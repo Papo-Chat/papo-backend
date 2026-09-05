@@ -41,12 +41,14 @@ type MessageAttachment struct {
 
 // MessageWithAttachment é a mensagem com seus attachments, link previews e
 // contagem de reações, como exposta pela API (respostas de listagem, criação
-// e edição de mensagens).
+// e edição de mensagens). UserReactions são as reações do usuário
+// autenticado à mensagem (vazio quando ele não reagiu).
 type MessageWithAttachment struct {
 	Message
-	Attachments []MessageAttachment      `json:"attachments"`
-	Previews    []LinkPreview            `json:"previews"`
-	Reactions   []MessageReactionSummary `json:"reactions"`
+	Attachments   []MessageAttachment      `json:"attachments"`
+	Previews      []LinkPreview            `json:"previews"`
+	Reactions     []MessageReactionSummary `json:"reactions"`
+	UserReactions []MessageUserReaction    `json:"user_reactions"`
 }
 
 // MessageList é a resposta de GET /channels/:channel_id/messages.

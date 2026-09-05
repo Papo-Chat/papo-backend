@@ -8,7 +8,7 @@ info:
     - Autenticação via cookie HttpOnly `Auth` (JWT).
     - Erros seguem RFC 7807 (`application/problem+json`) e toda resposta
       inclui o header `X-Request-ID`.
-  version: 0.1.0
+  version: 0.9.6
 servers:
   - url: http://localhost:8080
     description: Backend local
@@ -1476,11 +1476,25 @@ paths:
           $ref: '#/components/responses/InternalError'
     get:
       tags: [Messages]
-      summary: Lista reações da mensagem com os usuários que reagiram
-      description: "Permission Check: `read_channel` do canal"
+      summary: Lista reações da mensagem com os usuários que reagiram (Limite de 100 por requisição, use cursor com since + last_id para paginar)
+      description: "Permission Check: `read_channel` do canal. Resposta agrupada por tipo de emoji, em ordem decrescente de criação (created_at, id). O cursor da próxima página é o par (created_at, id) da última reação da página (cada usuário do grupo carrega os dois valores). `count` é o número de usuários do grupo na página retornada; o total por emoji está em `reactions` do corpo da mensagem."
       parameters:
         - $ref: '#/components/parameters/ChannelId'
         - $ref: '#/components/parameters/MessageId'
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Timestamp ISO 8601 (criado após)
+        - name: last_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: ID da última reação da página anterior (cursor exato usado com since)
       responses:
         '200':
           description: Reações da mensagem
@@ -2784,6 +2798,13 @@ components:
             Contagem de tipos de reação da mensagem (sem a lista de usuários;
             use GET /channels/{channel_id}/messages/{message_id}/reactions).
             Null quando a mensagem não tem reações.
+        user_reactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageUserReaction'
+          description: >
+            Reações do usuário autenticado à mensagem (indica com quais emojis
+            ele já reagiu). Vazio quando o usuário não reagiu.
 
     PinnedMessage:
       type: object
@@ -2887,6 +2908,23 @@ components:
           type: integer
           description: Número de usuários que reagiram com este emoji
 
+    MessageReactionUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: >
+            Id da reação (cursor de paginação: use com created_at como
+            since + last_id).
+        user_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+          description: Criado da reação (metade do cursor de paginação)
+
     MessageReactionGroup:
       type: object
       properties:
@@ -2901,13 +2939,17 @@ components:
           description: Emoji unicode (null para emoji custom)
         count:
           type: integer
-          description: Número de usuários que reagiram com este emoji
+          description: >
+            Número de usuários que reagiram com este emoji NA PÁGINA
+            RETORNADA (o total do emoji está em `reactions` do corpo da
+            mensagem).
         users:
           type: array
           items:
-            type: string
-            format: uuid
-          description: Usuários que reagiram com este emoji
+            $ref: '#/components/schemas/MessageReactionUser'
+          description: >
+            Usuários que reagiram com este emoji na página, em ordem
+            decrescente de criação.
 
     MessageReactionList:
       type: object
@@ -2919,6 +2961,30 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/MessageReactionGroup'
+          description: >
+            Agrupadas por tipo de emoji; um grupo pode continuar na página
+            seguinte (o cliente deve mesclar grupos com o mesmo
+            emoji_id/unicode).
+        has_more:
+          type: boolean
+          description: Indica se existe próxima página (cursor since + last_id)
+
+    MessageUserReaction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Id da reação do usuário autenticado à mensagem
+        emoji_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Emoji custom do banco (null para emoji unicode)
+        unicode:
+          type: string
+          nullable: true
+          description: Emoji unicode (null para emoji custom)
 
     CreateMessageRequest:
       type: object

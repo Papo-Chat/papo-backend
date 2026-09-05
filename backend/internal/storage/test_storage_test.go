@@ -4230,9 +4230,9 @@ func countMessageReactions(t *testing.T, messageID string) int {
 	return count
 }
 
-func containsReactionUser(users []string, id string) bool {
+func containsReactionUser(users []models.MessageReactionUser, id string) bool {
 	for _, u := range users {
-		if u == id {
+		if u.UserID == id {
 			return true
 		}
 	}
@@ -4453,9 +4453,12 @@ func TestListReactionsByMessage(t *testing.T) {
 		t.Fatalf("AddReaction (owner custom) retornou erro: %v", err)
 	}
 
-	groups, err := ListReactionsByMessage(testCtx(), message.ID)
+	groups, hasMore, err := ListReactionsByMessage(testCtx(), message.ID, nil, "", 100)
 	if err != nil {
 		t.Fatalf("ListReactionsByMessage retornou erro: %v", err)
+	}
+	if hasMore {
+		t.Errorf("esperava has_more=false para 4 reações, obtive true")
 	}
 	if len(groups) != 3 {
 		t.Fatalf("esperava 3 tipos de reação, obtive %d: %+v", len(groups), groups)
@@ -4485,12 +4488,170 @@ func TestListReactionsByMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMessage (vazia) retornou erro: %v", err)
 	}
-	groups, err = ListReactionsByMessage(testCtx(), empty.ID)
+	groups, hasMore, err = ListReactionsByMessage(testCtx(), empty.ID, nil, "", 100)
 	if err != nil {
 		t.Fatalf("ListReactionsByMessage (vazia) retornou erro: %v", err)
 	}
+	if hasMore {
+		t.Errorf("esperava has_more=false para mensagem sem reações, obtive true")
+	}
 	if len(groups) != 0 {
 		t.Errorf("esperava lista vazia, obtive %+v", groups)
+	}
+}
+
+// TestListReactionsByMessagePagination garante a paginação por (created_at, id):
+// 101 reações → página 1 com 100 e has_more=true; o cursor (created_at, id) da
+// última reação da página 1 retorna exatamente a reação restante.
+func TestListReactionsByMessagePagination(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	const total = 101
+	for i := 0; i < total; i++ {
+		u := newTestUser(t)
+		if _, _, _, err := AddReaction(testCtx(), message.ID, u.ID, nil, strPtr("👍")); err != nil {
+			t.Fatalf("AddReaction (%d) retornou erro: %v", i, err)
+		}
+	}
+
+	// Página 1: 100 reações, has_more=true.
+	page1, hasMore, err := ListReactionsByMessage(testCtx(), message.ID, nil, "", 100)
+	if err != nil {
+		t.Fatalf("ListReactionsByMessage (página 1) retornou erro: %v", err)
+	}
+	if !hasMore {
+		t.Fatalf("esperava has_more=true na página 1 de %d reações", total)
+	}
+	if len(page1) != 1 || len(page1[0].Users) != 100 {
+		t.Fatalf("esperava 1 grupo com 100 usuários na página 1, obtive %+v", page1)
+	}
+
+	// Cursor = (created_at, id) da última reação da página 1.
+	cursor := page1[0].Users[len(page1[0].Users)-1]
+	since := cursor.CreatedAt
+	page2, hasMore, err := ListReactionsByMessage(testCtx(), message.ID, &since, cursor.ID, 100)
+	if err != nil {
+		t.Fatalf("ListReactionsByMessage (página 2) retornou erro: %v", err)
+	}
+	if hasMore {
+		t.Errorf("esperava has_more=false na página 2, obtive true")
+	}
+	if len(page2) != 1 || len(page2[0].Users) != 1 {
+		t.Fatalf("esperava 1 grupo com 1 usuário na página 2, obtive %+v", page2)
+	}
+
+	// União das páginas = todos os reagentes, sem duplicatas.
+	seen := map[string]bool{}
+	for _, g := range append(page1, page2...) {
+		for _, u := range g.Users {
+			if seen[u.UserID] {
+				t.Errorf("usuário %s duplicado entre as páginas", u.UserID)
+			}
+			seen[u.UserID] = true
+		}
+	}
+	if len(seen) != total {
+		t.Errorf("esperava %d usuários na união das páginas, obtive %d", total, len(seen))
+	}
+
+	// last_id sem since é ignorado (comportamento das demais listagens).
+	ignored, _, err := ListReactionsByMessage(testCtx(), message.ID, nil, cursor.ID, 100)
+	if err != nil {
+		t.Fatalf("ListReactionsByMessage (last_id sem since) retornou erro: %v", err)
+	}
+	if len(ignored) != 1 || len(ignored[0].Users) != 100 {
+		t.Errorf("esperava last_id sem since ignorado (100 usuários), obtive %+v", ignored)
+	}
+}
+
+// TestUserReactionsByMessages garante o mapa de reações do usuário por
+// mensagem: mensagens reagidas trazem as reações, as demais trazem slice vazio
+// (nunca ausente) e input vazio retorna mapa vazio.
+func TestUserReactionsByMessages(t *testing.T) {
+	owner := newTestUser(t)
+	u1 := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	m1, err := CreateMessage(testCtx(), channel.ID, owner.ID, "m1", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (m1) retornou erro: %v", err)
+	}
+	m2, err := CreateMessage(testCtx(), channel.ID, owner.ID, "m2", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (m2) retornou erro: %v", err)
+	}
+	m3, err := CreateMessage(testCtx(), channel.ID, owner.ID, "m3", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage (m3) retornou erro: %v", err)
+	}
+
+	thumb, fire := "👍", "🎉"
+	if _, _, _, err := AddReaction(testCtx(), m1.ID, owner.ID, nil, &thumb); err != nil {
+		t.Fatalf("AddReaction (m1 owner 👍) retornou erro: %v", err)
+	}
+	if _, _, _, err := AddReaction(testCtx(), m1.ID, owner.ID, nil, &fire); err != nil {
+		t.Fatalf("AddReaction (m1 owner 🎉) retornou erro: %v", err)
+	}
+	if _, _, _, err := AddReaction(testCtx(), m1.ID, u1.ID, nil, &thumb); err != nil {
+		t.Fatalf("AddReaction (m1 u1 👍) retornou erro: %v", err)
+	}
+	if _, _, _, err := AddReaction(testCtx(), m2.ID, owner.ID, nil, &fire); err != nil {
+		t.Fatalf("AddReaction (m2 owner 🎉) retornou erro: %v", err)
+	}
+
+	reactions, err := UserReactionsByMessages(testCtx(), []string{m1.ID, m2.ID, m3.ID}, owner.ID)
+	if err != nil {
+		t.Fatalf("UserReactionsByMessages retornou erro: %v", err)
+	}
+
+	// m1: owner reagiu com 👍 e 🎉 (u1 também reagiu, mas não é o consultado).
+	if got := reactions[m1.ID]; len(got) != 2 {
+		t.Errorf("esperava 2 reações do owner em m1, obtive %+v", got)
+	} else {
+		seen := map[string]bool{}
+		for _, r := range got {
+			if r.EmojiID != nil || r.Unicode == nil {
+				t.Errorf("esperava reação unicode com id, obtive %+v", r)
+			}
+			seen[*r.Unicode] = true
+		}
+		if !seen[thumb] || !seen[fire] {
+			t.Errorf("esperava 👍 e 🎉 em m1, obtive %+v", got)
+		}
+	}
+
+	// m2: apenas 🎉.
+	if got := reactions[m2.ID]; len(got) != 1 || got[0].Unicode == nil || *got[0].Unicode != fire {
+		t.Errorf("esperava 1 reação 🎉 em m2, obtive %+v", got)
+	}
+
+	// m3: o owner não reagiu → slice vazio (presente no mapa, nunca nil).
+	if got := reactions[m3.ID]; len(got) != 0 {
+		t.Errorf("esperava slice vazio em m3, obtive %+v", got)
+	}
+
+	// u1 reagiu apenas a m1 com 👍.
+	reactions, err = UserReactionsByMessages(testCtx(), []string{m1.ID, m2.ID}, u1.ID)
+	if err != nil {
+		t.Fatalf("UserReactionsByMessages (u1) retornou erro: %v", err)
+	}
+	if got := reactions[m1.ID]; len(got) != 1 || got[0].Unicode == nil || *got[0].Unicode != thumb {
+		t.Errorf("esperava 1 reação 👍 de u1 em m1, obtive %+v", got)
+	}
+	if got := reactions[m2.ID]; len(got) != 0 {
+		t.Errorf("esperava slice vazio de u1 em m2, obtive %+v", got)
+	}
+
+	// Input vazio → mapa vazio, sem erro.
+	empty, err := UserReactionsByMessages(testCtx(), nil, owner.ID)
+	if err != nil || len(empty) != 0 {
+		t.Errorf("esperava mapa vazio para input vazio, obtive %+v err=%v", empty, err)
 	}
 }
 
@@ -4615,7 +4776,7 @@ func TestAddReactionCascadeOnEmojiDelete(t *testing.T) {
 	if err := DeleteEmoji(testCtx(), emoji.ID); err != nil {
 		t.Fatalf("DeleteEmoji retornou erro: %v", err)
 	}
-	groups, err := ListReactionsByMessage(testCtx(), message.ID)
+	groups, _, err := ListReactionsByMessage(testCtx(), message.ID, nil, "", 100)
 	if err != nil {
 		t.Fatalf("ListReactionsByMessage retornou erro: %v", err)
 	}

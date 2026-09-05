@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"time"
 	"unicode/utf8"
 
 	"papo/internal/models"
@@ -20,6 +21,10 @@ var ErrReactionNotFound = errors.New("reação não encontrada")
 // maxReactionUnicodeLength é o tamanho máximo (em runes) de um emoji unicode
 // de reação (cobre sequências ZWJ, modificadores de tom de pele e VS16).
 const maxReactionUnicodeLength = 16
+
+// reactionListLimit é o limite de reações por página na listagem de reações
+// de uma mensagem (mesma convenção das demais listagens: 100).
+const reactionListLimit = 100
 
 // normalizeReactionInput valida o input de reação: exatamente um de emojiID
 // (emoji custom do banco) ou unicode (emoji unicode) deve ser informado.
@@ -194,15 +199,20 @@ func RemoveReactionFromMessage(ctx context.Context, channelID, messageID, userID
 }
 
 // ListMessageReactions lista as reações de uma mensagem com os usuários que
-// reagiram (GET /channels/:channel_id/messages/:message_id/reactions). A
-// mensagem deve existir e pertencer ao canal da URL. O usuário precisa da
-// permissão read_channel do canal (o dono do servidor sempre pode e em canais
-// sem roles definidas a leitura é livre).
+// reagiram (GET /channels/:channel_id/messages/:message_id/reactions),
+// agrupadas por tipo de emoji e paginadas por (created_at, id) decrescente
+// (100 reações por página, has_more quando existe próxima página). Se since
+// for fornecido, retorna apenas reações criadas após esse timestamp; se
+// lastID for fornecido junto, o cursor é o par (created_at, id) e o filtro
+// retorna as reações anteriores ao cursor (evita pular reações com timestamp
+// igual). A mensagem deve existir e pertencer ao canal da URL. O usuário
+// precisa da permissão read_channel do canal (o dono do servidor sempre pode
+// e em canais sem roles definidas a leitura é livre).
 // Retorna ErrInvalidInput quando um parâmetro está ausente,
 // ErrMessageNotFound quando a mensagem não existe ou não pertence ao canal,
 // ErrChannelNotFound quando o canal não existe e ErrPermissionDenied quando o
 // usuário não pode ler o canal.
-func ListMessageReactions(ctx context.Context, channelID, messageID, userID string) (models.MessageReactionList, error) {
+func ListMessageReactions(ctx context.Context, channelID, messageID, userID string, since *time.Time, lastID string) (models.MessageReactionList, error) {
 	if channelID == "" || messageID == "" || userID == "" {
 		return models.MessageReactionList{}, ErrInvalidInput
 	}
@@ -222,10 +232,10 @@ func ListMessageReactions(ctx context.Context, channelID, messageID, userID stri
 		return models.MessageReactionList{}, ErrPermissionDenied
 	}
 
-	groups, err := storage.ListReactionsByMessage(ctx, messageID)
+	groups, hasMore, err := storage.ListReactionsByMessage(ctx, messageID, since, lastID, reactionListLimit)
 	if err != nil {
 		return models.MessageReactionList{}, err
 	}
 
-	return models.MessageReactionList{MessageID: messageID, Reactions: groups}, nil
+	return models.MessageReactionList{MessageID: messageID, Reactions: groups, HasMore: hasMore}, nil
 }

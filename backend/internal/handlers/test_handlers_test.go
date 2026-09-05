@@ -11444,9 +11444,104 @@ func TestListReactionsHandlerForbidden(t *testing.T) {
 		"usuário não tem permissão para ler o canal")
 }
 
-func containsHandlerReactionUser(users []string, id string) bool {
+// TestListReactionsHandlerPaginationParams garante o contrato da listagem
+// paginada: has_more na resposta, users como objetos (id, user_id,
+// created_at), since inválido → 400 e since filtrando por created_at.
+func TestListReactionsHandlerPaginationParams(t *testing.T) {
+	owner := newTestMessageUser(t)
+	u1 := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	message, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "reagir", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+	for _, user := range []models.User{owner, u1} {
+		c := reactionContext(t, http.MethodPost, channel.ID, message.ID, user.ID, `{"unicode":"👍"}`)
+		rec := recorder(c)
+		if err := AddReactionHandler(testBaseURL, c); err != nil {
+			t.Fatalf("AddReactionHandler retornou erro: %v", err)
+		}
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("esperava 201 na criação, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+		}
+	}
+
+	// Sem parâmetros: 2 usuários (objetos) e has_more=false.
+	c := reactionContext(t, http.MethodGet, channel.ID, message.ID, owner.ID, "")
+	rec := recorder(c)
+	if err := ListReactionsHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListReactionsHandler retornou erro: %v", err)
+	}
+	var list models.MessageReactionList
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if list.HasMore {
+		t.Errorf("esperava has_more=false para 2 reações, obtive true")
+	}
+	if len(list.Reactions) != 1 || len(list.Reactions[0].Users) != 2 {
+		t.Fatalf("esperava 1 grupo com 2 usuários, obtive %+v", list.Reactions)
+	}
+	for _, u := range list.Reactions[0].Users {
+		if u.ID == "" || u.UserID == "" || u.CreatedAt.IsZero() {
+			t.Errorf("esperava user com id, user_id e created_at, obtive %+v", u)
+		}
+	}
+
+	// since inválido → 400.
+	c = listReactionsContextWithQuery(t, channel.ID, message.ID, owner.ID, "since=nao-eh-data")
+	rec = recorder(c)
+	if err := ListReactionsHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListReactionsHandler (since inválido) retornou erro: %v", err)
+	}
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"since deve ser um timestamp ISO 8601")
+
+	// since no futuro (após todas as reações) → lista vazia.
+	c = listReactionsContextWithQuery(t, channel.ID, message.ID, owner.ID, "since=2100-01-01T00:00:00Z")
+	rec = recorder(c)
+	if err := ListReactionsHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListReactionsHandler (since futuro) retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	list = models.MessageReactionList{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(list.Reactions) != 0 || list.HasMore {
+		t.Errorf("esperava lista vazia e has_more=false para since futuro, obtive %+v", list)
+	}
+
+	// since no passado (antes de todas as reações) → as 2 reações.
+	c = listReactionsContextWithQuery(t, channel.ID, message.ID, owner.ID, "since=2020-01-01T00:00:00Z")
+	rec = recorder(c)
+	if err := ListReactionsHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListReactionsHandler (since passado) retornou erro: %v", err)
+	}
+	list = models.MessageReactionList{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(list.Reactions) != 1 || len(list.Reactions[0].Users) != 2 {
+		t.Errorf("esperava 1 grupo com 2 usuários para since passado, obtive %+v", list.Reactions)
+	}
+}
+
+// listReactionsContextWithQuery é o reactionContext com query string na URL.
+func listReactionsContextWithQuery(t *testing.T, channelID, messageID, userID, query string) echo.Context {
+	t.Helper()
+	c := newContext(t, http.MethodGet, "/channels/"+channelID+"/messages/"+messageID+"/reactions?"+query, nil, "")
+	c.Set(middleware.UserIDContextKey, userID)
+	c.SetParamNames("channel_id", "message_id")
+	c.SetParamValues(channelID, messageID)
+	return c
+}
+
+func containsHandlerReactionUser(users []models.MessageReactionUser, id string) bool {
 	for _, u := range users {
-		if u == id {
+		if u.UserID == id {
 			return true
 		}
 	}

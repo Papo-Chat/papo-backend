@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"papo/internal/middleware"
 	"papo/internal/services"
@@ -185,8 +186,11 @@ func RemoveReactionHandler(baseURL string, c echo.Context) error {
 }
 
 // ListReactionsHandler implementa GET /channels/:channel_id/messages/:message_id/reactions.
-// Retorna os tipos de reação da mensagem com os usuários que reagiram.
-// Permissão: read_channel do canal.
+// Retorna os tipos de reação da mensagem com os usuários que reagiram,
+// paginado por (created_at, id) decrescente (máx. 100 reações por resposta).
+// O parâmetro de query since é opcional: timestamp ISO 8601. last_id é
+// opcional: id da última reação da página anterior; usado com since como
+// cursor exato (created_at, id). Permissão: read_channel do canal.
 func ListReactionsHandler(baseURL string, c echo.Context) error {
 	userID, ok := c.Get(middleware.UserIDContextKey).(string)
 	if !ok || userID == "" {
@@ -203,7 +207,19 @@ func ListReactionsHandler(baseURL string, c echo.Context) error {
 			"channel_id e message_id são obrigatórios")
 	}
 
-	list, err := services.ListMessageReactions(c.Request().Context(), channelID, messageID, userID)
+	var since *time.Time
+	if value := c.QueryParam("since"); value != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+				"invalid-param", "Parâmetro inválido",
+				"since deve ser um timestamp ISO 8601")
+		}
+		since = &parsed
+	}
+	lastID := c.QueryParam("last_id")
+
+	list, err := services.ListMessageReactions(c.Request().Context(), channelID, messageID, userID, since, lastID)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
