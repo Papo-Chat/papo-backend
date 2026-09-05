@@ -425,7 +425,7 @@ a=rtpmap:96 vp8/90000`
 
 func TestForwarderRunUnsubscribesOnExit(t *testing.T) {
 	f := newFanout(&webrtc.TrackRemote{})
-	fwd := newForwarder(&slot{}, nil, f)
+	fwd := newForwarder(&slot{}, nil, "audio", f)
 	f.subscribe(fwd)
 	close(fwd.ch)
 
@@ -713,8 +713,8 @@ func TestFanoutDistributesFullStreamToAllSubscribers(t *testing.T) {
 
 		// 2 subscribers (forwarders). Não iniciamos o run() — lemos direto do
 		// canal para isolar a distribuição do fanout (sem WriteRTP/PC de sub).
-		fwd1 := newForwarder(&slot{}, nil, fanout)
-		fwd2 := newForwarder(&slot{}, nil, fanout)
+		fwd1 := newForwarder(&slot{}, nil, "audio", fanout)
+		fwd2 := newForwarder(&slot{}, nil, "audio", fanout)
 		fanout.subscribe(fwd1)
 		fanout.subscribe(fwd2)
 
