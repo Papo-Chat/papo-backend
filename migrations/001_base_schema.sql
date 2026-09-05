@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS channels (
     permissions JSONB DEFAULT '{}',
     position INTEGER NOT NULL,
     topic TEXT,
-    type TEXT NOT NULL DEFAULT 'text' CHECK (type IN ('text', 'category')),
+    type TEXT NOT NULL DEFAULT 'text' CHECK (type IN ('text', 'category', 'voice')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     tsv_content TSVECTOR GENERATED ALWAYS AS (to_tsvector('portuguese', name)) STORED
 );

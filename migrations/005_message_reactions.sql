@@ -25,9 +25,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_message_reactions_unique
         COALESCE(emoji_id, '00000000-0000-0000-0000-000000000000'::uuid),
         COALESCE(unicode, ''));
 
-CREATE INDEX IF NOT EXISTS idx_message_reactions_message ON message_reactions (message_id);
-
+CREATE INDEX IF NOT EXISTS idx_message_reactions_message_created
+    ON message_reactions (message_id, created_at DESC, id DESC);
 -- +goose Down
-DROP INDEX IF EXISTS idx_message_reactions_message;
+DROP INDEX IF EXISTS idx_message_reactions_message_created;
 DROP INDEX IF EXISTS idx_message_reactions_unique;
 DROP TABLE IF EXISTS message_reactions;
