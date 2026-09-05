@@ -355,7 +355,7 @@ func (p *Peer) onIncomingTrack(track *webrtc.TrackRemote, mid string) {
 		return
 	}
 
-	role, ok := p.midRole[mid]
+	role, ok := p.activeMidRole[mid]
 	if !ok {
 		p.mu.Unlock()
 		return

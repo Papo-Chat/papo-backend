@@ -168,6 +168,16 @@ func normalizeSDP(sdpStr string) string {
 	return sdpStr
 }
 
+func mediaMID(media *sdp.MediaDescription) string {
+	for _, a := range media.Attributes {
+		if a.Key == "mid" {
+			return a.Value
+		}
+	}
+
+	return ""
+}
+
 // parseMidRoles mapeia o mid de cada m-line do offer para o papel da track
 // (audio / primeira vídeo = câmera / segunda vídeo = screen share). Seção 5.6:
 // determinístico, sem depender de label.
@@ -185,90 +195,151 @@ func parseMidRoles(
 		return roles, active, ErrVoiceInvalidSDP
 	}
 
-	cameraKnown := hasRole(roles, roleCamera)
-	screenKnown := hasRole(roles, roleScreen)
-	audioKnown := hasRole(roles, roleAudio)
+	audioActive := false
+	cameraActive := false
+	screenActive := false
 
+	// Primeiro processa os MIDs já conhecidos.
+	//
+	// Isso é importante porque, quando aparece um MID novo, precisamos
+	// saber se câmera/screen já está sendo publicada por um MID antigo.
 	for _, media := range desc.MediaDescriptions {
-		mid := ""
-
-		for _, a := range media.Attributes {
-			if a.Key == "mid" {
-				mid = a.Value
-				break
-			}
-		}
-
+		mid := mediaMID(media)
 		if mid == "" {
 			continue
 		}
 
-		// MID já conhecido mantém sua identidade para sempre.
-		if role, known := roles[mid]; known {
-			// Proteção adicional: um MID conhecido não pode mudar
-			// de audio para video ou vice-versa.
-			switch role {
-			case roleAudio:
-				if media.MediaName.Media != "audio" {
-					return roles, active, ErrVoiceInvalidSDP
-				}
-			case roleCamera, roleScreen:
-				if media.MediaName.Media != "video" {
-					return roles, active, ErrVoiceInvalidSDP
-				}
-			}
-
-			if mediaPublishes(media) {
-				active[mid] = role
-			}
-
+		role, known := roles[mid]
+		if !known {
 			continue
 		}
 
-		// MID desconhecido que não publica não precisa de role.
-		// Normalmente são slots recvonly/inactive do SFU.
+		// Um MID não pode mudar de media kind durante a vida da PC.
+		switch role {
+		case roleAudio:
+			if media.MediaName.Media != "audio" {
+				return roles, active, ErrVoiceInvalidSDP
+			}
+
+		case roleCamera, roleScreen:
+			if media.MediaName.Media != "video" {
+				return roles, active, ErrVoiceInvalidSDP
+			}
+
+		default:
+			return roles, active, ErrVoiceInvalidSDP
+		}
+
+		if !mediaPublishes(media) {
+			continue
+		}
+
+		switch role {
+		case roleAudio:
+			if audioActive {
+				return roles, active, ErrVoiceInvalidSDP
+			}
+
+			audioActive = true
+
+		case roleCamera:
+			// Front precisa ter explicitado que câmera está ligada.
+			if !cameraOn {
+				return roles, active, ErrVoiceInvalidSDP
+			}
+
+			if cameraActive {
+				return roles, active, ErrVoiceInvalidSDP
+			}
+
+			cameraActive = true
+
+		case roleScreen:
+			// Front precisa ter explicitado screen share.
+			if !screenOn {
+				return roles, active, ErrVoiceInvalidSDP
+			}
+
+			if screenActive {
+				return roles, active, ErrVoiceInvalidSDP
+			}
+
+			screenActive = true
+		}
+
+		active[mid] = role
+	}
+
+	// Agora classifica apenas MIDs novos que estejam publicando.
+	for _, media := range desc.MediaDescriptions {
+		mid := mediaMID(media)
+		if mid == "" {
+			continue
+		}
+
+		if _, known := roles[mid]; known {
+			continue
+		}
+
+		// recvonly/inactive desconhecido é slot/transceiver que não
+		// precisamos classificar.
 		if !mediaPublishes(media) {
 			continue
 		}
 
 		switch media.MediaName.Media {
 		case "audio":
-			// Não aceitamos uma segunda publicação de áudio.
-			if audioKnown {
+			// Apenas uma publicação de áudio por Peer.
+			if audioActive {
 				return roles, active, ErrVoiceInvalidSDP
 			}
 
 			roles[mid] = roleAudio
 			active[mid] = roleAudio
-			audioKnown = true
+			audioActive = true
 
 		case "video":
 			switch {
-			// Backend sabe que a intenção atual é câmera.
+			// Câmera está ligada e ainda não existe câmera ativa.
+			// Só é seguro assumir câmera se screen não estiver
+			// simultaneamente esperando classificação.
 			case cameraOn &&
-				!cameraKnown &&
-				(!screenOn || screenKnown):
+				!cameraActive &&
+				(!screenOn || screenActive):
 
 				roles[mid] = roleCamera
 				active[mid] = roleCamera
-				cameraKnown = true
+				cameraActive = true
 
-			// Backend sabe que a intenção atual é screen share.
+			// Screen está ligada e ainda não existe screen ativa.
+			// Só é seguro assumir screen se câmera não estiver
+			// simultaneamente esperando classificação.
 			case screenOn &&
-				!screenKnown &&
-				(!cameraOn || cameraKnown):
+				!screenActive &&
+				(!cameraOn || cameraActive):
 
 				roles[mid] = roleScreen
 				active[mid] = roleScreen
-				screenKnown = true
+				screenActive = true
 
 			default:
 				// Exemplos:
-				// cameraOn=false, screenOn=false -> vídeo inesperado
-				// cameraOn=true, screenOn=true e nenhum conhecido -> ambíguo
-				// camera já conhecida + novo vídeo sem screenOn -> inesperado
+				//
+				// cameraOn=false + screenOn=false:
+				// vídeo não deveria estar sendo publicado.
+				//
+				// cameraOn=true + screenOn=true,
+				// nenhuma das duas ativa:
+				// não sabemos se esse MID é câmera ou screen.
+				//
+				// câmera/screen já ativa e aparece outro vídeo:
+				// publicação inesperada.
 				return roles, active, ErrVoiceInvalidSDP
 			}
+
+		default:
+			// Ignora outros media kinds.
+			continue
 		}
 	}
 

@@ -33,7 +33,7 @@ func setupVoiceManager(t *testing.T, hub *Hub) *webrtc.Manager {
 		VoiceSubscribeRateBurst: 100,
 	}
 	m := webrtc.NewManager(cfg, webrtc.Signaler{
-		SendToUser: hub.SendToUser,
+		SendToUser:   hub.SendToUser,
 		SendToClient: hub.SendToClient,
 		BroadcastToUsers: func(allowed map[string]bool, event any) {
 			hub.BroadcastToUsers(event, allowed)

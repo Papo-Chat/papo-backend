@@ -533,15 +533,30 @@ func TestIncomingAudioStartsFanoutBeforeTopK(t *testing.T) {
 	select {
 	case remote := <-trackCh:
 		m := testManager(t, nil)
-		r := &Room{m: m, channelID: "ch", peers: make(map[string]*Peer), scores: make(map[string]float64), tickerStop: make(chan struct{})}
+
+		r := &Room{
+			m:          m,
+			channelID:  "ch",
+			peers:      make(map[string]*Peer),
+			scores:     make(map[string]float64),
+			tickerStop: make(chan struct{}),
+		}
+
 		p := newPeer(m, r, "pub", "client-1")
 		defer p.close()
+
+		// Simula o estado após um offer válido contendo áudio ativo.
+		p.mu.Lock()
 		p.midRole["0"] = roleAudio
+		p.activeMidRole["0"] = roleAudio
+		p.mu.Unlock()
+
 		p.onIncomingTrack(remote, "0")
 
 		p.mu.Lock()
 		f := p.fanouts["audio"]
 		p.mu.Unlock()
+
 		if f == nil || f.track != remote {
 			t.Fatal("track de áudio não iniciou fanout/reader antes do active-speaker")
 		}
