@@ -150,7 +150,7 @@ chmod +x build-and-run.sh
 ```
 
 ## Deploy em Sistema Linux (BD + Serviço SYSTEMD)
-* Instala o servidor em /opt/papo com todos os pré-requisitos, roda o pg em docker, cria segredos em runtime, precisa rodar com sudo
+Script que instala o servidor em /opt/papo com todos os pré-requisitos, roda o pg em docker, cria segredos em runtime, precisa rodar com sudo.
 
 ```bash
 # backend
@@ -158,8 +158,10 @@ chmod +x deploy.sh
 sudo ./deploy.sh
 ```
 
+Backend sobe em `http://localhost:8080`, WebSocket em `ws://localhost:8080/ws`.
+
 ## Stress Test
-* Script que testa a performance do servidor gerando 500000 mensagens e diversas interações de usuários, serve para testar se há alguma degradação em produção após bastante uso. Demora alguns minutos pra rodar e deixa cerca de 3GB de dados temporários que podem ser excluídos com um comando depois.
+Script que testa a performance do servidor gerando muitas mensagens e diversas interações de usuários. Demora alguns minutos pra rodar e deixa ~3GB de dados temporários que podem ser excluídos com um comando.
 
 ```bash
 # backend
@@ -167,7 +169,13 @@ chmod +x stress.sh
 ./stress.sh
 ```
 
-Backend sobe em `http://localhost:8080`, WebSocket em `ws://localhost:8080/ws`.
+O teste executa leituras, escritas, buscas e manutenção de dados de forma concorrente sobre um volume crescente de mensagens.
+A busca utiliza uma pool reduzida de palavras, gerando consultas com grandes conjuntos de resultados e pressionando intencionalmente o PostgreSQL. O objetivo é medir degradação sob carga extrema, não representar tráfego típico de produção.
+O servidor permanece operacional durante todo o teste, enquanto a latência de cauda aumenta conforme crescem o volume de dados e a contenção no banco.
+
+<p align="center">
+  <img src="./stress-test-performance.svg" alt="Stress test performance" width="900">
+</p>
 
 ### Variáveis de ambiente
 

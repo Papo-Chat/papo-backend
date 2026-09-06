@@ -64,35 +64,35 @@ var chartColors = []string{
 }
 
 type epSummary struct {
-	Ep       string   `json:"endpoint"`
-	N        int64    `json:"n"`
-	Err      int64    `json:"errors"`
-	ErrPct   float64  `json:"error_pct"`
-	RL       int64    `json:"rate_limited"`
-	P50Ms    float64  `json:"p50_ms"`
-	P95Ms    float64  `json:"p95_ms"`
-	P99Ms    float64  `json:"p99_ms"`
-	MaxMs    float64  `json:"max_ms"`
-	RPS      float64  `json:"rps"`
+	Ep       string      `json:"endpoint"`
+	N        int64       `json:"n"`
+	Err      int64       `json:"errors"`
+	ErrPct   float64     `json:"error_pct"`
+	RL       int64       `json:"rate_limited"`
+	P50Ms    float64     `json:"p50_ms"`
+	P95Ms    float64     `json:"p95_ms"`
+	P99Ms    float64     `json:"p99_ms"`
+	MaxMs    float64     `json:"max_ms"`
+	RPS      float64     `json:"rps"`
 	ErrStats map[int]int `json:"error_status,omitempty"`
 }
 
 type phaseSummary struct {
-	Index     int         `json:"index"`
-	Label     string      `json:"label"`
-	Start     time.Time   `json:"start"`
-	End       time.Time   `json:"end"`
-	DurationMs float64    `json:"duration_ms"`
-	Endpoints []epSummary `json:"endpoints"`
+	Index      int         `json:"index"`
+	Label      string      `json:"label"`
+	Start      time.Time   `json:"start"`
+	End        time.Time   `json:"end"`
+	DurationMs float64     `json:"duration_ms"`
+	Endpoints  []epSummary `json:"endpoints"`
 }
 
 type report struct {
-	GeneratedAt string       `json:"generated_at"`
-	BaseURL     string       `json:"base_url"`
+	GeneratedAt string         `json:"generated_at"`
+	BaseURL     string         `json:"base_url"`
 	Phases      []phaseSummary `json:"phases"`
-	SeedOps     int64        `json:"seed_ops"`
-	SeedErrors  int64        `json:"seed_errors"`
-	SeedRL      int64        `json:"seed_rate_limited"`
+	SeedOps     int64          `json:"seed_ops"`
+	SeedErrors  int64          `json:"seed_errors"`
+	SeedRL      int64          `json:"seed_rate_limited"`
 }
 
 func ms(d time.Duration) float64 {
@@ -179,7 +179,7 @@ func printPhaseTable(p *PhaseStats) {
 
 // printASCII imprime um gráfico ASCII de p95 por fase para os endpoints-chave.
 func printASCII(phases []*PhaseStats) {
-	fmt.Println("\n=== p95 (ms) por fase de seeding ===")
+	fmt.Println("\n=== p95 (ms) (2000 requests concorrentes) por fase de seeding ===")
 	header := "endpoint"
 	for _, p := range phases {
 		header += fmt.Sprintf(" %7s", p.Label)
@@ -315,13 +315,13 @@ func writeSVG(path string, r report) error {
 		return left + plotW*float64(i)/float64(n-1)
 	}
 	yFor := func(v float64) float64 {
-		return top + plotH*(1 - v/yMax)
+		return top + plotH*(1-v/yMax)
 	}
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" font-family="monospace">`, width, height))
 	b.WriteString(fmt.Sprintf(`<rect width="%d" height="%d" fill="white"/>`, width, height))
-	b.WriteString(fmt.Sprintf(`<text x="%d" y="28" font-size="16" font-weight="bold">p95 (ms) por fase de seeding — %s</text>`, width/2-150, r.BaseURL))
+	b.WriteString(fmt.Sprintf(`<text x="%d" y="28" font-size="16" font-weight="bold">p95 (ms) (2000 requests concorrentes) por fase de seeding — %s</text>`, width/2-150, r.BaseURL))
 
 	// grid + eixo Y
 	steps := 5

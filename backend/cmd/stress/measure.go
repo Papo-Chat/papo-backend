@@ -418,7 +418,7 @@ func (s *state) runPhase(total, concurrency, phaseIdx int, label string) {
 			tasks = append(tasks, e.kind)
 		}
 	}
-	rng := rand.New(rand.NewSource(int64(phaseIdx)*2654435761))
+	rng := rand.New(rand.NewSource(int64(phaseIdx) * 2654435761))
 	rng.Shuffle(len(tasks), func(i, j int) { tasks[i], tasks[j] = tasks[j], tasks[i] })
 
 	var next atomic.Int64
