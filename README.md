@@ -170,7 +170,9 @@ chmod +x stress.sh
 ```
 
 O teste executa leituras, escritas, buscas e manutenção de dados de forma concorrente sobre um volume crescente de mensagens.
-A busca utiliza uma pool reduzida de palavras, gerando consultas com grandes conjuntos de resultados e pressionando intencionalmente o PostgreSQL. O objetivo é medir degradação sob carga extrema, não representar tráfego típico de produção.
+
+O objetivo é medir degradação sob carga extrema, não representar tráfego típico de produção.
+
 O servidor permanece operacional durante todo o teste, enquanto a latência de cauda aumenta conforme crescem o volume de dados e a contenção no banco.
 
 <p align="center">
