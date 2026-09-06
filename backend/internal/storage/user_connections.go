@@ -51,13 +51,13 @@ func scanUserConnection(row rowScanner) (models.UserConnection, error) {
 
 // CreateUserConnection registra uma nova conexão de autenticação do usuário
 // (login). O banco guarda somente o hash SHA-256 do token; issuedAt é o iat
-// do token. Quando o mesmo token já existe (dois logins no mesmo segundo
-// produzem o mesmo JWT), retorna ErrConnectionExists — o chamador deve
-// re-emitir o token com um iat diferente (ver services.CreateSessionConnection).
-func CreateUserConnection(ctx context.Context, userID, tokenHash string, issuedAt time.Time) (models.UserConnection, error) {
+// do token. O id da conexão é gerado pelo chamador (services), que o usa
+// também no token (claim jti) — assim token e linha nascem juntos. Quando o
+// mesmo token já existe, retorna ErrConnectionExists.
+func CreateUserConnection(ctx context.Context, id, userID, tokenHash string, issuedAt time.Time) (models.UserConnection, error) {
 	conn, err := scanUserConnection(GetDB().QueryRowContext(ctx,
-		"INSERT INTO user_connections (user_id, token_hash, token_issued_at) VALUES ($1, $2, $3) RETURNING "+userConnectionColumns,
-		userID, tokenHash, issuedAt))
+		"INSERT INTO user_connections (id, user_id, token_hash, token_issued_at) VALUES ($1, $2, $3, $4) RETURNING "+userConnectionColumns,
+		id, userID, tokenHash, issuedAt))
 	if err != nil {
 		mapped := mapStorageError(err)
 		if errors.Is(mapped, ErrUniqueViolation) {
@@ -168,7 +168,7 @@ func CheckUserConnection(ctx context.Context, userID, tokenHash string) error {
 // (rotação concorrente ganhou a corrida) ou se o token novo colidir com uma
 // conexão existente (mesma segunda), a transação é abortada e retorna
 // ErrConnectionReplaced.
-func RotateUserConnection(ctx context.Context, userID, oldHash, newHash string, newIssuedAt time.Time) (models.UserConnection, error) {
+func RotateUserConnection(ctx context.Context, userID, oldHash, newID, newHash string, newIssuedAt time.Time) (models.UserConnection, error) {
 	tx, err := GetDB().BeginTx(ctx, nil)
 	if err != nil {
 		return models.UserConnection{}, fmt.Errorf("falha ao rotacionar a conexão: %w", err)
@@ -188,8 +188,8 @@ func RotateUserConnection(ctx context.Context, userID, oldHash, newHash string, 
 	}
 
 	newConn, err := scanUserConnection(tx.QueryRowContext(ctx,
-		"INSERT INTO user_connections (user_id, token_hash, token_issued_at) VALUES ($1, $2, $3) RETURNING "+userConnectionColumns,
-		userID, newHash, newIssuedAt))
+		"INSERT INTO user_connections (id, user_id, token_hash, token_issued_at) VALUES ($1, $2, $3, $4) RETURNING "+userConnectionColumns,
+		newID, userID, newHash, newIssuedAt))
 	if err != nil {
 		mapped := mapStorageError(err)
 		if errors.Is(mapped, ErrUniqueViolation) {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 // JWTExpiration é a validade do token (24h, igual ao Max-Age do cookie Auth).
@@ -25,13 +26,17 @@ type tempTokenClaims struct {
 }
 
 // GenerateSessionToken gera o JWT de sessão (HS256) do usuário de forma
-// determinística a partir de (userID, issuedAt): iat truncado a segundos e
-// exp = iat + JWTExpiration. O token é uma função pura de (user_id, iat,
-// segredo), então o servidor consegue re-derivá-lo a partir do
-// token_issued_at guardado no banco (janela de graça da rotação).
-func GenerateSessionToken(userID string, issuedAt time.Time, secret string) (string, error) {
+// determinística a partir de (userID, connID, issuedAt): iat truncado a
+// segundos, exp = iat + JWTExpiration e jti = ID da conexão de sessão. O
+// token é uma função pura de (user_id, id da conexão, iat, segredo), então o
+// servidor consegue re-derivá-lo a partir da linha guardada no banco
+// (janela de graça da rotação). O jti garante que duas conexões do mesmo
+// usuário emitidas no mesmo segundo tenham tokens distintos (sem ele, o
+// token colidiria na UNIQUE(user_id, token_hash) e a rotação falharia).
+func GenerateSessionToken(userID, connID string, issuedAt time.Time, secret string) (string, error) {
 	iat := issuedAt.Truncate(time.Second)
 	claims := jwt.RegisteredClaims{
+		ID:        connID,
 		Subject:   userID,
 		IssuedAt:  jwt.NewNumericDate(iat),
 		ExpiresAt: jwt.NewNumericDate(iat.Add(JWTExpiration)),
@@ -41,9 +46,9 @@ func GenerateSessionToken(userID string, issuedAt time.Time, secret string) (str
 }
 
 // GenerateToken gera um JWT (HS256) de sessão para o usuário, com o ID do
-// usuário como subject e o horário atual como iat.
+// usuário como subject, o horário atual como iat e um jti aleatório.
 func GenerateToken(userID, secret string) (string, error) {
-	return GenerateSessionToken(userID, time.Now(), secret)
+	return GenerateSessionToken(userID, uuid.NewString(), time.Now(), secret)
 }
 
 // HashToken retorna o SHA-256 hex do token: é a única forma em que o token é

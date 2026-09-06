@@ -33,6 +33,7 @@ import (
 	"papo/internal/utils"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/google/uuid"
 )
 
 // migrationsDir é o caminho relativo ao diretório deste pacote (backend/internal/services/test_services).
@@ -8277,7 +8278,7 @@ func TestRefreshConnectionUnknownToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	token, err := utils.GenerateSessionToken(user.ID, time.Now().Add(77*time.Second), config.LoadConfig().JWTSecret)
+	token, err := utils.GenerateSessionToken(user.ID, uuid.NewString(), time.Now().Add(77*time.Second), config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token: %v", err)
 	}
@@ -8340,7 +8341,7 @@ func TestLogoutUnknownToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
-	token, err := utils.GenerateSessionToken(user.ID, time.Now().Add(77*time.Second), config.LoadConfig().JWTSecret)
+	token, err := utils.GenerateSessionToken(user.ID, uuid.NewString(), time.Now().Add(77*time.Second), config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token: %v", err)
 	}

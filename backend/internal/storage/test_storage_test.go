@@ -22,6 +22,7 @@ import (
 	"papo/internal/utils"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/google/uuid"
 )
 
 // migrationsDir é o caminho relativo ao diretório deste pacote (backend/internal/storage/test_storage).
@@ -4790,12 +4791,13 @@ func TestAddReactionCascadeOnEmojiDelete(t *testing.T) {
 func TestCreateUserConnection(t *testing.T) {
 	user := newTestUser(t)
 	issuedAt := time.Now()
-	token, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	connID := uuid.NewString()
+	token, err := utils.GenerateSessionToken(user.ID, connID, issuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token: %v", err)
 	}
 
-	conn, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(token), issuedAt)
+	conn, err := CreateUserConnection(testCtx(), connID, user.ID, utils.HashToken(token), issuedAt)
 	if err != nil {
 		t.Fatalf("CreateUserConnection retornou erro: %v", err)
 	}
@@ -4818,16 +4820,17 @@ func TestCreateUserConnection(t *testing.T) {
 func TestCreateUserConnectionCollision(t *testing.T) {
 	user := newTestUser(t)
 	issuedAt := time.Now()
-	token, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	connID := uuid.NewString()
+	token, err := utils.GenerateSessionToken(user.ID, connID, issuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token: %v", err)
 	}
 	hash := utils.HashToken(token)
 
-	if _, err := CreateUserConnection(testCtx(), user.ID, hash, issuedAt); err != nil {
+	if _, err := CreateUserConnection(testCtx(), connID, user.ID, hash, issuedAt); err != nil {
 		t.Fatalf("falha na primeira criação: %v", err)
 	}
-	if _, err := CreateUserConnection(testCtx(), user.ID, hash, issuedAt); !errors.Is(err, ErrConnectionExists) {
+	if _, err := CreateUserConnection(testCtx(), connID, user.ID, hash, issuedAt); !errors.Is(err, ErrConnectionExists) {
 		t.Errorf("esperava ErrConnectionExists, obtive %v", err)
 	}
 }
@@ -4835,7 +4838,8 @@ func TestCreateUserConnectionCollision(t *testing.T) {
 func TestCheckUserConnection(t *testing.T) {
 	user := newTestUser(t)
 	issuedAt := time.Now()
-	token, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	connID := uuid.NewString()
+	token, err := utils.GenerateSessionToken(user.ID, connID, issuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token: %v", err)
 	}
@@ -4846,7 +4850,7 @@ func TestCheckUserConnection(t *testing.T) {
 		t.Errorf("esperava ErrNotFound para token desconhecido, obtive %v", err)
 	}
 
-	conn, err := CreateUserConnection(testCtx(), user.ID, hash, issuedAt)
+	conn, err := CreateUserConnection(testCtx(), connID, user.ID, hash, issuedAt)
 	if err != nil {
 		t.Fatalf("falha ao criar a conexão: %v", err)
 	}
@@ -4870,20 +4874,22 @@ func TestCheckUserConnection(t *testing.T) {
 func TestCheckUserConnectionReuse(t *testing.T) {
 	user := newTestUser(t)
 	issuedAt := time.Now()
-	tokenA, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	connID := uuid.NewString()
+	tokenA, err := utils.GenerateSessionToken(user.ID, connID, issuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token A: %v", err)
 	}
-	if _, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), issuedAt); err != nil {
+	if _, err := CreateUserConnection(testCtx(), connID, user.ID, utils.HashToken(tokenA), issuedAt); err != nil {
 		t.Fatalf("falha ao criar a conexão A: %v", err)
 	}
 
 	newIssuedAt := time.Now().Add(time.Second)
-	tokenB, err := utils.GenerateSessionToken(user.ID, newIssuedAt, config.LoadConfig().JWTSecret)
+	newConnID := uuid.NewString()
+	tokenB, err := utils.GenerateSessionToken(user.ID, newConnID, newIssuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token B: %v", err)
 	}
-	if _, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), utils.HashToken(tokenB), newIssuedAt); err != nil {
+	if _, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), newConnID, utils.HashToken(tokenB), newIssuedAt); err != nil {
 		t.Fatalf("falha ao rotacionar: %v", err)
 	}
 
@@ -4906,21 +4912,23 @@ func TestCheckUserConnectionReuse(t *testing.T) {
 func TestRotateUserConnection(t *testing.T) {
 	user := newTestUser(t)
 	issuedAt := time.Now()
-	tokenA, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	connID := uuid.NewString()
+	tokenA, err := utils.GenerateSessionToken(user.ID, connID, issuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token A: %v", err)
 	}
-	connA, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), issuedAt)
+	connA, err := CreateUserConnection(testCtx(), connID, user.ID, utils.HashToken(tokenA), issuedAt)
 	if err != nil {
 		t.Fatalf("falha ao criar a conexão A: %v", err)
 	}
 
 	newIssuedAt := time.Now().Add(time.Second)
-	tokenB, err := utils.GenerateSessionToken(user.ID, newIssuedAt, config.LoadConfig().JWTSecret)
+	newConnID := uuid.NewString()
+	tokenB, err := utils.GenerateSessionToken(user.ID, newConnID, newIssuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token B: %v", err)
 	}
-	connB, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), utils.HashToken(tokenB), newIssuedAt)
+	connB, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), newConnID, utils.HashToken(tokenB), newIssuedAt)
 	if err != nil {
 		t.Fatalf("falha ao rotacionar: %v", err)
 	}
@@ -4938,7 +4946,7 @@ func TestRotateUserConnection(t *testing.T) {
 		t.Error("esperava B ativo")
 	}
 	// rotacionar A de novo falha (já substituído)
-	if _, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), utils.HashToken(tokenB), newIssuedAt); !errors.Is(err, ErrConnectionReplaced) {
+	if _, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), uuid.NewString(), utils.HashToken(tokenB), newIssuedAt); !errors.Is(err, ErrConnectionReplaced) {
 		t.Errorf("esperava ErrConnectionReplaced, obtive %v", err)
 	}
 }
@@ -4946,11 +4954,12 @@ func TestRotateUserConnection(t *testing.T) {
 func TestHandleConnectionReuse(t *testing.T) {
 	user := newTestUser(t)
 	issuedAt := time.Now()
-	token, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	connID := uuid.NewString()
+	token, err := utils.GenerateSessionToken(user.ID, connID, issuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token: %v", err)
 	}
-	if _, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(token), issuedAt); err != nil {
+	if _, err := CreateUserConnection(testCtx(), connID, user.ID, utils.HashToken(token), issuedAt); err != nil {
 		t.Fatalf("falha ao criar a conexão: %v", err)
 	}
 
@@ -4977,19 +4986,21 @@ func TestHandleConnectionReuse(t *testing.T) {
 func TestListUserConnections(t *testing.T) {
 	user := newTestUser(t)
 	issuedAt := time.Now()
-	tokenA, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	connID := uuid.NewString()
+	tokenA, err := utils.GenerateSessionToken(user.ID, connID, issuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token A: %v", err)
 	}
-	if _, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), issuedAt); err != nil {
+	if _, err := CreateUserConnection(testCtx(), connID, user.ID, utils.HashToken(tokenA), issuedAt); err != nil {
 		t.Fatalf("falha ao criar A: %v", err)
 	}
 	newIssuedAt := time.Now().Add(time.Second)
-	tokenB, err := utils.GenerateSessionToken(user.ID, newIssuedAt, config.LoadConfig().JWTSecret)
+	newConnID := uuid.NewString()
+	tokenB, err := utils.GenerateSessionToken(user.ID, newConnID, newIssuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token B: %v", err)
 	}
-	if _, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(tokenB), newIssuedAt); err != nil {
+	if _, err := CreateUserConnection(testCtx(), newConnID, user.ID, utils.HashToken(tokenB), newIssuedAt); err != nil {
 		t.Fatalf("falha ao criar B: %v", err)
 	}
 
@@ -5006,11 +5017,12 @@ func TestListUsersWithActiveConnections(t *testing.T) {
 	userA := newTestUser(t)
 	userB := newTestUser(t)
 	issuedAt := time.Now()
-	token, err := utils.GenerateSessionToken(userA.ID, issuedAt, config.LoadConfig().JWTSecret)
+	connID := uuid.NewString()
+	token, err := utils.GenerateSessionToken(userA.ID, connID, issuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token: %v", err)
 	}
-	if _, err := CreateUserConnection(testCtx(), userA.ID, utils.HashToken(token), issuedAt); err != nil {
+	if _, err := CreateUserConnection(testCtx(), connID, userA.ID, utils.HashToken(token), issuedAt); err != nil {
 		t.Fatalf("falha ao criar a conexão: %v", err)
 	}
 
@@ -5031,19 +5043,21 @@ func TestListUsersWithActiveConnections(t *testing.T) {
 func TestMoveUserConnectionsToHistory(t *testing.T) {
 	user := newTestUser(t)
 	issuedAt := time.Now()
-	tokenA, err := utils.GenerateSessionToken(user.ID, issuedAt, config.LoadConfig().JWTSecret)
+	connID := uuid.NewString()
+	tokenA, err := utils.GenerateSessionToken(user.ID, connID, issuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token A: %v", err)
 	}
-	if _, err := CreateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), issuedAt); err != nil {
+	if _, err := CreateUserConnection(testCtx(), connID, user.ID, utils.HashToken(tokenA), issuedAt); err != nil {
 		t.Fatalf("falha ao criar a conexão A: %v", err)
 	}
 	newIssuedAt := time.Now().Add(time.Second)
-	tokenB, err := utils.GenerateSessionToken(user.ID, newIssuedAt, config.LoadConfig().JWTSecret)
+	newConnID := uuid.NewString()
+	tokenB, err := utils.GenerateSessionToken(user.ID, newConnID, newIssuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token B: %v", err)
 	}
-	if _, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), utils.HashToken(tokenB), newIssuedAt); err != nil {
+	if _, err := RotateUserConnection(testCtx(), user.ID, utils.HashToken(tokenA), newConnID, utils.HashToken(tokenB), newIssuedAt); err != nil {
 		t.Fatalf("falha ao rotacionar: %v", err)
 	}
 	// empurra A para o passado (fora das janelas de arquivamento de 12h e de purga de 25h)

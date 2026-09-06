@@ -26,6 +26,7 @@ import (
 	"papo/internal/utils"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
 
@@ -892,11 +893,12 @@ func doJWTRequest(t *testing.T, token string) (*httptest.ResponseRecorder, bool)
 func newSessionToken(t *testing.T, userID string, issuedAt time.Time) string {
 	t.Helper()
 
-	token, err := utils.GenerateSessionToken(userID, issuedAt, config.LoadConfig().JWTSecret)
+	connID := uuid.NewString()
+	token, err := utils.GenerateSessionToken(userID, connID, issuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token de sessão: %v", err)
 	}
-	if _, err := storage.CreateUserConnection(context.Background(), userID, utils.HashToken(token), issuedAt); err != nil {
+	if _, err := storage.CreateUserConnection(context.Background(), connID, userID, utils.HashToken(token), issuedAt); err != nil {
 		t.Fatalf("falha ao criar a conexão de sessão: %v", err)
 	}
 	return token
@@ -937,7 +939,7 @@ func TestJWTMiddlewareInvalidToken(t *testing.T) {
 // sem conexão de sessão ativa no banco é rejeitado.
 func TestJWTMiddlewareNoConnection(t *testing.T) {
 	userID := newUser(t)
-	token, err := utils.GenerateSessionToken(userID, time.Now(), config.LoadConfig().JWTSecret)
+	token, err := utils.GenerateSessionToken(userID, uuid.NewString(), time.Now(), config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token de sessão: %v", err)
 	}
@@ -960,11 +962,12 @@ func TestJWTMiddlewareReusedToken(t *testing.T) {
 
 	// rotaciona: A é substituído por B (B ainda não existe no banco)
 	newIssuedAt := time.Now().Add(time.Second)
-	tokenB, err := utils.GenerateSessionToken(userID, newIssuedAt, config.LoadConfig().JWTSecret)
+	newConnID := uuid.NewString()
+	tokenB, err := utils.GenerateSessionToken(userID, newConnID, newIssuedAt, config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token B: %v", err)
 	}
-	if _, err := storage.RotateUserConnection(context.Background(), userID, utils.HashToken(tokenA), utils.HashToken(tokenB), newIssuedAt); err != nil {
+	if _, err := storage.RotateUserConnection(context.Background(), userID, utils.HashToken(tokenA), newConnID, utils.HashToken(tokenB), newIssuedAt); err != nil {
 		t.Fatalf("falha ao rotacionar: %v", err)
 	}
 	// empurra A para fora da janela de graça

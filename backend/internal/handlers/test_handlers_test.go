@@ -37,6 +37,7 @@ import (
 
 	ws "github.com/gorilla/websocket"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
 )
@@ -11804,7 +11805,7 @@ func TestRefreshHandlerMissingCookie(t *testing.T) {
 func TestRefreshHandlerUnknownToken(t *testing.T) {
 	userID, _, _ := newSessionUser(t)
 	// token válido (assinatura ok, mesmo usuário) mas sem conexão registrada no banco
-	other, err := utils.GenerateSessionToken(userID, time.Now().Add(123*time.Second), config.LoadConfig().JWTSecret)
+	other, err := utils.GenerateSessionToken(userID, uuid.NewString(), time.Now().Add(123*time.Second), config.LoadConfig().JWTSecret)
 	if err != nil {
 		t.Fatalf("falha ao gerar token: %v", err)
 	}

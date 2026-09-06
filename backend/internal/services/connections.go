@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"papo/internal/config"
 	"papo/internal/models"
 	"papo/internal/storage"
@@ -38,31 +40,31 @@ func ConnectionInfoFrom(conn models.UserConnection) ConnectionInfo {
 }
 
 // maxSessionTokenAttempts limita as tentativas de emissão do token de sessão
-// em caso de colisão de iat (dois logins do mesmo usuário no mesmo segundo
-// produzem o mesmo JWT e colidem na UNIQUE(user_id, token_hash)).
+// em caso de colisão (rede de segurança: com o jti aleatório no token,
+// colisões na UNIQUE(user_id, token_hash) são virtualmente impossíveis).
 const maxSessionTokenAttempts = 5
 
 // CreateSessionConnection emite o token de sessão do login e registra a
-// conexão de sessão correspondente. O token é uma função pura de
-// (user_id, iat, segredo): dois logins no mesmo segundo produzem o mesmo
-// token e colidem. Ao colidir, o iat avança um segundo e o token é re-emitido
-// (o login "espera" um iat livre), garantindo que cada conexão tenha um token
-// único. Retorna o token emitido e a conexão registrada.
+// conexão de sessão correspondente. O id da conexão é gerado aqui e entra no
+// token (claim jti): o token é uma função pura de (user_id, id da conexão,
+// iat, segredo), então cada conexão tem um token único mesmo com logins no
+// mesmo segundo. Retorna o token emitido e a conexão registrada.
 func CreateSessionConnection(ctx context.Context, userID string) (string, ConnectionInfo, error) {
 	cfg := config.LoadConfig()
 	baseIssuedAt := time.Now()
 
 	for attempt := 0; attempt < maxSessionTokenAttempts; attempt++ {
 		issuedAt := baseIssuedAt.Add(time.Duration(attempt) * time.Second)
-		token, err := utils.GenerateSessionToken(userID, issuedAt, cfg.JWTSecret)
+		connID := uuid.NewString()
+		token, err := utils.GenerateSessionToken(userID, connID, issuedAt, cfg.JWTSecret)
 		if err != nil {
 			return "", ConnectionInfo{}, fmt.Errorf("falha ao gerar o token de sessão: %w", err)
 		}
 
-		conn, err := storage.CreateUserConnection(ctx, userID, utils.HashToken(token), issuedAt)
+		conn, err := storage.CreateUserConnection(ctx, connID, userID, utils.HashToken(token), issuedAt)
 		if err != nil {
 			if errors.Is(err, storage.ErrConnectionExists) {
-				continue // iat colidiu: avança um segundo e tenta de novo
+				continue // colisão improvável: nova conexão e novo iat
 			}
 			return "", ConnectionInfo{}, fmt.Errorf("falha ao registrar a conexão de sessão: %w", err)
 		}
@@ -97,19 +99,19 @@ func RefreshConnection(ctx context.Context, userID, oldToken string) (string, Co
 		return tipConnection(ctx, conn, cfg.JWTSecret)
 	}
 
-	// O token novo é uma função pura de (user_id, iat): se cair no mesmo
-	// segundo do token antigo (ou de outra conexão), colide na UNIQUE e a
-	// rotação é abortada. Ao colidir, o iat avança um segundo e a rotação é
-	// tentada de novo — garantindo que o token novo seja sempre distinto.
+	// O id novo é aleatório e entra no token (claim jti): o token novo é
+	// sempre distinto do antigo e de qualquer outra conexão, mesmo na mesma
+	// segunda.
 	baseIssuedAt := time.Now()
 	for attempt := 0; attempt < maxSessionTokenAttempts; attempt++ {
 		newIssuedAt := baseIssuedAt.Add(time.Duration(attempt) * time.Second)
-		newToken, err := utils.GenerateSessionToken(userID, newIssuedAt, cfg.JWTSecret)
+		newConnID := uuid.NewString()
+		newToken, err := utils.GenerateSessionToken(userID, newConnID, newIssuedAt, cfg.JWTSecret)
 		if err != nil {
 			return "", ConnectionInfo{}, fmt.Errorf("falha ao gerar o novo token: %w", err)
 		}
 
-		newConn, err := storage.RotateUserConnection(ctx, userID, utils.HashToken(oldToken), utils.HashToken(newToken), newIssuedAt)
+		newConn, err := storage.RotateUserConnection(ctx, userID, utils.HashToken(oldToken), newConnID, utils.HashToken(newToken), newIssuedAt)
 		if err == nil {
 			return newToken, ConnectionInfoFrom(newConn), nil
 		}
@@ -155,7 +157,7 @@ func tipConnection(ctx context.Context, conn models.UserConnection, secret strin
 		return "", ConnectionInfo{}, ErrConnectionNotFound
 	}
 
-	token, err := utils.GenerateSessionToken(conn.UserID, conn.TokenIssuedAt, secret)
+	token, err := utils.GenerateSessionToken(conn.UserID, conn.ID, conn.TokenIssuedAt, secret)
 	if err != nil {
 		return "", ConnectionInfo{}, fmt.Errorf("falha ao re-derivar o token: %w", err)
 	}
