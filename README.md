@@ -150,14 +150,22 @@ chmod +x build-and-run.sh
 ```
 
 ## Deploy em Sistema Linux (BD + Serviço SYSTEMD)
-* Instala o servidor em /opt/papo com todos os pré-requisitos, roda o pg em docker, cria segredos em runtime
+* Instala o servidor em /opt/papo com todos os pré-requisitos, roda o pg em docker, cria segredos em runtime, precisa rodar com sudo
 
 ```bash
 # backend
 chmod +x deploy.sh
-./deploy.sh
+sudo ./deploy.sh
 ```
 
+## Stress Test
+* Script que testa a performance do servidor gerando 500000 mensagens e diversas interações de usuários, serve para testar se há alguma degradação em produção após bastante uso. Demora alguns minutos pra rodar e deixa cerca de 3GB de dados temporários que podem ser excluídos com um comando depois.
+
+```bash
+# backend
+chmod +x stress.sh
+./stress.sh
+```
 
 Backend sobe em `http://localhost:8080`, WebSocket em `ws://localhost:8080/ws`.
 
