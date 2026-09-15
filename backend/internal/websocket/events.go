@@ -318,6 +318,7 @@ type PresenceUpdateOutbound struct {
 	UserID        string    `json:"user_id"`
 	Status        string    `json:"status"`                   //online/offline/away/busy
 	StatusMessage *string   `json:"status_message,omitempty"` //mensagem pessoal
+	Typing        *string   `json:"typing,omitempty"`         //frase de digitação personalizada
 	Nickname      *string   `json:"nickname,omitempty"`       //apelido do usuário
 }
 

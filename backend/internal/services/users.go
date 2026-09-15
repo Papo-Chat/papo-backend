@@ -39,6 +39,10 @@ const maxDescriptionLength = 512
 // (64 caracteres, README).
 const maxStatusLength = 64
 
+// maxTypingLength é o tamanho máximo da frase de digitação de um usuário
+// (64 caracteres).
+const maxTypingLength = 64
+
 // userListLimit é o limite de usuários por requisição de listagem.
 const userListLimit = 100
 
@@ -240,18 +244,20 @@ func ListUsers(ctx context.Context, since *time.Time, lastID string) (models.Use
 	return models.UserList{Users: users, HasMore: hasMore}, nil
 }
 
-// UpdateUser atualiza o nickname, o status e a description do usuário e marca
-// o horário da atualização do status. Retorna ErrInvalidInput quando o
-// nickname excede 32 caracteres, o status excede 64 caracteres ou a
-// description excede 512 caracteres e ErrUserNotFound quando o usuário não
-// existe.
-func UpdateUser(ctx context.Context, userID, nickname, status, description string) error {
+// UpdateUser atualiza o nickname, o status, a description e o typing do
+// usuário e marca o horário da atualização do status. Typing é opcional: nil
+// não altera a coluna. Retorna ErrInvalidInput quando o nickname excede 32
+// caracteres, o status excede 64 caracteres, a description excede 512
+// caracteres ou o typing excede 64 caracteres e ErrUserNotFound quando o
+// usuário não existe.
+func UpdateUser(ctx context.Context, userID, nickname, status, description string, typing *string) error {
 	if userID == "" {
 		return ErrUserNotFound
 	}
 	if utf8.RuneCountInString(nickname) > maxNicknameLength ||
 		utf8.RuneCountInString(status) > maxStatusLength ||
-		utf8.RuneCountInString(description) > maxDescriptionLength {
+		utf8.RuneCountInString(description) > maxDescriptionLength ||
+		(typing != nil && utf8.RuneCountInString(*typing) > maxTypingLength) {
 		return ErrInvalidInput
 	}
 
@@ -269,8 +275,18 @@ func UpdateUser(ctx context.Context, userID, nickname, status, description strin
 		StatusMessage:   &status,
 		StatusUpdatedAt: &now,
 		Description:     &description,
+		Typing:          typing,
 	}); err != nil {
 		return fmt.Errorf("falha ao atualizar o perfil do usuário: %w", err)
+	}
+
+	metadata := map[string]any{
+		"nickname":    nickname,
+		"status":      status,
+		"description": description,
+	}
+	if typing != nil {
+		metadata["typing"] = *typing
 	}
 
 	RecordAudit(ctx, AuditEntry{
@@ -278,11 +294,7 @@ func UpdateUser(ctx context.Context, userID, nickname, status, description strin
 		Action:     ActionUserUpdateProfile,
 		EntityType: EntityUser,
 		EntityID:   &userID,
-		Metadata: map[string]any{
-			"nickname":    nickname,
-			"status":      status,
-			"description": description,
-		},
+		Metadata:   metadata,
 	})
 
 	return nil

@@ -508,6 +508,7 @@ func TestUpdateUser(t *testing.T) {
 		AvatarBlob:      avatar,
 		AvatarFormat:    "PNG",
 		StatusMessage:   strPtr(status),
+		Typing:          strPtr("typing"),
 		StatusUpdatedAt: timePtr(updatedAt),
 	})
 	if err != nil {
@@ -523,11 +524,30 @@ func TestUpdateUser(t *testing.T) {
 	if updated.StatusMessage == nil || *updated.StatusMessage != status {
 		t.Errorf("esperava status_message %q, obtive %v", status, updated.StatusMessage)
 	}
+	if updated.Typing == nil || *updated.Typing != "typing" {
+		t.Errorf("esperava typing %q, obtive %v", "typing", updated.Typing)
+	}
 	if updated.StatusUpdatedAt == nil || !updated.StatusUpdatedAt.Equal(updatedAt) {
 		t.Errorf("esperava status_updated_at %v, obtive %v", updatedAt, updated.StatusUpdatedAt)
 	}
 	if updated.Username != user.Username {
 		t.Errorf("username deveria permanecer %q, obtive %q", user.Username, updated.Username)
+	}
+
+	// typing nil não altera o valor persistido (COALESCE)
+	if _, err := UpdateUser(testCtx(), user.ID, models.User{
+		Nickname:        strPtr(nickname),
+		StatusMessage:   strPtr("status2"),
+		StatusUpdatedAt: timePtr(time.Now().UTC().Truncate(time.Millisecond)),
+	}); err != nil {
+		t.Fatalf("UpdateUser (typing nil) retornou erro: %v", err)
+	}
+	got, err := GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if got.Typing == nil || *got.Typing != "typing" {
+		t.Errorf("typing nil não deveria alterar o valor, obtive %v", got.Typing)
 	}
 
 	if _, err := UpdateUser(testCtx(), randUUID(), models.User{}); !errors.Is(err, ErrNotFound) {

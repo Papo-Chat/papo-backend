@@ -44,6 +44,7 @@ type Client struct {
 	userID          string
 	clientID        string // identidade única da conexão (uuid) — routing de signaling
 	statusMessage   *string
+	typing          *string
 	nickname        *string
 	persistedStatus *string
 	send            chan []byte
@@ -60,16 +61,18 @@ type Client struct {
 
 // NewClient cria um Client com canal de envio bufferizado.
 // statusMessage é a mensagem de status persistida do usuário
-// (users.status_message), nickname é o nickname persistido (users.nickname)
-// e persistedStatus é o status persistido (users.status: away/busy), todos
+// (users.status_message), typing é a frase de digitação personalizada
+// (users.typing), nickname é o nickname persistido (users.nickname) e
+// persistedStatus é o status persistido (users.status: away/busy), todos
 // carregados pelo handler na conexão.
-func NewClient(hub *Hub, conn *websocket.Conn, userID string, statusMessage, nickname, persistedStatus *string) *Client {
+func NewClient(hub *Hub, conn *websocket.Conn, userID string, statusMessage, typing, nickname, persistedStatus *string) *Client {
 	return &Client{
 		hub:             hub,
 		conn:            conn,
 		userID:          userID,
 		clientID:        uuid.NewString(),
 		statusMessage:   statusMessage,
+		typing:          typing,
 		nickname:        nickname,
 		persistedStatus: persistedStatus,
 		send:            make(chan []byte, sendBufferSize),
@@ -79,8 +82,8 @@ func NewClient(hub *Hub, conn *websocket.Conn, userID string, statusMessage, nic
 // Connect registra a conexão autenticada no Hub e inicia os pumps de leitura
 // e escrita. O upgrade HTTP deve ter sido feito pelo handler e o Hub.Run
 // deve estar ativo.
-func Connect(hub *Hub, conn *websocket.Conn, userID string, statusMessage, nickname, persistedStatus *string) *Client {
-	client := NewClient(hub, conn, userID, statusMessage, nickname, persistedStatus)
+func Connect(hub *Hub, conn *websocket.Conn, userID string, statusMessage, typing, nickname, persistedStatus *string) *Client {
+	client := NewClient(hub, conn, userID, statusMessage, typing, nickname, persistedStatus)
 	hub.Register(client)
 	go client.WritePump()
 	go client.ReadPump()

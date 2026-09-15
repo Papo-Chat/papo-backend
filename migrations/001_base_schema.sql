@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS users (
     last_ip TEXT,
     status TEXT CHECK (status IN ('away', 'busy')),
     status_message TEXT,
+    typing TEXT,
     status_updated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );

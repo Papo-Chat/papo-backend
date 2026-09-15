@@ -1140,8 +1140,9 @@ func TestUpdateUser(t *testing.T) {
 	nickname := "nick_" + randHex(4)
 	status := "disponível"
 	description := "sobre mim"
+	typing := "typing phrase"
 
-	if err := UpdateUser(testCtx(), user.ID, nickname, status, description); err != nil {
+	if err := UpdateUser(testCtx(), user.ID, nickname, status, description, &typing); err != nil {
 		t.Fatalf("UpdateUser retornou erro: %v", err)
 	}
 
@@ -1158,15 +1159,19 @@ func TestUpdateUser(t *testing.T) {
 	if stored.Description == nil || *stored.Description != description {
 		t.Errorf("esperava description %q, obtive %v", description, stored.Description)
 	}
+	if stored.Typing == nil || *stored.Typing != typing {
+		t.Errorf("esperava typing %q, obtive %v", typing, stored.Typing)
+	}
 	if stored.StatusUpdatedAt == nil {
 		t.Error("esperava status_updated_at preenchido")
 	}
 
 	// uma segunda atualização substitui os valores anteriores
+	// (typing nil não altera o valor persistido)
 	updatedNickname := "nick_" + randHex(4)
 	updatedStatus := "ausente"
 	updatedDescription := "sobre mim v2"
-	if err := UpdateUser(testCtx(), user.ID, updatedNickname, updatedStatus, updatedDescription); err != nil {
+	if err := UpdateUser(testCtx(), user.ID, updatedNickname, updatedStatus, updatedDescription, nil); err != nil {
 		t.Fatalf("UpdateUser (segunda atualização) retornou erro: %v", err)
 	}
 	stored, err = storage.GetUserByID(testCtx(), user.ID)
@@ -1182,9 +1187,12 @@ func TestUpdateUser(t *testing.T) {
 	if stored.Description == nil || *stored.Description != updatedDescription {
 		t.Errorf("esperava description %q, obtive %v", updatedDescription, stored.Description)
 	}
+	if stored.Typing == nil || *stored.Typing != typing {
+		t.Errorf("typing nil não deveria alterar o valor, obtive %v", stored.Typing)
+	}
 
-	// description vazia limpa o valor
-	if err := UpdateUser(testCtx(), user.ID, updatedNickname, updatedStatus, ""); err != nil {
+	// description e typing vazias limpam os valores
+	if err := UpdateUser(testCtx(), user.ID, updatedNickname, updatedStatus, "", strPtr("")); err != nil {
 		t.Fatalf("UpdateUser (description vazia) retornou erro: %v", err)
 	}
 	stored, err = storage.GetUserByID(testCtx(), user.ID)
@@ -1194,17 +1202,20 @@ func TestUpdateUser(t *testing.T) {
 	if stored.Description == nil || *stored.Description != "" {
 		t.Errorf("esperava description vazia, obtive %v", stored.Description)
 	}
+	if stored.Typing == nil || *stored.Typing != "" {
+		t.Errorf("esperava typing vazia, obtive %v", stored.Typing)
+	}
 }
 
 func TestUpdateUserEmptyUserID(t *testing.T) {
-	err := UpdateUser(testCtx(), "", "nick", "status", "desc")
+	err := UpdateUser(testCtx(), "", "nick", "status", "desc", nil)
 	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para userID vazio, obtive %v", err)
 	}
 }
 
 func TestUpdateUserNonexistentUser(t *testing.T) {
-	err := UpdateUser(testCtx(), randUUID(), "nick", "status", "desc")
+	err := UpdateUser(testCtx(), randUUID(), "nick", "status", "desc", nil)
 	if !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
 	}
@@ -6416,13 +6427,14 @@ func TestUpdateUserBoundaryLengths(t *testing.T) {
 		t.Fatalf("failed to create user: %v", err)
 	}
 
-	// exactly 32 runes for nickname, 64 runes for status and 512 runes for
-	// description (multibyte) are accepted
+	// exactly 32 runes for nickname, 64 runes for status, 512 runes for
+	// description and 64 runes for typing (multibyte) are accepted
 	nickname := "n" + strings.Repeat("ç", 31)
 	status := "s" + strings.Repeat("ç", 63)
 	description := "d" + strings.Repeat("ç", 511)
-	if err := UpdateUser(testCtx(), user.ID, nickname, status, description); err != nil {
-		t.Fatalf("UpdateUser with 32-rune nickname, 64-rune status and 512-rune description returned error: %v", err)
+	typing := "t" + strings.Repeat("ç", 63)
+	if err := UpdateUser(testCtx(), user.ID, nickname, status, description, &typing); err != nil {
+		t.Fatalf("UpdateUser with 32-rune nickname, 64-rune status, 512-rune description and 64-rune typing returned error: %v", err)
 	}
 	stored, err := storage.GetUserByID(testCtx(), user.ID)
 	if err != nil {
@@ -6434,26 +6446,35 @@ func TestUpdateUserBoundaryLengths(t *testing.T) {
 	if stored.StatusMessage == nil || *stored.StatusMessage != status {
 		t.Errorf("expected status_message %q, got %v", status, stored.StatusMessage)
 	}
+	if stored.Typing == nil || *stored.Typing != typing {
+		t.Errorf("expected typing %q, got %v", typing, stored.Typing)
+	}
 	if stored.StatusUpdatedAt == nil {
 		t.Error("expected status_updated_at to be set")
 	}
 
 	// 33 runes for nickname is rejected
 	longNickname := "n" + strings.Repeat("ç", 32)
-	if err := UpdateUser(testCtx(), user.ID, longNickname, "ok", "ok"); !errors.Is(err, ErrInvalidInput) {
+	if err := UpdateUser(testCtx(), user.ID, longNickname, "ok", "ok", nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("expected ErrInvalidInput for 33-rune nickname, got %v", err)
 	}
 
 	// 65 runes for status is rejected
 	longStatus := "s" + strings.Repeat("ç", 64)
-	if err := UpdateUser(testCtx(), user.ID, "ok", longStatus, "ok"); !errors.Is(err, ErrInvalidInput) {
+	if err := UpdateUser(testCtx(), user.ID, "ok", longStatus, "ok", nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("expected ErrInvalidInput for 65-rune status, got %v", err)
 	}
 
 	// 513 runes for description is rejected
 	longDescription := "d" + strings.Repeat("ç", 512)
-	if err := UpdateUser(testCtx(), user.ID, "ok", "ok", longDescription); !errors.Is(err, ErrInvalidInput) {
+	if err := UpdateUser(testCtx(), user.ID, "ok", "ok", longDescription, nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("expected ErrInvalidInput for 513-rune description, got %v", err)
+	}
+
+	// 65 runes for typing is rejected
+	longTyping := "t" + strings.Repeat("ç", 64)
+	if err := UpdateUser(testCtx(), user.ID, "ok", "ok", "ok", &longTyping); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for 65-rune typing, got %v", err)
 	}
 
 	// rejections must not persist anything
@@ -6469,6 +6490,9 @@ func TestUpdateUserBoundaryLengths(t *testing.T) {
 	}
 	if stored.Description == nil || *stored.Description != description {
 		t.Errorf("expected description %q after rejections, got %v", description, stored.Description)
+	}
+	if stored.Typing == nil || *stored.Typing != typing {
+		t.Errorf("expected typing %q after rejections, got %v", typing, stored.Typing)
 	}
 }
 

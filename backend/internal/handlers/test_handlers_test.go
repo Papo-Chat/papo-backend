@@ -1171,6 +1171,20 @@ func TestListUsersRouteWithAuth(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 
+	// define typing no perfil via PUT /users/:id
+	nickname := "nick_" + randHex(4)
+	typing := "typing phrase"
+	putBody, _ := json.Marshal(map[string]string{
+		"nickname":    nickname,
+		"status":      "disponível",
+		"description": "sobre mim",
+		"typing":      typing,
+	})
+	putRec := do(t, e, http.MethodPut, "/users/"+userID, putBody, authCookie(token))
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT /users/:id retornou %d (corpo: %s)", putRec.Code, putRec.Body.String())
+	}
+
 	rec := do(t, e, http.MethodGet, "/users", nil, authCookie(token))
 
 	if rec.Code != http.StatusOK {
@@ -1179,7 +1193,8 @@ func TestListUsersRouteWithAuth(t *testing.T) {
 
 	var resp struct {
 		Users []struct {
-			ID string `json:"id"`
+			ID     string  `json:"id"`
+			Typing *string `json:"typing"`
 		} `json:"users"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -1189,6 +1204,9 @@ func TestListUsersRouteWithAuth(t *testing.T) {
 	for _, u := range resp.Users {
 		if u.ID == userID {
 			found = true
+			if u.Typing == nil || *u.Typing != typing {
+				t.Errorf("esperava typing %q, obtive %v", typing, u.Typing)
+			}
 		}
 	}
 	if !found {
@@ -4803,6 +4821,7 @@ func TestWhoamiHandlerSuccessWithProfile(t *testing.T) {
 
 	nickname := "nick_" + randHex(4)
 	status := "disponível"
+	typing := "typing phrase"
 	avatar := []byte{0x89, 0x50, 0x4e, 0x47}
 	updatedAt := time.Now().UTC().Truncate(time.Millisecond)
 	if _, err := storage.UpdateUser(testCtx(), user.ID, models.User{
@@ -4810,6 +4829,7 @@ func TestWhoamiHandlerSuccessWithProfile(t *testing.T) {
 		AvatarBlob:      avatar,
 		AvatarFormat:    "PNG",
 		StatusMessage:   &status,
+		Typing:          &typing,
 		StatusUpdatedAt: &updatedAt,
 	}); err != nil {
 		t.Fatalf("falha ao atualizar perfil: %v", err)
@@ -4831,6 +4851,7 @@ func TestWhoamiHandlerSuccessWithProfile(t *testing.T) {
 		Username        string     `json:"username"`
 		Nickname        *string    `json:"nickname"`
 		StatusMessage   *string    `json:"status_message"`
+		Typing          *string    `json:"typing"`
 		StatusUpdatedAt *time.Time `json:"status_updated_at"`
 		CreatedAt       time.Time  `json:"created_at"`
 	}
@@ -4842,6 +4863,9 @@ func TestWhoamiHandlerSuccessWithProfile(t *testing.T) {
 	}
 	if resp.StatusMessage == nil || *resp.StatusMessage != status {
 		t.Errorf("esperava status_message %q, obtive %v", status, resp.StatusMessage)
+	}
+	if resp.Typing == nil || *resp.Typing != typing {
+		t.Errorf("esperava typing %q, obtive %v", typing, resp.Typing)
 	}
 	if resp.StatusUpdatedAt == nil || !resp.StatusUpdatedAt.Equal(updatedAt) {
 		t.Errorf("esperava status_updated_at %v, obtive %v", updatedAt, resp.StatusUpdatedAt)
@@ -4994,6 +5018,7 @@ func TestProfileHandlerSuccessWithProfile(t *testing.T) {
 	nickname := "nick_" + randHex(4)
 	status := "disponível"
 	description := "sobre mim"
+	typing := "typing phrase"
 	avatar := []byte{0x89, 0x50, 0x4e, 0x47}
 	updatedAt := time.Now().UTC().Truncate(time.Millisecond)
 	if _, err := storage.UpdateUser(testCtx(), user.ID, models.User{
@@ -5002,6 +5027,7 @@ func TestProfileHandlerSuccessWithProfile(t *testing.T) {
 		AvatarFormat:    "PNG",
 		Description:     &description,
 		StatusMessage:   &status,
+		Typing:          &typing,
 		StatusUpdatedAt: &updatedAt,
 	}); err != nil {
 		t.Fatalf("falha ao atualizar perfil: %v", err)
@@ -5035,6 +5061,7 @@ func TestProfileHandlerSuccessWithProfile(t *testing.T) {
 		BannerMedia     *string    `json:"banner_media"`
 		Description     *string    `json:"description"`
 		StatusMessage   *string    `json:"status_message"`
+		Typing          *string    `json:"typing"`
 		StatusUpdatedAt *time.Time `json:"status_updated_at"`
 		CreatedAt       time.Time  `json:"created_at"`
 	}
@@ -5052,6 +5079,9 @@ func TestProfileHandlerSuccessWithProfile(t *testing.T) {
 	}
 	if resp.StatusMessage == nil || *resp.StatusMessage != status {
 		t.Errorf("esperava status_message %q, obtive %v", status, resp.StatusMessage)
+	}
+	if resp.Typing == nil || *resp.Typing != typing {
+		t.Errorf("esperava typing %q, obtive %v", typing, resp.Typing)
 	}
 	if resp.StatusUpdatedAt == nil || !resp.StatusUpdatedAt.Equal(updatedAt) {
 		t.Errorf("esperava status_updated_at %v, obtive %v", updatedAt, resp.StatusUpdatedAt)
@@ -5247,7 +5277,8 @@ func TestUpdateUserHandlerSuccess(t *testing.T) {
 	nickname := "nick_" + randHex(4)
 	status := "disponível"
 	description := "sobre mim"
-	body, _ := json.Marshal(map[string]string{"nickname": nickname, "status": status, "description": description})
+	typing := "typing phrase"
+	body, _ := json.Marshal(map[string]string{"nickname": nickname, "status": status, "description": description, "typing": typing})
 	c := newContext(t, http.MethodPut, "/users/"+user.ID, body, "")
 	c.Set(middleware.UserIDContextKey, user.ID)
 	c.SetParamNames("user_id")
@@ -5284,6 +5315,9 @@ func TestUpdateUserHandlerSuccess(t *testing.T) {
 	}
 	if stored.Description == nil || *stored.Description != description {
 		t.Errorf("esperava description %q, obtive %v", description, stored.Description)
+	}
+	if stored.Typing == nil || *stored.Typing != typing {
+		t.Errorf("esperava typing %q, obtive %v", typing, stored.Typing)
 	}
 	if stored.StatusUpdatedAt == nil {
 		t.Error("esperava status_updated_at preenchido")
@@ -10493,11 +10527,13 @@ func TestUpdateUserHandlerBoundaryLengths(t *testing.T) {
 		t.Fatalf("failed to create user: %v", err)
 	}
 
-	// 32 runes for nickname, 64 runes for status and 512 runes for description (multibyte) is accepted
+	// 32 runes for nickname, 64 runes for status, 512 runes for description
+	// and 64 runes for typing (multibyte) is accepted
 	nickname := "n" + strings.Repeat("ç", 31)
 	status := "s" + strings.Repeat("ç", 63)
 	description := "d" + strings.Repeat("ç", 511)
-	body, _ := json.Marshal(map[string]string{"nickname": nickname, "status": status, "description": description})
+	typing := "t" + strings.Repeat("ç", 63)
+	body, _ := json.Marshal(map[string]string{"nickname": nickname, "status": status, "description": description, "typing": typing})
 	c := newContext(t, http.MethodPut, "/users/"+user.ID, body, "")
 	c.Set(middleware.UserIDContextKey, user.ID)
 	c.SetParamNames("user_id")
@@ -10524,6 +10560,9 @@ func TestUpdateUserHandlerBoundaryLengths(t *testing.T) {
 	if stored.Description == nil || *stored.Description != description {
 		t.Errorf("expected description %q, got %v", description, stored.Description)
 	}
+	if stored.Typing == nil || *stored.Typing != typing {
+		t.Errorf("expected typing %q, got %v", typing, stored.Typing)
+	}
 }
 
 func TestUpdateUserHandlerNicknameTooLong(t *testing.T) {
@@ -10546,7 +10585,7 @@ func TestUpdateUserHandlerNicknameTooLong(t *testing.T) {
 	}
 
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"nickname deve ter no máximo 32 caracteres, status no máximo 64 caracteres e description no máximo 512 caracteres")
+		"nickname deve ter no máximo 32 caracteres, status no máximo 64 caracteres, description no máximo 512 caracteres e typing no máximo 64 caracteres")
 }
 
 func TestUpdateUserHandlerDescriptionTooLong(t *testing.T) {
@@ -10569,7 +10608,30 @@ func TestUpdateUserHandlerDescriptionTooLong(t *testing.T) {
 	}
 
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"nickname deve ter no máximo 32 caracteres, status no máximo 64 caracteres e description no máximo 512 caracteres")
+		"nickname deve ter no máximo 32 caracteres, status no máximo 64 caracteres, description no máximo 512 caracteres e typing no máximo 64 caracteres")
+}
+
+func TestUpdateUserHandlerTypingTooLong(t *testing.T) {
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	// 65 runes
+	typing := "t" + strings.Repeat("ç", 64)
+	body, _ := json.Marshal(map[string]string{"nickname": "nick", "status": "ok", "description": "sobre mim", "typing": typing})
+	c := newContext(t, http.MethodPut, "/users/"+user.ID, body, "")
+	c.Set(middleware.UserIDContextKey, user.ID)
+	c.SetParamNames("user_id")
+	c.SetParamValues(user.ID)
+	rec := recorder(c)
+
+	if err := UpdateUserHandler(testBaseURL, c); err != nil {
+		t.Fatalf("UpdateUserHandler retornou erro: %v", err)
+	}
+
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"nickname deve ter no máximo 32 caracteres, status no máximo 64 caracteres, description no máximo 512 caracteres e typing no máximo 64 caracteres")
 }
 
 // TestDownloadAttachmentRoutePartialContent garante que GET

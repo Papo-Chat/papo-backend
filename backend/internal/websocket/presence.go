@@ -36,6 +36,7 @@ type PresenceStore struct {
 type presenceEntry struct {
 	connections   int
 	statusMessage *string
+	typing        *string
 	nickname      *string
 	persisted     *string
 }
@@ -46,18 +47,18 @@ func NewPresenceStore() *PresenceStore {
 }
 
 // AddConnection registra uma conexão ativa do usuário.
-// statusMessage, nickname e persisted (status away/busy persistido) são
-// usados apenas na primeira conexão (criação da entrada); as demais conexões
-// não as alteram (a atualização em runtime é feita por SetStatusMessage,
-// SetNickname e SetPersistedStatus).
+// statusMessage, typing, nickname e persisted (status away/busy persistido)
+// são usados apenas na primeira conexão (criação da entrada); as demais
+// conexões não as alteram (a atualização em runtime é feita por
+// SetStatusMessage, SetTyping, SetNickname e SetPersistedStatus).
 // Retorna true quando o usuário transiciona de offline para online.
-func (p *PresenceStore) AddConnection(userID string, statusMessage, nickname, persisted *string) bool {
+func (p *PresenceStore) AddConnection(userID string, statusMessage, typing, nickname, persisted *string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	entry, ok := p.users[userID]
 	if !ok {
-		p.users[userID] = &presenceEntry{connections: 1, statusMessage: statusMessage, nickname: nickname, persisted: persisted}
+		p.users[userID] = &presenceEntry{connections: 1, statusMessage: statusMessage, typing: typing, nickname: nickname, persisted: persisted}
 		return true
 	}
 	entry.connections++
@@ -94,6 +95,20 @@ func (p *PresenceStore) SetStatusMessage(userID string, statusMessage *string) b
 		return false
 	}
 	entry.statusMessage = statusMessage
+	return true
+}
+
+// SetTyping atualiza a frase de digitação (users.typing) de um usuário
+// online. Retorna false quando o usuário está offline.
+func (p *PresenceStore) SetTyping(userID string, typing *string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	entry, ok := p.users[userID]
+	if !ok {
+		return false
+	}
+	entry.typing = typing
 	return true
 }
 
@@ -150,6 +165,18 @@ func (p *PresenceStore) StatusMessage(userID string) *string {
 
 	if entry, ok := p.users[userID]; ok {
 		return entry.statusMessage
+	}
+	return nil
+}
+
+// Typing retorna a frase de digitação de um usuário online, ou nil quando o
+// usuário está offline ou não tem frase configurada.
+func (p *PresenceStore) Typing(userID string) *string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if entry, ok := p.users[userID]; ok {
+		return entry.typing
 	}
 	return nil
 }

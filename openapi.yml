@@ -373,7 +373,7 @@ paths:
   /users/{user_id}:
     put:
       tags: [Users]
-      summary: Atualiza nickname, status e description (somente o próprio usuário)
+      summary: Atualiza nickname, status, description e typing (somente o próprio usuário)
       parameters:
         - $ref: '#/components/parameters/UserId'
       requestBody:
@@ -1926,7 +1926,7 @@ paths:
         | `user_join`      | outbound  | `{ type: "user_join", user_id }`                                                        |
         | `role_add`       | outbound  | `{ type: "role_add", user_id, role_id }` (role atribuída ao usuário)                     |
         | `role_remove`    | outbound  | `{ type: "role_remove", user_id, role_id }` (role removida do usuário)                   |
-        | `presence_update`| outbound  | `{ type: "presence_update", user_id, status, status_message, nickname }` (status: online/offline/away/busy) |
+        | `presence_update`| outbound  | `{ type: "presence_update", user_id, status, status_message, typing, nickname }` (status: online/offline/away/busy) |
         | `presence_sync  `| unicast   | `{ type: "presence_sync", members: (user_id, status, status_message, nickname)[] }` (status: online/offline/away/busy) |
         | `heartbeat`      | inbound   | `{ type: "heartbeat" }`                                                                 |
         | `heartbeat_ack`  | outbound  | `{ type: "heartbeat_ack" }`                                                             |
@@ -2134,6 +2134,11 @@ components:
         status_message:
           type: string
           nullable: true
+        typing:
+          type: string
+          nullable: true
+          maxLength: 64
+          description: Frase de digitação personalizada (exibida no cliente quando o usuário está digitando)
         status_updated_at:
           type: string
           format: date-time
@@ -2181,6 +2186,11 @@ components:
         status_message:
           type: string
           nullable: true
+        typing:
+          type: string
+          nullable: true
+          maxLength: 64
+          description: Frase de digitação personalizada (exibida no cliente quando o usuário está digitando)
         status_updated_at:
           type: string
           format: date-time
@@ -2232,6 +2242,11 @@ components:
         status_message:
           type: string
           nullable: true
+        typing:
+          type: string
+          nullable: true
+          maxLength: 64
+          description: Frase de digitação personalizada (exibida no cliente quando o usuário está digitando)
         status_updated_at:
           type: string
           format: date-time
@@ -2363,6 +2378,11 @@ components:
         description:
           type: string
           maxLength: 512
+        typing:
+          type: string
+          nullable: true
+          maxLength: 64
+          description: Frase de digitação personalizada; ausente (null) não altera o valor atual
 
     UpdateAvatarRequest:
       type: object

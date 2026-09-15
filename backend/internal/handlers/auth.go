@@ -346,6 +346,7 @@ type whoamiResponse struct {
 	AvatarFormat    string               `json:"avatar_format"`
 	Status          *string              `json:"status"`
 	StatusMessage   *string              `json:"status_message"`
+	Typing          *string              `json:"typing"`
 	StatusUpdatedAt *time.Time           `json:"status_updated_at"`
 	CreatedAt       time.Time            `json:"created_at"`
 	Roles           []models.RoleSummary `json:"roles"`
@@ -386,6 +387,7 @@ func WhoamiHandler(baseURL string, c echo.Context) error {
 		AvatarFormat:    user.AvatarFormat,
 		Status:          user.Status,
 		StatusMessage:   user.StatusMessage,
+		Typing:          user.Typing,
 		StatusUpdatedAt: user.StatusUpdatedAt,
 		CreatedAt:       user.CreatedAt,
 		Roles:           user.Roles,

@@ -25,6 +25,7 @@ type profileResponse struct {
 	Description     *string              `json:"description"`
 	Status          *string              `json:"status"`
 	StatusMessage   *string              `json:"status_message"`
+	Typing          *string              `json:"typing"`
 	StatusUpdatedAt *time.Time           `json:"status_updated_at"`
 	CreatedAt       time.Time            `json:"created_at"`
 	Roles           []models.RoleSummary `json:"roles"`
@@ -67,6 +68,7 @@ func ProfileHandler(baseURL string, c echo.Context) error {
 		Description:     user.Description,
 		Status:          user.Status,
 		StatusMessage:   user.StatusMessage,
+		Typing:          user.Typing,
 		StatusUpdatedAt: user.StatusUpdatedAt,
 		CreatedAt:       user.CreatedAt,
 		Roles:           user.Roles,
@@ -132,6 +134,7 @@ func ProfileBatchHandler(baseURL string, c echo.Context) error {
 			Description:     user.Description,
 			Status:          user.Status,
 			StatusMessage:   user.StatusMessage,
+			Typing:          user.Typing,
 			StatusUpdatedAt: user.StatusUpdatedAt,
 			CreatedAt:       user.CreatedAt,
 			Roles:           user.Roles,
@@ -217,6 +220,8 @@ type updateUserRequest struct {
 	Nickname    *string `json:"nickname"`
 	Status      *string `json:"status"`
 	Description *string `json:"description"`
+	// Typing é opcional: ausente (nil) não altera o valor persistido.
+	Typing *string `json:"typing"`
 }
 
 // UpdateUserHandler implementa PUT /users/:user_id.
@@ -256,11 +261,11 @@ func UpdateUserHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "campo 'description' é obrigatório")
 	}
 
-	switch err := services.UpdateUser(c.Request().Context(), userID, *req.Nickname, *req.Status, *req.Description); {
+	switch err := services.UpdateUser(c.Request().Context(), userID, *req.Nickname, *req.Status, *req.Description, req.Typing); {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"nickname deve ter no máximo 32 caracteres, status no máximo 64 caracteres e description no máximo 512 caracteres")
+			"nickname deve ter no máximo 32 caracteres, status no máximo 64 caracteres, description no máximo 512 caracteres e typing no máximo 64 caracteres")
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "usuário não encontrado")
@@ -271,10 +276,10 @@ func UpdateUserHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao atualizar o perfil do usuário")
 	}
 
-	// Notifica os clientes conectados do novo nickname e status
+	// Notifica os clientes conectados do novo nickname, status e typing
 	// (presence_update); se o usuário estiver offline, o estado efêmero é
 	// atualizado apenas na próxima conexão.
-	websocket.GetHub().UpdateStatusMessage(userID, req.Status, req.Nickname)
+	websocket.GetHub().UpdateStatusMessage(userID, req.Status, req.Nickname, req.Typing)
 
 	return c.JSON(http.StatusOK, map[string]string{
 		"response": "User status updated successfully",

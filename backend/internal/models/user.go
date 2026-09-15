@@ -23,12 +23,15 @@ type User struct {
 	// ConnectionViolation é marcado quando o reuso de um token de sessão é
 	// detectado (todas as conexões do usuário são revogadas); o cliente usa a
 	// flag para avisar o usuário. É limpo na troca de senha.
-	ConnectionViolation bool       `db:"connection_violation" json:"connection_violation"`
-	LastIP              *string    `db:"last_ip" json:"-"`
-	Status              *string    `db:"status" json:"status"`
-	StatusMessage       *string    `db:"status_message" json:"status_message"`
-	StatusUpdatedAt     *time.Time `db:"status_updated_at" json:"status_updated_at"`
-	CreatedAt           time.Time  `db:"created_at" json:"created_at"`
+	ConnectionViolation bool    `db:"connection_violation" json:"connection_violation"`
+	LastIP              *string `db:"last_ip" json:"-"`
+	Status              *string `db:"status" json:"status"`
+	StatusMessage       *string `db:"status_message" json:"status_message"`
+	// Typing é a palavra/frase personalizada exibida no cliente quando o
+	// usuário está digitando (opcional; máx. 64 caracteres).
+	Typing          *string    `db:"typing" json:"typing"`
+	StatusUpdatedAt *time.Time `db:"status_updated_at" json:"status_updated_at"`
+	CreatedAt       time.Time  `db:"created_at" json:"created_at"`
 	// Roles são as roles atribuídas ao usuário (user_roles), resolvidas pelo
 	// service nas respostas whoami/profile (id, nome e cor de cada role).
 	Roles []RoleSummary `json:"roles"`
@@ -42,6 +45,7 @@ type UserSummary struct {
 	Nickname        *string    `db:"nickname" json:"nickname"`
 	Status          *string    `db:"status" json:"status"`
 	StatusMessage   *string    `db:"status_message" json:"status_message"`
+	Typing          *string    `db:"typing" json:"typing"`
 	StatusUpdatedAt *time.Time `db:"status_updated_at" json:"status_updated_at"`
 	CreatedAt       time.Time  `db:"created_at" json:"created_at"`
 	// Roles são as roles atribuídas ao usuário (user_roles), resolvidas pelo

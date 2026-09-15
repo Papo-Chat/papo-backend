@@ -317,13 +317,14 @@ func (h *Hub) broadcastExcept(event any, exclude *Client) {
 // online), exceto o próprio cliente em conexão, que já recebe o estado
 // completo no presence_sync.
 func (h *Hub) presenceOnline(c *Client) {
-	becameOnline := h.presence.AddConnection(c.userID, c.statusMessage, c.nickname, c.persistedStatus)
+	becameOnline := h.presence.AddConnection(c.userID, c.statusMessage, c.typing, c.nickname, c.persistedStatus)
 	if becameOnline {
 		h.broadcastExcept(PresenceUpdateOutbound{
 			Type:          EventTypePresenceUpdate,
 			UserID:        c.userID,
 			Status:        h.presence.EffectiveStatus(c.userID),
 			StatusMessage: h.presence.StatusMessage(c.userID),
+			Typing:        h.presence.Typing(c.userID),
 			Nickname:      h.presence.Nickname(c.userID),
 		}, c)
 	}
@@ -373,20 +374,25 @@ func (h *Hub) presenceOffline(c *Client) {
 	}
 }
 
-// UpdateStatusMessage atualiza o nickname e a mensagem de status de um
-// usuário online e notifica os clientes (presence_update).
+// UpdateStatusMessage atualiza o nickname, a mensagem de status e a frase de
+// digitação de um usuário online e notifica os clientes (presence_update).
+// Typing nil não altera a frase de digitação (campo opcional da API).
 // Retorna false quando o usuário está offline (nada a atualizar ou notificar).
-func (h *Hub) UpdateStatusMessage(userID string, statusMessage, nickname *string) bool {
+func (h *Hub) UpdateStatusMessage(userID string, statusMessage, nickname, typing *string) bool {
 	if !h.presence.SetStatusMessage(userID, statusMessage) {
 		return false
 	}
 	h.presence.SetNickname(userID, nickname)
+	if typing != nil {
+		h.presence.SetTyping(userID, typing)
+	}
 
 	h.Broadcast(PresenceUpdateOutbound{
 		Type:          EventTypePresenceUpdate,
 		UserID:        userID,
 		Status:        h.presence.EffectiveStatus(userID),
 		StatusMessage: h.presence.StatusMessage(userID),
+		Typing:        h.presence.Typing(userID),
 		Nickname:      h.presence.Nickname(userID),
 	})
 	return true
@@ -406,6 +412,7 @@ func (h *Hub) UpdatePersistedStatus(userID string, status *string) bool {
 		UserID:        userID,
 		Status:        h.presence.EffectiveStatus(userID),
 		StatusMessage: h.presence.StatusMessage(userID),
+		Typing:        h.presence.Typing(userID),
 		Nickname:      h.presence.Nickname(userID),
 	})
 	return true
