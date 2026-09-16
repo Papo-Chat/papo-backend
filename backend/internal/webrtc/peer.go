@@ -743,9 +743,6 @@ func (p *Peer) releaseFrom(pub *Peer, kind string) {
 	}
 }
 
-// setAudioSet atualiza o top-K de áudio do subscriber e sincroniza os slots.
-// owners e tracks já resolvidos pelo caller (room.tick, sob o lock da sala) —
-// evita p.mu → r.mu e p.mu → other.p.mu.
 // setAudioSet atualiza o conjunto de áudio do subscriber.
 //
 // Publishers que continuam no conjunto permanecem no mesmo slot.
