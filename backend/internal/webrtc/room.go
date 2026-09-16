@@ -145,6 +145,13 @@ func (r *Room) stableSelectLocked(
 			continue
 		}
 
+		// Hangover protege quem já estava selecionado.
+		// Não permite que áudio antigo promova um challenger.
+		last, active := r.lastAudioActivity[challenger.id]
+		if !active || now.Sub(last) > audioActivityWindow {
+			continue
+		}
+
 		weakestIdx := -1
 		weakestScore := 0.0
 
@@ -240,11 +247,30 @@ func resolveAudioFromViews(
 	return owners, tracks
 }
 
-func (r *Room) activeSpeakerCandidatesLocked() []scoredCandidate {
+func (r *Room) activeSpeakerCandidatesLocked(
+	views map[string]audioPeerView,
+	now time.Time,
+) []scoredCandidate {
 	candidates := make([]scoredCandidate, 0, len(r.scores))
 
 	for id, score := range r.scores {
-		if _, exists := r.peers[id]; !exists {
+		view, exists := views[id]
+		if !exists || view.muted || view.track == nil {
+			continue
+		}
+
+		// Nunca considera scores abaixo do threshold.
+		if score < scoreThreshold {
+			continue
+		}
+
+		// Para UI de active speaker, precisa ter havido atividade real.
+		last, ok := r.lastAudioActivity[id]
+		if !ok {
+			continue
+		}
+
+		if now.Sub(last) > audioActivityWindow+audioHangover {
 			continue
 		}
 
@@ -289,7 +315,7 @@ func (r *Room) tick() {
 
 	// ActiveSpeakerUpdate também usa hysteresis + hangover.
 	roomTopK := r.stableSelectLocked(
-		r.activeSpeakerCandidatesLocked(),
+		r.activeSpeakerCandidatesLocked(views, now),
 		r.lastTopK,
 		now,
 		r.m.cfg.VoiceAudioSlots,
@@ -352,38 +378,6 @@ func (r *Room) tick() {
 			UserIDs:   roomTopK,
 		})
 	}
-}
-
-// topKLocked retorna os K maiores scores da sala (excluindo excludeID),
-// ordenados por nível (mais alto primeiro) com tiebreak determinístico por
-// userID. Deve ser chamado com r.mu segurado.
-func (r *Room) topKLocked(excludeID string) []string {
-	type entry struct {
-		id    string
-		score float64
-	}
-	entries := make([]entry, 0, len(r.scores))
-	for id, s := range r.scores {
-		if id == excludeID {
-			continue
-		}
-		entries = append(entries, entry{id: id, score: s})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].score != entries[j].score {
-			return entries[i].score > entries[j].score
-		}
-		return entries[i].id < entries[j].id
-	})
-	k := r.m.cfg.VoiceAudioSlots
-	if len(entries) > k {
-		entries = entries[:k]
-	}
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		out = append(out, e.id)
-	}
-	return out
 }
 
 // audioSetLocked retorna os publishers que devem ser encaminhados para um

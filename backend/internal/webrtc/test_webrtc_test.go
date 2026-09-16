@@ -259,33 +259,105 @@ func TestAudioLevelToDBFS(t *testing.T) {
 	}
 }
 
-func TestTopKLocked(t *testing.T) {
+func TestStableSelectLockedInitialSelection(t *testing.T) {
 	m := testManager(t, &config.Config{VoiceAudioSlots: 2})
+
 	r := &Room{
-		m:          m,
-		channelID:  "ch1",
-		peers:      make(map[string]*Peer),
-		scores:     make(map[string]float64),
-		tickerStop: make(chan struct{}),
+		m:                 m,
+		channelID:         "ch1",
+		peers:             make(map[string]*Peer),
+		scores:            make(map[string]float64),
+		lastAudioActivity: make(map[string]time.Time),
+		tickerStop:        make(chan struct{}),
+	}
+
+	candidates := []scoredCandidate{
+		{id: "a", score: -10},
+		{id: "b", score: -20},
+		{id: "c", score: -30},
+		{id: "d", score: -20},
 	}
 
 	r.mu.Lock()
-	r.scores["a"] = -10
-	r.scores["b"] = -20
-	r.scores["c"] = -30
-	r.scores["d"] = -20 // empate com b; tiebreak por id (b < d)
-	topK := r.topKLocked("")
+	selected := r.stableSelectLocked(
+		candidates,
+		nil,
+		time.Now(),
+		2,
+	)
 	r.mu.Unlock()
 
-	if len(topK) != 2 || topK[0] != "a" || topK[1] != "b" {
-		t.Fatalf("topK = %v, esperado [a b]", topK)
+	if len(selected) != 2 ||
+		selected[0] != "a" ||
+		selected[1] != "b" {
+		t.Fatalf("selected = %v, esperado [a b]", selected)
+	}
+}
+
+func TestStableSelectLockedHysteresis(t *testing.T) {
+	r := &Room{
+		lastAudioActivity: make(map[string]time.Time),
 	}
 
-	r.mu.Lock()
-	topK = r.topKLocked("a") // exclui o próprio subscriber
-	r.mu.Unlock()
-	if len(topK) != 2 || topK[0] != "b" || topK[1] != "d" {
-		t.Fatalf("topK(exclui a) = %v, esperado [b d]", topK)
+	now := time.Now()
+
+	candidates := []scoredCandidate{
+		{id: "a", score: -20},
+		{id: "b", score: -40},
+		{id: "c", score: -36}, // só 4 dB acima de b
+	}
+
+	current := []string{"a", "b"}
+
+	r.lastAudioActivity["a"] = now
+	r.lastAudioActivity["b"] = now
+	r.lastAudioActivity["c"] = now
+
+	selected := r.stableSelectLocked(
+		candidates,
+		current,
+		now,
+		2,
+	)
+
+	// c é mais alto que b, mas não supera a margem de 6 dB.
+	if len(selected) != 2 ||
+		selected[0] != "a" ||
+		selected[1] != "b" {
+		t.Fatalf("selected = %v, esperado [a b]", selected)
+	}
+}
+
+func TestStableSelectLockedSwitchesAboveMargin(t *testing.T) {
+	r := &Room{
+		lastAudioActivity: make(map[string]time.Time),
+	}
+
+	now := time.Now()
+
+	candidates := []scoredCandidate{
+		{id: "a", score: -20},
+		{id: "b", score: -40},
+		{id: "c", score: -33}, // 7 dB acima de b
+	}
+
+	current := []string{"a", "b"}
+
+	r.lastAudioActivity["a"] = now
+	r.lastAudioActivity["b"] = now
+	r.lastAudioActivity["c"] = now
+
+	selected := r.stableSelectLocked(
+		candidates,
+		current,
+		now,
+		2,
+	)
+
+	if len(selected) != 2 ||
+		selected[0] != "a" ||
+		selected[1] != "c" {
+		t.Fatalf("selected = %v, esperado [a c]", selected)
 	}
 }
 
