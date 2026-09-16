@@ -74,8 +74,40 @@ func (r *Room) tick() {
 		return
 	}
 
+	// Calcula active speakers antes do decay.
+	roomTopK := r.topKLocked("")
+
+	type syncPair struct {
+		peer   *Peer
+		set    []string
+		owners []*Peer
+		tracks []*webrtc.TrackRemote
+	}
+
+	var syncs []syncPair
+
+	for _, p := range r.peers {
+		// Routing de áudio é separado do active-speaker.
+		set := r.audioSetLocked(p.userID)
+		owners, tracks := r.resolveAudioLocked(set)
+
+		syncs = append(syncs, syncPair{
+			peer:   p,
+			set:    set,
+			owners: owners,
+			tracks: tracks,
+		})
+	}
+
+	topKChanged := !sameStringSlice(roomTopK, r.lastTopK)
+	if topKChanged {
+		r.lastTopK = roomTopK
+	}
+
+	// O decay só afeta o próximo tick.
 	for id, s := range r.scores {
 		s -= scoreDecayPerTick
+
 		if s < scoreThreshold {
 			delete(r.scores, id)
 		} else {
@@ -83,28 +115,12 @@ func (r *Room) tick() {
 		}
 	}
 
-	roomTopK := r.topKLocked("")
-	type syncPair struct {
-		peer   *Peer
-		set    []string
-		owners []*Peer
-		tracks []*webrtc.TrackRemote
-	}
-	var syncs []syncPair
-	for _, p := range r.peers {
-		set := r.topKLocked(p.userID)
-		owners, tracks := r.resolveAudioLocked(set)
-		syncs = append(syncs, syncPair{peer: p, set: set, owners: owners, tracks: tracks})
-	}
-	topKChanged := !sameStringSlice(roomTopK, r.lastTopK)
-	if topKChanged {
-		r.lastTopK = roomTopK
-	}
 	r.mu.Unlock()
 
 	for _, s := range syncs {
 		s.peer.setAudioSet(s.set, s.owners, s.tracks)
 	}
+
 	if topKChanged {
 		r.m.broadcastVoice(r.channelID, ActiveSpeakerUpdate{
 			Type:      EventTypeActiveSpeakerUpdate,
@@ -158,6 +174,69 @@ func (r *Room) topKLocked(excludeID string) []string {
 		out = append(out, e.id)
 	}
 	return out
+}
+
+// audioSetLocked retorna os publishers que devem ser encaminhados para um
+// subscriber.
+//
+// Se todos os publishers couberem nos slots, todos são encaminhados,
+// independentemente do nível de áudio.
+//
+// Quando há mais publishers que slots, o audio-level é usado apenas para
+// priorizar quem ocupa os slots.
+//
+// Deve ser chamado com r.mu segurado.
+func (r *Room) audioSetLocked(excludeID string) []string {
+	k := r.m.cfg.VoiceAudioSlots
+	if k <= 0 {
+		return nil
+	}
+
+	candidates := make([]string, 0, len(r.peers))
+
+	for id, p := range r.peers {
+		if id == excludeID || p == nil {
+			continue
+		}
+
+		if p.isMuted() {
+			continue
+		}
+
+		if p.AudioTrack() == nil {
+			continue
+		}
+
+		candidates = append(candidates, id)
+	}
+
+	// Todo mundo cabe: não use volume como gate.
+	if len(candidates) <= k {
+		sort.Strings(candidates)
+		return candidates
+	}
+
+	// Há mais publishers que slots.
+	// Ordena por nível, colocando quem possui score primeiro.
+	sort.Slice(candidates, func(i, j int) bool {
+		idA := candidates[i]
+		idB := candidates[j]
+
+		scoreA, okA := r.scores[idA]
+		scoreB, okB := r.scores[idB]
+
+		if okA != okB {
+			return okA
+		}
+
+		if okA && scoreA != scoreB {
+			return scoreA > scoreB
+		}
+
+		return idA < idB
+	})
+
+	return candidates[:k]
 }
 
 // noteAudioLevel registra o nível (dBFS) de um usuário no score da sala
@@ -264,7 +343,7 @@ func (r *Room) removePeer(peer *Peer) {
 	}
 	var syncs []syncPair
 	for _, p := range r.peers {
-		set := r.topKLocked(p.userID)
+		set := r.audioSetLocked(p.userID)
 		owners, tracks := r.resolveAudioLocked(set)
 		syncs = append(syncs, syncPair{peer: p, set: set, owners: owners, tracks: tracks})
 	}

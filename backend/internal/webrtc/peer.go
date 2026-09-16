@@ -729,37 +729,137 @@ func (p *Peer) releaseFrom(pub *Peer, kind string) {
 // setAudioSet atualiza o top-K de áudio do subscriber e sincroniza os slots.
 // owners e tracks já resolvidos pelo caller (room.tick, sob o lock da sala) —
 // evita p.mu → r.mu e p.mu → other.p.mu.
-func (p *Peer) setAudioSet(set []string, owners []*Peer, tracks []*webrtc.TrackRemote) {
-	// Resolve os fanouts dos publishers ANTES de segurar p.mu (evita
-	// p.mu → owner.mu). fanout[i] é nil quando owner[i]/track[i] é nil.
+// setAudioSet atualiza o conjunto de áudio do subscriber.
+//
+// Publishers que continuam no conjunto permanecem no mesmo slot.
+// Uma mudança na ordem do ranking não deve reassociar todos os slots.
+func (p *Peer) setAudioSet(
+	set []string,
+	owners []*Peer,
+	tracks []*webrtc.TrackRemote,
+) {
+	// Resolve fanouts antes de pegar p.mu para evitar:
+	// subscriber.mu -> publisher.mu
 	fanouts := make([]*fanout, len(owners))
+
 	for i := range owners {
-		if owners[i] != nil && tracks[i] != nil {
-			fanouts[i] = owners[i].fanoutFor("audio", tracks[i])
+		if i >= len(tracks) {
+			continue
 		}
+
+		if owners[i] == nil || tracks[i] == nil {
+			continue
+		}
+
+		fanouts[i] = owners[i].fanoutFor("audio", tracks[i])
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	if p.closed {
 		return
 	}
-	p.audioSet = set
-	for i, s := range p.audioSlots {
-		var owner *Peer
-		var track *webrtc.TrackRemote
-		if i < len(owners) {
-			owner = owners[i]
-			track = tracks[i]
-		}
-		if s.owner == owner && s.src == track {
+
+	// Não mantenha referência à slice do caller.
+	p.audioSet = append(p.audioSet[:0], set...)
+
+	// Publisher -> índice no conjunto desejado.
+	desired := make(map[*Peer]int, len(owners))
+
+	for i, owner := range owners {
+		if owner == nil {
 			continue
 		}
-		if owner == nil || track == nil || fanouts[i] == nil {
+
+		if i >= len(tracks) {
+			continue
+		}
+
+		if tracks[i] == nil || fanouts[i] == nil {
+			continue
+		}
+
+		desired[owner] = i
+	}
+
+	assigned := make(map[*Peer]bool, len(desired))
+
+	// Primeiro preserva os slots atuais.
+	for _, s := range p.audioSlots {
+		if s.owner == nil {
+			continue
+		}
+
+		owner := s.owner
+
+		idx, wanted := desired[owner]
+		if !wanted {
 			s.release()
 			continue
 		}
-		s.assignWithFanout(owner, "audio", track, fanouts[i])
+
+		// Segurança contra slot duplicado para o mesmo publisher.
+		if assigned[owner] {
+			s.release()
+			continue
+		}
+
+		assigned[owner] = true
+
+		// Mesmo publisher e mesma track: não mexe no slot.
+		if s.src == tracks[idx] {
+			continue
+		}
+
+		// Publisher permanece, mas a TrackRemote mudou.
+		s.assignWithFanout(
+			owner,
+			"audio",
+			tracks[idx],
+			fanouts[idx],
+		)
+	}
+
+	// Agora aloca apenas publishers novos.
+	for i, owner := range owners {
+		if owner == nil {
+			continue
+		}
+
+		if i >= len(tracks) {
+			continue
+		}
+
+		if tracks[i] == nil || fanouts[i] == nil {
+			continue
+		}
+
+		if assigned[owner] {
+			continue
+		}
+
+		var free *slot
+
+		for _, s := range p.audioSlots {
+			if s.owner == nil {
+				free = s
+				break
+			}
+		}
+
+		if free == nil {
+			break
+		}
+
+		free.assignWithFanout(
+			owner,
+			"audio",
+			tracks[i],
+			fanouts[i],
+		)
+
+		assigned[owner] = true
 	}
 }
 
