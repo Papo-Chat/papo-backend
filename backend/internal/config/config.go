@@ -161,7 +161,7 @@ func LoadConfig() *Config {
 		TURNTTL:                 time.Duration(getEnvInt("TURN_TTL_SECONDS", 3600)) * time.Second,
 		VoiceVideoCodec:         getEnv("VOICE_VIDEO_CODEC", "vp8"),
 		VoiceVideoSlots:         getEnvInt("VOICE_VIDEO_SLOTS", 6),
-		VoiceAudioSlots:         getEnvInt("VOICE_AUDIO_SLOTS", 4),
+		VoiceAudioSlots:         getEnvInt("VOICE_AUDIO_SLOTS", 8),
 		VoiceMaxRoomPeers:       getEnvInt("VOICE_MAX_ROOM_PEERS", 25),
 		VoiceMaxRoomsPerUser:    getEnvInt("VOICE_MAX_ROOMS_PER_USER", 1),
 		VoiceRoomCleanupGrace:   time.Duration(getEnvInt("VOICE_ROOM_CLEANUP_GRACE", 30)) * time.Second,

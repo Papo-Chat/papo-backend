@@ -129,6 +129,13 @@ func (p *Peer) renegWorker() {
 	}
 }
 
+func (p *Peer) audioSetSnapshot() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return append([]string(nil), p.audioSet...)
+}
+
 // enqueue adiciona uma operação de signaling à fila do peer (não bloqueia).
 func (p *Peer) enqueue(fn func() error) error {
 	p.mu.Lock()
