@@ -129,11 +129,21 @@ func (p *Peer) renegWorker() {
 	}
 }
 
-func (p *Peer) audioSetSnapshot() []string {
+func (p *Peer) audioRoutingSnapshot() (
+	muted bool,
+	track *webrtc.TrackRemote,
+	set []string,
+) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	return append([]string(nil), p.audioSet...)
+	if p.closed {
+		return true, nil, nil
+	}
+
+	return p.muted,
+		p.trackOfKindLocked("audio"),
+		append([]string(nil), p.audioSet...)
 }
 
 // enqueue adiciona uma operação de signaling à fila do peer (não bloqueia).

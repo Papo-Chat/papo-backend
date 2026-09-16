@@ -205,11 +205,6 @@ func (m *Manager) reportAudioLevel(ssrc uint32, level float64) {
 		return
 	}
 
-	peer := o.room.peer(o.userID)
-	if peer == nil || peer.isMuted() {
-		return
-	}
-
 	o.room.noteAudioLevel(o.userID, level)
 }
 

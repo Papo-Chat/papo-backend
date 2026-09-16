@@ -68,6 +68,195 @@ func newRoom(m *Manager, channelID string) *Room {
 	return r
 }
 
+type scoredCandidate struct {
+	id    string
+	score float64
+}
+
+type audioPeerView struct {
+	peer    *Peer
+	muted   bool
+	track   *webrtc.TrackRemote
+	current []string
+}
+
+func (r *Room) stableSelectLocked(
+	candidates []scoredCandidate,
+	current []string,
+	now time.Time,
+	k int,
+) []string {
+	if k <= 0 || len(candidates) == 0 {
+		return nil
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+
+		return candidates[i].id < candidates[j].id
+	})
+
+	scoreByID := make(map[string]float64, len(candidates))
+
+	for _, c := range candidates {
+		scoreByID[c.id] = c.score
+	}
+
+	selected := make([]string, 0, k)
+	selectedSet := make(map[string]struct{}, k)
+
+	// Primeiro preserva quem já estava selecionado.
+	for _, id := range current {
+		if len(selected) == k {
+			break
+		}
+
+		if _, valid := scoreByID[id]; !valid {
+			continue
+		}
+
+		if _, duplicate := selectedSet[id]; duplicate {
+			continue
+		}
+
+		selected = append(selected, id)
+		selectedSet[id] = struct{}{}
+	}
+
+	// Preenche slots vazios pelos melhores candidatos.
+	for _, c := range candidates {
+		if len(selected) == k {
+			break
+		}
+
+		if _, exists := selectedSet[c.id]; exists {
+			continue
+		}
+
+		selected = append(selected, c.id)
+		selectedSet[c.id] = struct{}{}
+	}
+
+	// Challengers precisam vencer o incumbent por 6 dB.
+	for _, challenger := range candidates {
+		if _, selectedAlready := selectedSet[challenger.id]; selectedAlready {
+			continue
+		}
+
+		weakestIdx := -1
+		weakestScore := 0.0
+
+		for i, incumbent := range selected {
+			// Protege durante o hangover.
+			if last, ok := r.lastAudioActivity[incumbent]; ok {
+				age := now.Sub(last)
+
+				inHangover :=
+					age > audioActivityWindow &&
+						age <= audioActivityWindow+audioHangover
+
+				if inHangover {
+					continue
+				}
+			}
+
+			score := scoreByID[incumbent]
+
+			if weakestIdx == -1 ||
+				score < weakestScore ||
+				(score == weakestScore &&
+					incumbent > selected[weakestIdx]) {
+
+				weakestIdx = i
+				weakestScore = score
+			}
+		}
+
+		// Todos os incumbents estão protegidos.
+		if weakestIdx == -1 {
+			continue
+		}
+
+		if challenger.score < weakestScore+audioSwitchMarginDB {
+			// Os próximos têm score <= challenger.
+			break
+		}
+
+		old := selected[weakestIdx]
+
+		delete(selectedSet, old)
+
+		selected[weakestIdx] = challenger.id
+		selectedSet[challenger.id] = struct{}{}
+	}
+
+	// Importante: NÃO ordenar novamente.
+	//
+	// Isso mantém a posição dos active-speakers estável também,
+	// evitando broadcasts só porque dois incumbents inverteram 1 dB.
+	return selected
+}
+
+func (r *Room) audioViewsLocked() map[string]audioPeerView {
+	views := make(map[string]audioPeerView, len(r.peers))
+
+	for id, p := range r.peers {
+		if p == nil {
+			continue
+		}
+
+		muted, track, current := p.audioRoutingSnapshot()
+
+		views[id] = audioPeerView{
+			peer:    p,
+			muted:   muted,
+			track:   track,
+			current: current,
+		}
+	}
+
+	return views
+}
+
+func resolveAudioFromViews(
+	set []string,
+	views map[string]audioPeerView,
+) ([]*Peer, []*webrtc.TrackRemote) {
+	owners := make([]*Peer, len(set))
+	tracks := make([]*webrtc.TrackRemote, len(set))
+
+	for i, id := range set {
+		view, ok := views[id]
+		if !ok {
+			continue
+		}
+
+		owners[i] = view.peer
+		tracks[i] = view.track
+	}
+
+	return owners, tracks
+}
+
+func (r *Room) activeSpeakerCandidatesLocked() []scoredCandidate {
+	candidates := make([]scoredCandidate, 0, len(r.scores))
+
+	for id, score := range r.scores {
+		if _, exists := r.peers[id]; !exists {
+			continue
+		}
+
+		candidates = append(candidates, scoredCandidate{
+			id:    id,
+			score: score,
+		})
+	}
+
+	return candidates
+}
+
 // ticker decaia os scores e sincroniza os slots de áudio dos subscribers a
 // cada segundo (D8). Roda em goroutine própria por sala.
 func (r *Room) ticker() {
@@ -87,13 +276,24 @@ func (r *Room) ticker() {
 // subscriber (excluindo si mesmo) e sincroniza os slots de áudio.
 func (r *Room) tick() {
 	r.mu.Lock()
+
 	if r.closed {
 		r.mu.Unlock()
 		return
 	}
 
-	// Calcula active speakers antes do decay.
-	roomTopK := r.topKLocked("")
+	now := time.Now()
+
+	// Um snapshot de cada Peer por tick.
+	views := r.audioViewsLocked()
+
+	// ActiveSpeakerUpdate também usa hysteresis + hangover.
+	roomTopK := r.stableSelectLocked(
+		r.activeSpeakerCandidatesLocked(),
+		r.lastTopK,
+		now,
+		r.m.cfg.VoiceAudioSlots,
+	)
 
 	type syncPair struct {
 		peer   *Peer
@@ -102,23 +302,20 @@ func (r *Room) tick() {
 		tracks []*webrtc.TrackRemote
 	}
 
-	var syncs []syncPair
+	syncs := make([]syncPair, 0, len(views))
 
-	now := time.Now()
-
-	for _, p := range r.peers {
-		current := p.audioSetSnapshot()
-
+	for id, view := range views {
 		set := r.audioSetLocked(
-			p.userID,
-			current,
+			id,
+			view.current,
 			now,
+			views,
 		)
 
-		owners, tracks := r.resolveAudioLocked(set)
+		owners, tracks := resolveAudioFromViews(set, views)
 
 		syncs = append(syncs, syncPair{
-			peer:   p,
+			peer:   view.peer,
 			set:    set,
 			owners: owners,
 			tracks: tracks,
@@ -126,18 +323,19 @@ func (r *Room) tick() {
 	}
 
 	topKChanged := !sameStringSlice(roomTopK, r.lastTopK)
+
 	if topKChanged {
 		r.lastTopK = roomTopK
 	}
 
-	// O decay só afeta o próximo tick.
-	for id, s := range r.scores {
-		s -= scoreDecayPerTick
+	// Decay vale para o próximo tick.
+	for id, score := range r.scores {
+		score -= scoreDecayPerTick
 
-		if s < scoreThreshold {
+		if score < scoreThreshold {
 			delete(r.scores, id)
 		} else {
-			r.scores[id] = s
+			r.scores[id] = score
 		}
 	}
 
@@ -154,20 +352,6 @@ func (r *Room) tick() {
 			UserIDs:   roomTopK,
 		})
 	}
-}
-
-// resolveAudioLocked resolve os owners e as tracks de áudio de um top-K
-// (chamado com r.mu segurado — r.mu → owner.p.mu é a ordem correta).
-func (r *Room) resolveAudioLocked(set []string) ([]*Peer, []*webrtc.TrackRemote) {
-	owners := make([]*Peer, len(set))
-	tracks := make([]*webrtc.TrackRemote, len(set))
-	for i, id := range set {
-		owners[i] = r.peers[id]
-		if owners[i] != nil {
-			tracks[i] = owners[i].AudioTrack()
-		}
-	}
-	return owners, tracks
 }
 
 // topKLocked retorna os K maiores scores da sala (excluindo excludeID),
@@ -216,184 +400,41 @@ func (r *Room) audioSetLocked(
 	excludeID string,
 	current []string,
 	now time.Time,
+	views map[string]audioPeerView,
 ) []string {
 	k := r.m.cfg.VoiceAudioSlots
-	if k <= 0 {
-		return nil
-	}
 
-	type candidate struct {
-		id    string
-		score float64
-	}
+	candidates := make([]scoredCandidate, 0, len(views))
 
-	candidates := make([]candidate, 0, len(r.peers))
-
-	for id, p := range r.peers {
-		if id == excludeID || p == nil {
+	for id, view := range views {
+		if id == excludeID {
 			continue
 		}
 
-		if p.isMuted() {
+		if view.muted || view.track == nil {
 			continue
 		}
 
-		if p.AudioTrack() == nil {
-			continue
-		}
-
-		// Usuários sem audio-level continuam elegíveis.
-		// -1000 só os coloca no fim da prioridade.
+		// Quem não tem audio-level continua elegível,
+		// mas perde prioridade se houver competição.
 		score := -1000.0
+
 		if s, ok := r.scores[id]; ok {
 			score = s
 		}
 
-		candidates = append(candidates, candidate{
+		candidates = append(candidates, scoredCandidate{
 			id:    id,
 			score: score,
 		})
 	}
 
-	// Todo mundo cabe: não há seleção.
-	if len(candidates) <= k {
-		sort.Slice(candidates, func(i, j int) bool {
-			return candidates[i].id < candidates[j].id
-		})
-
-		out := make([]string, len(candidates))
-		for i, c := range candidates {
-			out[i] = c.id
-		}
-		return out
-	}
-
-	// Melhor score primeiro.
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].score != candidates[j].score {
-			return candidates[i].score > candidates[j].score
-		}
-		return candidates[i].id < candidates[j].id
-	})
-
-	scoreByID := make(map[string]float64, len(candidates))
-
-	for _, c := range candidates {
-		scoreByID[c.id] = c.score
-	}
-
-	// Começa preservando quem já possui slot.
-	selected := make([]string, 0, k)
-	selectedSet := make(map[string]struct{}, k)
-
-	for _, id := range current {
-		if len(selected) == k {
-			break
-		}
-
-		if _, valid := scoreByID[id]; !valid {
-			continue
-		}
-
-		if _, exists := selectedSet[id]; exists {
-			continue
-		}
-
-		selected = append(selected, id)
-		selectedSet[id] = struct{}{}
-	}
-
-	// Se há slots vazios, preenche pelos melhores scores.
-	for _, c := range candidates {
-		if len(selected) == k {
-			break
-		}
-
-		if _, exists := selectedSet[c.id]; exists {
-			continue
-		}
-
-		selected = append(selected, c.id)
-		selectedSet[c.id] = struct{}{}
-	}
-
-	// Agora avalia challengers.
-	for _, challenger := range candidates {
-		if _, alreadySelected := selectedSet[challenger.id]; alreadySelected {
-			continue
-		}
-
-		weakestIdx := -1
-		weakestScore := 0.0
-
-		for i, incumbent := range selected {
-			// Hangover só vale DEPOIS que a atividade terminou.
-			//
-			// <= 300ms: ainda consideramos falando -> hysteresis normal.
-			// 300ms..1.8s: hangover -> não pode ser removido.
-			// >1.8s: pode ser substituído normalmente.
-			if last, ok := r.lastAudioActivity[incumbent]; ok {
-				age := now.Sub(last)
-
-				inHangover :=
-					age > audioActivityWindow &&
-						age <= audioActivityWindow+audioHangover
-
-				if inHangover {
-					continue
-				}
-			}
-
-			score := scoreByID[incumbent]
-
-			if weakestIdx == -1 ||
-				score < weakestScore ||
-				(score == weakestScore &&
-					incumbent > selected[weakestIdx]) {
-
-				weakestIdx = i
-				weakestScore = score
-			}
-		}
-
-		// Todos os atuais estão protegidos por hangover.
-		if weakestIdx == -1 {
-			continue
-		}
-
-		// Hysteresis:
-		//
-		// atual      = -40 dB
-		// challenger = -36 dB -> NÃO troca
-		// challenger = -34 dB -> troca
-		if challenger.score < weakestScore+audioSwitchMarginDB {
-			// Como candidates está ordenado do maior para o menor,
-			// os próximos também não conseguirão superar a margem.
-			break
-		}
-
-		old := selected[weakestIdx]
-
-		delete(selectedSet, old)
-
-		selected[weakestIdx] = challenger.id
-		selectedSet[challenger.id] = struct{}{}
-	}
-
-	// A ordem não muda os slots graças ao setAudioSet estável,
-	// mas deixa o resultado determinístico.
-	sort.Slice(selected, func(i, j int) bool {
-		si := scoreByID[selected[i]]
-		sj := scoreByID[selected[j]]
-
-		if si != sj {
-			return si > sj
-		}
-
-		return selected[i] < selected[j]
-	})
-
-	return selected
+	return r.stableSelectLocked(
+		candidates,
+		current,
+		now,
+		k,
+	)
 }
 
 // noteAudioLevel registra o nível (dBFS) de um usuário no score da sala
@@ -406,13 +447,15 @@ func (r *Room) noteAudioLevel(userID string, level float64) {
 		return
 	}
 
-	// Isso serve somente para hangover.
-	// Não interfere diretamente no routing.
+	p := r.peers[userID]
+	if p == nil || p.isMuted() {
+		return
+	}
+
 	if level >= audioActivityThreshold {
 		r.lastAudioActivity[userID] = time.Now()
 	}
 
-	// Mantém o maior nível observado na janela.
 	if cur, ok := r.scores[userID]; !ok || level > cur {
 		r.scores[userID] = level
 	}
@@ -502,23 +545,34 @@ func (r *Room) removePeer(peer *Peer) {
 	if len(r.peers) == 0 {
 		r.scheduleCleanupLocked()
 	}
+	now := time.Now()
+	views := r.audioViewsLocked()
+
 	type syncPair struct {
 		peer   *Peer
 		set    []string
 		owners []*Peer
 		tracks []*webrtc.TrackRemote
 	}
-	var syncs []syncPair
-	for _, p := range r.peers {
-		current := p.audioSetSnapshot()
 
+	syncs := make([]syncPair, 0, len(views))
+
+	for id, view := range views {
 		set := r.audioSetLocked(
-			p.userID,
-			current,
-			time.Now(),
+			id,
+			view.current,
+			now,
+			views,
 		)
-		owners, tracks := r.resolveAudioLocked(set)
-		syncs = append(syncs, syncPair{peer: p, set: set, owners: owners, tracks: tracks})
+
+		owners, tracks := resolveAudioFromViews(set, views)
+
+		syncs = append(syncs, syncPair{
+			peer:   view.peer,
+			set:    set,
+			owners: owners,
+			tracks: tracks,
+		})
 	}
 	r.mu.Unlock()
 
@@ -599,7 +653,22 @@ func (r *Room) members() []models.VoiceState {
 func (r *Room) currentTopK() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.topKLocked("")
+
+	out := make([]string, 0, len(r.lastTopK))
+
+	for _, id := range r.lastTopK {
+		if _, exists := r.peers[id]; !exists {
+			continue
+		}
+
+		if _, hasScore := r.scores[id]; !hasScore {
+			continue
+		}
+
+		out = append(out, id)
+	}
+
+	return out
 }
 
 // setMuted atualiza o estado do mic e notifica os leitores do canal.
