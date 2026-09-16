@@ -361,6 +361,66 @@ func TestStableSelectLockedSwitchesAboveMargin(t *testing.T) {
 	}
 }
 
+func TestStableSelectLockedInactiveChallengerDoesNotReplace(t *testing.T) {
+	r := &Room{
+		lastAudioActivity: make(map[string]time.Time),
+	}
+
+	now := time.Now()
+
+	candidates := []scoredCandidate{
+		{id: "a", score: -20},
+		{id: "b", score: -40},
+		{id: "c", score: -10},
+	}
+
+	current := []string{"a", "b"}
+
+	r.lastAudioActivity["a"] = now
+	r.lastAudioActivity["b"] = now
+	r.lastAudioActivity["c"] = now.Add(-time.Second)
+
+	selected := r.stableSelectLocked(
+		candidates,
+		current,
+		now,
+		2,
+	)
+
+	if len(selected) != 2 ||
+		selected[0] != "a" ||
+		selected[1] != "b" {
+		t.Fatalf("selected = %v, esperado [a b]", selected)
+	}
+}
+
+func TestActiveSpeakerCandidatesDoesNotPromoteStaleNonIncumbent(t *testing.T) {
+	now := time.Now()
+
+	r := &Room{
+		scores: map[string]float64{
+			"a": -20,
+			"c": -10,
+		},
+		lastTopK: []string{"a"},
+		lastAudioActivity: map[string]time.Time{
+			"a": now,
+			"c": now.Add(-time.Second),
+		},
+	}
+
+	views := map[string]audioPeerView{
+		"a": {track: &webrtc.TrackRemote{}},
+		"c": {track: &webrtc.TrackRemote{}},
+	}
+
+	got := r.activeSpeakerCandidatesLocked(views, now)
+
+	if len(got) != 1 || got[0].id != "a" {
+		t.Fatalf("candidates = %#v, esperado somente a", got)
+	}
+}
+
 const sdpVP8 = `v=0
 o=- 1 2 IN IP4 127.0.0.1
 s=-

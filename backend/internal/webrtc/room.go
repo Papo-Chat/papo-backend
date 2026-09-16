@@ -253,25 +253,38 @@ func (r *Room) activeSpeakerCandidatesLocked(
 ) []scoredCandidate {
 	candidates := make([]scoredCandidate, 0, len(r.scores))
 
+	incumbents := make(map[string]struct{}, len(r.lastTopK))
+	for _, id := range r.lastTopK {
+		incumbents[id] = struct{}{}
+	}
+
 	for id, score := range r.scores {
 		view, exists := views[id]
 		if !exists || view.muted || view.track == nil {
 			continue
 		}
 
-		// Nunca considera scores abaixo do threshold.
 		if score < scoreThreshold {
 			continue
 		}
 
-		// Para UI de active speaker, precisa ter havido atividade real.
 		last, ok := r.lastAudioActivity[id]
 		if !ok {
 			continue
 		}
 
-		if now.Sub(last) > audioActivityWindow+audioHangover {
-			continue
+		age := now.Sub(last)
+
+		if _, incumbent := incumbents[id]; incumbent {
+			// Quem já está selecionado recebe hangover.
+			if age > audioActivityWindow+audioHangover {
+				continue
+			}
+		} else {
+			// Quem NÃO está selecionado precisa estar falando agora.
+			if age > audioActivityWindow {
+				continue
+			}
 		}
 
 		candidates = append(candidates, scoredCandidate{
