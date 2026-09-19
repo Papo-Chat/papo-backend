@@ -44,6 +44,7 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 ### V2:
 
 - [ ] Atualizar Pacotes
+- [ ] Campo banned exposto nos endpoints dos usuários, função de wipe para mensagens de usuário banido.
 - [ ] Thumbnail de imagens não segura mais fluxo (async), com ws event
 - [ ] Refactor endpoints (organizar melhor /admin, /messages)
 - [ ] Implementar Testes até 80% Coverage
