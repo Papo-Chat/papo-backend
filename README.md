@@ -44,19 +44,19 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 ### V2:
 
 - [ ] Atualizar Pacotes
-- [ ] Campo banned exposto nos endpoints dos usuários, função de wipe para mensagens de usuário banido.
+- [ ] Position em Roles
+- [ ] Campo banned exposto na lista de usuários, função de wipe para mensagens de usuário banido, filtro por banned.
 - [ ] Thumbnail de imagens não segura mais fluxo (async), com ws event
 - [ ] Refactor endpoints (organizar melhor /admin, /messages)
 - [ ] Implementar Testes até 80% Coverage
-- [ ] Instalação do moderation worker integrado no server.
 - [ ] Bootstrap do servidor através de arquivo boot.strap
 - [ ] Hashed Resync para conexão instável
 - [ ] Mais informação no endpoint conexão
 - [ ] 2P-Auth (Authenticator)
 - [ ] SFU com simulcast
 - [ ] Direct Messages / Block User
-- [ ] Bot API
-- [ ] Mention Roles
+- [ ] Bot API (minimal)
+- [ ] Mention Roles (notification)
 - [ ] Mais User Permissions
 - [ ] Mais User Settings
 - [ ] Favoritos (GIF, Emoji)
