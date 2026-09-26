@@ -310,13 +310,15 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 				continue
 			}
 			eventID = ephemeralID
-			notificationID = &ephemeralID
 
-			payload := buildPushJobPayload(notificationID, message.ID, message.ChannelID, authorUsername, content)
-			if err := storage.CreatePushJob(ctx, candidate.UserID, notificationID, payload); err != nil {
-				utils.Errorf("request_id=%s notificações: falha ao gravar o job de push do usuário %s: %v",
-					requestID, candidate.UserID, err)
-				continue
+			if cfg.UseFCMRelay {
+				notificationID = &ephemeralID
+				payload := buildPushJobPayload(notificationID, message.ID, message.ChannelID, authorUsername, content)
+				if err := storage.CreatePushJob(ctx, candidate.UserID, notificationID, payload); err != nil {
+					utils.Errorf("request_id=%s notificações: falha ao gravar o job de push do usuário %s: %v",
+						requestID, candidate.UserID, err)
+					continue
+				}
 			}
 		}
 
