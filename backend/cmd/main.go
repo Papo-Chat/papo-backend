@@ -13,6 +13,7 @@ import (
 	"papo/internal/handlers"
 	"papo/internal/middleware"
 	"papo/internal/moderation"
+	"papo/internal/push"
 	"papo/internal/services"
 	"papo/internal/storage"
 	"papo/internal/utils"
@@ -109,6 +110,13 @@ func main() {
 	defer stopModeration()
 	moderation.Init(cfg, moderationCtx)
 
+	// Push: quando habilitado (USE_FCM_RELAY=true), o backend supervisiona o
+	// papo-push via os/exec (no-op quando desabilitado). O worker é o único
+	// responsável pela entrega; falha de push nunca derruba o servidor.
+	pushCtx, stopPush := context.WithCancel(context.Background())
+	defer stopPush()
+	push.Init(cfg, pushCtx)
+
 	e := echo.New()
 
 	// IP do cliente (echo.Echo.IPExtractor): o fallback legacy do Echo confia
@@ -193,6 +201,10 @@ func main() {
 
 	// Encerra a moderação de imagens (workers da fila + processo Python).
 	moderation.Shutdown()
+
+	// Encerra o supervisor do push (o papo-push recebe SIGTERM e encerra os
+	// jobs em andamento de forma limpa quando possível).
+	push.Shutdown()
 
 	// Encerra as conexões WebSocket ativas (close frame) e para o Hub.
 	hub.Shutdown()

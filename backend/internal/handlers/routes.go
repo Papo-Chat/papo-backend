@@ -74,6 +74,14 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	e.PUT("/users/:user_id/password", func(c echo.Context) error {
 		return ChangePasswordHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
+	// Dispositivos de push do usuário autenticado (user_id do cookie, nunca do
+	// cliente).
+	e.PUT("/users/me/push-device", func(c echo.Context) error {
+		return RegisterPushDeviceHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.DELETE("/users/me/push-device", func(c echo.Context) error {
+		return RemovePushDeviceHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
 	e.PUT("/users/:user_id/ban", func(c echo.Context) error {
 		return BanUserHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware, middleware.RequireServerOwnerOrManageServer())

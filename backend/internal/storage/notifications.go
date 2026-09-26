@@ -126,6 +126,36 @@ func CreateNotification(ctx context.Context, userID, messageID string) (models.N
 	return notification, nil
 }
 
+// CreateNotificationInTx cria a notificação do usuário para a mensagem dentro
+// da transação tx (mesma transação do job de push). Quando a row já existe
+// (mesmo usuário, mesma mensagem — disparo idempotente), retorna a row
+// existente sem alterá-la.
+func CreateNotificationInTx(tx *sql.Tx, ctx context.Context, userID, messageID string) (models.Notification, error) {
+	row := tx.QueryRowContext(ctx,
+		"INSERT INTO notifications (user_id, message_id) VALUES ($1, $2) "+
+			"ON CONFLICT (user_id, message_id) DO NOTHING "+
+			"RETURNING "+notificationColumns,
+		userID, messageID,
+	)
+
+	notification, err := scanNotification(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			existing, err := scanNotification(tx.QueryRowContext(ctx,
+				"SELECT "+notificationColumns+" FROM notifications WHERE user_id = $1 AND message_id = $2",
+				userID, messageID,
+			))
+			if err != nil {
+				return models.Notification{}, mapStorageError(err)
+			}
+			return existing, nil
+		}
+		return models.Notification{}, mapStorageError(err)
+	}
+
+	return notification, nil
+}
+
 // ListUserNotifications lista as notificações do usuário (com o conteúdo da
 // mensagem via join) em ordem decrescente de criação. Se since for
 // fornecido, retorna apenas notificações criadas após esse timestamp; se

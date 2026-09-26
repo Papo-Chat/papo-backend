@@ -40,10 +40,12 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Suporte Cloudflare
 - [x] Detecção e moderação de imagens com conteúdo sensível
 - [x] Suporte WebRTC (Audio, Video, Transmissão)
+- [x] Suporte a Push Notifications (FCM)
 
 ### V2:
 
 - [ ] Atualizar Pacotes
+- [ ] PUT emojis
 - [ ] Position em Roles
 - [ ] Campo banned exposto na lista de usuários, função de wipe para mensagens de usuário banido, filtro por banned.
 - [ ] Thumbnail de imagens não segura mais fluxo (async), com ws event
@@ -246,6 +248,12 @@ TURN_SECRET=
 
 # Porta UDP para MUX, 0 desliga
 VOICE_ICE_UDP_PORT=50000
+
+#FCM Notifications
+#USE_FCM_RELAY sem FCM_RELAY_URL roda um worker de notificações usando as credenciais informadas,com FCM_RELAY_URL acessa um worker WEB.
+USE_FCM_RELAY=false
+FCM_RELAY_URL=
+GOOGLE_APPLICATION_CREDENTIALS=credenciais
 ```
 
 ## API

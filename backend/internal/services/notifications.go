@@ -2,11 +2,13 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"time"
 	"unicode/utf8"
 
+	"papo/internal/config"
 	"papo/internal/models"
 	"papo/internal/storage"
 	"papo/internal/utils"
@@ -34,6 +36,28 @@ func truncateNotificationContent(content string) string {
 	}
 
 	return string([]rune(content)[:maxNotificationPreviewLength])
+}
+
+// buildPushJobPayload serializa o payload mínimo gravado em push_outbox.payload
+// (JSONB). O papo-push usa `author` como título e `preview` (truncado) para
+// montar o corpo conforme PUSH_PREVIEW (full/generic/hidden).
+func buildPushJobPayload(notificationID *string, messageID, channelID, author string, content string) string {
+	payload := models.PushJobPayload{
+		Type:           "message",
+		NotificationID: notificationID,
+		MessageID:      messageID,
+		ChannelID:      channelID,
+		Author:         author,
+		Preview:        truncateNotificationContent(content),
+	}
+
+	b, err := json.Marshal(payload)
+	if err != nil {
+		utils.Errorf("falha ao serializar o payload do job de push: %v", err)
+		return ""
+	}
+
+	return string(b)
 }
 
 // UpdateChannelUserSetting define a configuração de notificação do usuário
@@ -147,6 +171,7 @@ type NotificationDelivery struct {
 // Somente usuários que podem ler o canal (mesma regra do broadcast do
 // canal) são notificados.
 func DispatchMessageNotifications(ctx context.Context, requestID string, message models.Message) []NotificationDelivery {
+	cfg := config.LoadConfig()
 	authorID := ""
 	content := ""
 	if message.AuthorID != nil {
@@ -193,6 +218,18 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 		return nil
 	}
 
+	// Nome do autor para o título da notificação push (payload mínimo).
+	authorUsername := ""
+	if authorID != "" {
+		author, err := storage.GetUserByID(ctx, authorID)
+		if err != nil {
+			utils.Errorf("request_id=%s notificações: falha ao buscar o autor %s: %v",
+				requestID, authorID, err)
+		} else {
+			authorUsername = author.Username
+		}
+	}
+
 	// Filtra os candidatos pelos leitores do canal (mesma regra do
 	// broadcast): canal aberto permite todos; canal com permissões permite
 	// o dono do servidor e os usuários de roles com ReadChannel.
@@ -228,14 +265,43 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 		}
 
 		eventID := ""
+		var notificationID *string
 		if isTriggered {
-			notification, err := storage.CreateNotification(ctx, candidate.UserID, message.ID)
+			// Notificação (row) + job de push na mesma transação: a entrega
+			// push nunca depende da disponibilidade do worker.
+			tx, err := storage.GetDB().BeginTx(ctx, nil)
+			if err != nil {
+				utils.Errorf("request_id=%s notificações: falha ao abrir transação para o usuário %s: %v",
+					requestID, candidate.UserID, err)
+				continue
+			}
+			defer tx.Rollback()
+
+			notification, err := storage.CreateNotificationInTx(tx, ctx, candidate.UserID, message.ID)
 			if err != nil {
 				utils.Errorf("request_id=%s notificações: falha ao criar a notificação do usuário %s: %v",
 					requestID, candidate.UserID, err)
 				continue
 			}
+
+			//Não precisamos guardar no banco o que não vamos usar
+			if cfg.UseFCMRelay {
+				notificationID = &notification.ID
+
+				payload := buildPushJobPayload(notificationID, message.ID, message.ChannelID, authorUsername, content)
+				if err := storage.CreatePushJobInTx(tx, ctx, candidate.UserID, notificationID, payload); err != nil {
+					utils.Errorf("request_id=%s notificações: falha ao gravar o job de push do usuário %s: %v",
+						requestID, candidate.UserID, err)
+					continue
+				}
+			}
 			eventID = notification.ID
+
+			if err := tx.Commit(); err != nil {
+				utils.Errorf("request_id=%s notificações: falha ao commitar a notificação do usuário %s: %v",
+					requestID, candidate.UserID, err)
+				continue
+			}
 		} else {
 			// Configuração 'all' sem trigger: evento com id efêmero (sem row).
 			ephemeralID, err := utils.NewUUIDv4()
@@ -244,6 +310,14 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 				continue
 			}
 			eventID = ephemeralID
+			notificationID = &ephemeralID
+
+			payload := buildPushJobPayload(notificationID, message.ID, message.ChannelID, authorUsername, content)
+			if err := storage.CreatePushJob(ctx, candidate.UserID, notificationID, payload); err != nil {
+				utils.Errorf("request_id=%s notificações: falha ao gravar o job de push do usuário %s: %v",
+					requestID, candidate.UserID, err)
+				continue
+			}
 		}
 
 		deliveries = append(deliveries, NotificationDelivery{

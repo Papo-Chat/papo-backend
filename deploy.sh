@@ -188,6 +188,16 @@ clone_and_build() {
     ( cd "$SRC_DIR/repo/backend" && CGO_ENABLED=0 go build -o papo-server ./cmd ) \
         || die "falha na compilação"
     echo "    binário: $SRC_DIR/repo/backend/papo-server"
+
+    # Papo-push: worker de push supervisionado pelo backend.
+    if [[ -f "$SRC_DIR/repo/papo-push/go.mod" ]]; then
+        log "Compilando o papo-push (CGO_ENABLED=0)..."
+        ( cd "$SRC_DIR/repo/papo-push" && CGO_ENABLED=0 go build -o "$SRC_DIR/repo/backend/papo-push" ./cmd ) \
+            || die "falha na compilação do papo-push"
+        echo "    binário: $SRC_DIR/repo/backend/papo-push"
+    else
+        echo "    papo-push: módulo não encontrado, pulando build"
+    fi
 }
 
 install_files() {
@@ -200,6 +210,9 @@ install_files() {
     rm -f "$PREFIX/migrations/"*.sql
 
     install -m 0755 "$SRC_DIR/repo/backend/papo-server" "$PREFIX/backend/papo-server"
+    if [[ -f "$SRC_DIR/repo/backend/papo-push" ]]; then
+        install -m 0755 "$SRC_DIR/repo/backend/papo-push" "$PREFIX/backend/papo-push"
+    fi
     install -m 0644 "$SRC_DIR/repo/backend/moderation_worker/worker.py" "$PREFIX/backend/moderation_worker/worker.py"
     install -m 0644 "$SRC_DIR/repo/backend/moderation_worker/requirements.txt" "$PREFIX/backend/moderation_worker/requirements.txt"
     install -m 0644 "$SRC_DIR/repo/backend/.env.sample" "$PREFIX/backend/.env.sample"

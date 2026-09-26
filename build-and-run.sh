@@ -27,6 +27,18 @@ build() {
     cd "$BACKEND_DIR"
     CGO_ENABLED=0 go build -o "$BINARY" ./cmd
     echo "==> Binário: $BINARY"
+
+    # Papo-push: worker de push supervisionado pelo backend. O binário fica em
+    # backend/papo-push (mesma pasta do servidor, CWD-relative do FCM_RELAY_BINARY).
+    PUSH_MODULE_DIR="$ROOT_DIR/papo-push"
+    if [[ -f "$PUSH_MODULE_DIR/go.mod" ]]; then
+        echo "==> Build do papo-push (CGO_ENABLED=0)"
+        cd "$PUSH_MODULE_DIR"
+        CGO_ENABLED=0 go build -o "$BACKEND_DIR/papo-push" ./cmd
+        echo "==> Binário: $BACKEND_DIR/papo-push"
+    else
+        echo "==> papo-push: módulo não encontrado ($PUSH_MODULE_DIR), pulando build"
+    fi
 }
 
 run() {

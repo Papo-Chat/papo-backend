@@ -94,6 +94,24 @@ type Config struct {
 	ModerationGoreMode        string
 	ModerationNudityThreshold float64
 	ModerationGoreThreshold   float64
+
+	// Push notifications: o backend NUNCA envia push; USE_FCM_RELAY=false
+	// desativa por completo (nenhum papo-push iniciado). Quando habilitado,
+	// o backend supervisiona o processo papo-push (os/exec, ver pacote push).
+	// FCM_RELAY_URL vazio → papo-push fala direto com o FCM (precisa de
+	// GOOGLE_APPLICATION_CREDENTIALS); definido → papo-push encaminha ao
+	// relay remoto (autenticado por FCM_RELAY_TOKEN).
+	UseFCMRelay          bool
+	FCMRelayURL          string
+	FCMRelayToken        string
+	FCMRelayBinary       string
+	FCMRelayRestartMax   int
+	PushHealthPort       int
+	PushWorkers          int
+	PushBatchSize        int
+	PushMaxAttempts      int
+	PushRequestTimeout   time.Duration
+	PushPreview          string
 }
 
 var (
@@ -184,6 +202,18 @@ func LoadConfig() *Config {
 		ModerationGoreMode:        getEnv("MODERATION_GORE_MODE", "off"),
 		ModerationNudityThreshold: getEnvFloat("MODERATION_NUDITY_THRESHOLD", 0.8),
 		ModerationGoreThreshold:   getEnvFloat("MODERATION_GORE_THRESHOLD", 0.8),
+
+		UseFCMRelay:          getEnvBool("USE_FCM_RELAY", false),
+		FCMRelayURL:          getEnv("FCM_RELAY_URL", ""),
+		FCMRelayToken:        getEnv("FCM_RELAY_TOKEN", ""),
+		FCMRelayBinary:       getEnv("FCM_RELAY_BINARY", "./papo-push"),
+		FCMRelayRestartMax:   getEnvInt("FCM_RELAY_RESTART_MAX", 10),
+		PushHealthPort:       getEnvInt("PUSH_HEALTH_PORT", 9473),
+		PushWorkers:          getEnvInt("PUSH_WORKERS", 2),
+		PushBatchSize:        getEnvInt("PUSH_BATCH_SIZE", 50),
+		PushMaxAttempts:      getEnvInt("PUSH_MAX_ATTEMPTS", 8),
+		PushRequestTimeout:   time.Duration(getEnvInt("PUSH_REQUEST_TIMEOUT", 5)) * time.Second,
+		PushPreview:          getEnv("PUSH_PREVIEW", "full"),
 	})
 
 	return configInstance.Load()

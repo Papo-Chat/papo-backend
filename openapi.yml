@@ -8,7 +8,7 @@ info:
     - Autenticação via cookie HttpOnly `Auth` (JWT).
     - Erros seguem RFC 7807 (`application/problem+json`) e toda resposta
       inclui o header `X-Request-ID`.
-  version: 0.9.7
+  version: 0.9.8
 servers:
   - url: http://localhost:8080
     description: Backend local
@@ -598,6 +598,61 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/me/push-device:
+    put:
+      tags: [Users]
+      summary: Registra ou atualiza o dispositivo de push do usuário autenticado
+      description: |
+        Upsert do dispositivo de push do usuário autenticado (cookie `Auth`).
+        O `user_id` nunca vem do cliente. `platform` deve ser `android` ou
+        `ios`; `provider` é opcional (padrão `fcm`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushDeviceRequest'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Users]
+      summary: Remove o dispositivo de push do usuário autenticado por token
+      description: |
+        Remove o dispositivo de push do usuário autenticado (cookie `Auth`)
+        identificado pelo `token` no corpo da requisição.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushDeviceRequest'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -2033,6 +2088,8 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error'
+    NoContent:
+      description: Sucesso sem corpo (204 No Content)
 
   schemas:
     Error:
@@ -2116,6 +2173,24 @@ components:
       properties:
         server_password:
           type: string
+
+    PushDeviceRequest:
+      type: object
+      description: Dispositivo de push do usuário autenticado (PUT/DELETE /users/me/push-device)
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: Token de registro do FCM (registro atualizado/upsert)
+        platform:
+          type: string
+          enum: [android, ios]
+        device_name:
+          type: string
+          maxLength: 32
+        provider:
+          type: string
+          default: fcm
 
     UserSummary:
       type: object
