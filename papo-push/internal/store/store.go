@@ -57,6 +57,9 @@ type PushJob struct {
 	NextAttemptAt  time.Time
 	CreatedAt      time.Time
 	LastError       string
+	// DeliveredTokens são os tokens já entregues em tentativas anteriores.
+	// O worker os usa para não reenviar (evitar notificação duplicada) em retry.
+	DeliveredTokens []string
 }
 
 // PushDevice é o dispositivo registrado (push_devices).
@@ -74,7 +77,7 @@ type PushDevice struct {
 }
 
 // pushOutboxColumns são as colunas da push_outbox.
-const pushOutboxColumns = "id, user_id, payload, notification_id, attempts, next_attempt_at, created_at, last_error"
+const pushOutboxColumns = "id, user_id, payload, notification_id, attempts, next_attempt_at, created_at, last_error, delivered_tokens"
 
 // pushDevicesColumns são as colunas da push_devices.
 const pushDevicesColumns = "id, user_id, token, platform, provider, device_name, enabled, created_at, updated_at, last_seen_at"

@@ -100,9 +100,24 @@ func (w *Worker) processJob(ctx context.Context, job store.PushJob) error {
 		return w.store.CompletePushJob(ctx, job.ID)
 	}
 
-	targets := make([]delivery.Target, len(devices))
-	for i, d := range devices {
-		targets[i] = delivery.Target{Token: d.Token, Platform: d.Platform}
+	// Exclui dispositivos já entregues em tentativas anteriores: evita reenviar
+	// (e duplicar) a notificação em retry.
+	delivered := make(map[string]struct{}, len(job.DeliveredTokens))
+	for _, token := range job.DeliveredTokens {
+		delivered[token] = struct{}{}
+	}
+
+	targets := make([]delivery.Target, 0, len(devices))
+	for _, d := range devices {
+		if _, ok := delivered[d.Token]; ok {
+			continue
+		}
+		targets = append(targets, delivery.Target{Token: d.Token, Platform: d.Platform})
+	}
+
+	// Todos os dispositivos já entregues (ou nenhum não-entregue): completo.
+	if len(targets) == 0 {
+		return w.store.CompletePushJob(ctx, job.ID)
 	}
 
 	// Construa a mensagem a partir do payload.
@@ -124,6 +139,15 @@ func (w *Worker) processJob(ctx context.Context, job store.PushJob) error {
 // rescheduleOrDiscard decide o destino do job: complete (delete), reschedule
 // (retry) ou discard (limite de tentativas atingido).
 func (w *Worker) rescheduleOrDiscard(ctx context.Context, job store.PushJob, res delivery.Result, err error) error {
+	// Persiste os tokens entregues em delivered_tokens: em um retry, o worker
+	// não reenvia para dispositivos que já receberam (evita notificação duplicada).
+	sent := res.SentTokens()
+	if len(sent) > 0 {
+		if err2 := w.store.MergeDeliveredTokens(ctx, job.ID, sent); err2 != nil {
+			slog.Error("falha ao persistir tokens entregues", "job", job.ID, "err", err2)
+		}
+	}
+
 	// Desative tokens inválidos (o token permanece desativado para auditoria).
 	if invalid := res.InvalidTokens(); len(invalid) > 0 {
 		for _, token := range invalid {
@@ -134,7 +158,7 @@ func (w *Worker) rescheduleOrDiscard(ctx context.Context, job store.PushJob, res
 	}
 
 	// Se a entrega falhou ou houver retryable/permanent, o job não está pronto.
-	needsRetry := err != nil || res.HasRetryable() || res.HasPermanent()
+	needsRetry := err != nil || res.HasRetryable() // || res.HasPermanent() não precisamos dar retry num erro permanente
 	if !needsRetry {
 		// Todos os dispositivos válidos receberam (ou não havia nenhum).
 		return w.store.CompletePushJob(ctx, job.ID)
@@ -187,9 +211,9 @@ func buildMessage(payload models.PushJobPayload, preview string) delivery.Messag
 		body = payload.Author + ": " + payload.Preview
 	}
 	data := map[string]string{
-		"type":         payload.Type,
-		"message_id":   payload.MessageID,
-		"channel_id":   payload.ChannelID,
+		"type":       payload.Type,
+		"message_id": payload.MessageID,
+		"channel_id": payload.ChannelID,
 	}
 	if payload.NotificationID != nil {
 		data["notification_id"] = *payload.NotificationID

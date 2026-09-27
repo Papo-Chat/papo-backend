@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -420,4 +421,56 @@ func TestStorePingAndClose(t *testing.T) {
 	if err := testStore.Ping(ctx); err != nil {
 		t.Fatalf("falha no ping: %v", err)
 	}
+}
+
+// TestMergeDeliveredTokens verifica que tokens entregues são adicionados à
+// coluna delivered_tokens sem duplicatas, e que a merge não perde tokens.
+func TestMergeDeliveredTokens(t *testing.T) {
+	ctx := context.Background()
+	userID := createTestUser(t)
+	payload := `{"type":"message"}`
+	jobID := createTestJob(t, userID, payload, 0, time.Now().Add(-time.Minute))
+
+	// Primeira merge: [tok-a].
+	if err := testStore.MergeDeliveredTokens(ctx, jobID, []string{"tok-a"}); err != nil {
+		t.Fatalf("falha na primeira merge: %v", err)
+	}
+	// Segunda merge: [tok-a, tok-b] — tok-a duplicado deve ser ignorado.
+	if err := testStore.MergeDeliveredTokens(ctx, jobID, []string{"tok-a", "tok-b"}); err != nil {
+		t.Fatalf("falha na segunda merge: %v", err)
+	}
+
+	tokens := queryDeliveredTokens(t, jobID)
+	if len(tokens) != 2 {
+		t.Fatalf("esperava 2 tokens, obtive %d (%v)", len(tokens), tokens)
+	}
+	if tokens[0] != "tok-a" || tokens[1] != "tok-b" {
+		t.Fatalf("esperava [tok-a tok-b], obtive %v", tokens)
+	}
+
+	// Merge vazia não altera.
+	if err := testStore.MergeDeliveredTokens(ctx, jobID, []string{}); err != nil {
+		t.Fatalf("falha na merge vazia: %v", err)
+	}
+	tokens = queryDeliveredTokens(t, jobID)
+	if len(tokens) != 2 {
+		t.Fatalf("esperava 2 tokens após merge vazia, obtive %d", len(tokens))
+	}
+}
+
+// queryDeliveredTokens auxilia a ler a coluna delivered_tokens (JSONB).
+func queryDeliveredTokens(t *testing.T, jobID string) []string {
+	t.Helper()
+	var raw sql.NullString
+	if err := testStore.db.QueryRowContext(context.Background(),
+		"SELECT delivered_tokens FROM push_outbox WHERE id = $1", jobID).Scan(&raw); err != nil {
+		t.Fatalf("falha ao consultar delivered_tokens: %v", err)
+	}
+	var tokens []string
+	if raw.Valid {
+		if err := json.Unmarshal([]byte(raw.String), &tokens); err != nil {
+			t.Fatalf("falha ao decodificar delivered_tokens: %v", err)
+		}
+	}
+	return tokens
 }

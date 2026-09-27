@@ -45,6 +45,7 @@ func UpsertPushDevice(ctx context.Context, userID, token, platform, provider, de
 				platform = EXCLUDED.platform,
 				provider = EXCLUDED.provider,
 				device_name = EXCLUDED.device_name,
+				enabled = TRUE,
 				updated_at = NOW(),
 				last_seen_at = NOW()
 		 RETURNING `+pushDeviceColumns,

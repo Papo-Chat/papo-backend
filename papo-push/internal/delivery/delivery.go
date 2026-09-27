@@ -76,6 +76,44 @@ func (r Result) HasPermanent() bool {
 	return r.permanent
 }
 
+// TargetResults retorna os resultados por target (token + status), na ordem
+// dos targets enviados.
+func (r Result) TargetResults() []TargetResult {
+	return r.results
+}
+
+// SentTokens retorna os tokens com status sent, para o worker persistir em
+// delivered_tokens (evitando reenvio em retry).
+func (r Result) SentTokens() []string {
+	var out []string
+	for _, tr := range r.results {
+		if tr.Status == StatusSent {
+			out = append(out, tr.Token)
+		}
+	}
+	return out
+}
+
+// NewTestResult constrói um Result a partir dos resultados por target,
+// derivando os flags (retryable/permanent/invalidTokens) do status de cada
+// target. Utilizado exclusivamente pelos testes (o worker não pode acessar
+// os campos não expostos diretamente).
+func NewTestResult(results ...TargetResult) Result {
+	r := Result{}
+	r.results = results
+	for _, tr := range results {
+		switch tr.Status {
+		case StatusInvalidToken:
+			r.invalidTokens = append(r.invalidTokens, tr.Token)
+		case StatusRetryableError:
+			r.retryable = true
+		case StatusPermanentError:
+			r.permanent = true
+		}
+	}
+	return r
+}
+
 // Delivery entrega push para uma lista de targets.
 type Delivery interface {
 	Send(ctx context.Context, message Message, targets []Target) (Result, error)

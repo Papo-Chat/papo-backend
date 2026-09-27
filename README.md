@@ -50,6 +50,7 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [ ] Campo banned exposto na lista de usuários, função de wipe para mensagens de usuário banido, filtro por banned.
 - [ ] Thumbnail de imagens não segura mais fluxo (async), com ws event
 - [ ] Refactor endpoints (organizar melhor /admin, /messages)
+- [ ] Setting de slowmode - canais
 - [ ] Implementar Testes até 80% Coverage
 - [ ] Bootstrap do servidor através de arquivo boot.strap
 - [ ] Hashed Resync para conexão instável

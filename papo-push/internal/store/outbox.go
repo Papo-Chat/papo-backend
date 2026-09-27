@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -50,6 +51,7 @@ func (s *Store) ClaimDueJobs(ctx context.Context, limit int) ([]PushJob, error) 
 	for rows.Next() {
 		var job PushJob
 		var lastError sql.NullString
+		var deliveredRaw sql.NullString
 		if err := rows.Scan(
 			&job.ID,
 			&job.UserID,
@@ -59,10 +61,17 @@ func (s *Store) ClaimDueJobs(ctx context.Context, limit int) ([]PushJob, error) 
 			&job.NextAttemptAt,
 			&job.CreatedAt,
 			&lastError,
+			&deliveredRaw,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler job da outbox: %w", err)
 		}
 		job.LastError = lastError.String
+		job.DeliveredTokens = []string{}
+		if deliveredRaw.Valid {
+			if err := json.Unmarshal([]byte(deliveredRaw.String), &job.DeliveredTokens); err != nil {
+				job.DeliveredTokens = []string{}
+			}
+		}
 		jobs = append(jobs, job)
 	}
 	if err := rows.Err(); err != nil {
@@ -88,6 +97,37 @@ func (s *Store) ClaimDueJobs(ctx context.Context, limit int) ([]PushJob, error) 
 	return jobs, nil
 }
 
+// GetPushJob retorna um job da outbox pelo id.
+func (s *Store) GetPushJob(ctx context.Context, jobID string) (PushJob, error) {
+	var job PushJob
+	var lastError sql.NullString
+	var deliveredRaw sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT "+pushOutboxColumns+" FROM push_outbox WHERE id = $1",
+		jobID,
+	).Scan(
+		&job.ID,
+		&job.UserID,
+		&job.Payload,
+		&job.NotificationID,
+		&job.Attempts,
+		&job.NextAttemptAt,
+		&job.CreatedAt,
+		&lastError,
+		&deliveredRaw,
+	); err != nil {
+		return PushJob{}, fmt.Errorf("falha ao ler job da outbox: %w", err)
+	}
+	job.LastError = lastError.String
+	job.DeliveredTokens = []string{}
+	if deliveredRaw.Valid {
+		if err := json.Unmarshal([]byte(deliveredRaw.String), &job.DeliveredTokens); err != nil {
+			job.DeliveredTokens = []string{}
+		}
+	}
+	return job, nil
+}
+
 // CompletePushJob remove o job da outbox (entrega concluída ou descartado).
 func (s *Store) CompletePushJob(ctx context.Context, jobID string) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM push_outbox WHERE id = $1", jobID)
@@ -106,6 +146,34 @@ func (s *Store) ReschedulePushJob(ctx context.Context, jobID string, attempts in
 	)
 	if err != nil {
 		return fmt.Errorf("falha ao reagendar o job da outbox: %w", err)
+	}
+	return nil
+}
+
+// MergeDeliveredTokens adiciona tokens entregues ao job, sem duplicatas, na
+// coluna delivered_tokens. É atômico (uma única UPDATE): o job é exclusivo do
+// worker que o processou (reserva via FOR UPDATE SKIP LOCKED move
+// next_attempt_at para o futuro), então não há disputa entre workers.
+// Serve para que, em um retry, o worker não reenvie para dispositivos que já
+// receberam (evita notificação duplicada).
+func (s *Store) MergeDeliveredTokens(ctx context.Context, jobID string, tokens []string) error {
+	if len(tokens) == 0 {
+		return nil
+	}
+	tokensJSON, err := json.Marshal(tokens)
+	if err != nil {
+		return fmt.Errorf("falha ao serializar delivered_tokens: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		"UPDATE push_outbox "+
+			"SET delivered_tokens = ("+
+			"  SELECT COALESCE(jsonb_agg(DISTINCT t), '[]'::jsonb) "+
+			"  FROM jsonb_array_elements(COALESCE(delivered_tokens, '[]'::jsonb) || $1::jsonb) AS t"+
+			") WHERE id = $2",
+		tokensJSON, jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("falha ao atualizar delivered_tokens do job: %w", err)
 	}
 	return nil
 }

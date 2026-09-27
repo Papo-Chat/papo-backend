@@ -24,6 +24,9 @@ CREATE INDEX IF NOT EXISTS push_devices_user_id_idx ON push_devices(user_id);
 -- invalida tokens e finaliza os jobs.
 -- Uma linha = "esta notificação precisa ser entregue aos dispositivos
 -- deste usuário". notification_id NULL para eventos efêmeros (sem row).
+-- delivered_tokens persiste os tokens já entregues em tentativas anteriores,
+-- para que um retry não reenvie (e duplicar) a notificação em dispositivos
+-- que já receberam.
 CREATE TABLE IF NOT EXISTS push_outbox (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     notification_id UUID,
@@ -32,7 +35,8 @@ CREATE TABLE IF NOT EXISTS push_outbox (
     attempts INT NOT NULL DEFAULT 0,
     next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_error TEXT
+    last_error TEXT,
+    delivered_tokens JSONB NOT NULL DEFAULT '[]'::jsonb
 );
 
 CREATE INDEX IF NOT EXISTS push_outbox_due_idx ON push_outbox(next_attempt_at);
