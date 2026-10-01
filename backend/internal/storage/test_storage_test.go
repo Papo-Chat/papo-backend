@@ -21,8 +21,8 @@ import (
 	"papo/internal/models"
 	"papo/internal/utils"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // migrationsDir é o caminho relativo ao diretório deste pacote (backend/internal/storage/test_storage).
@@ -2305,8 +2305,8 @@ func TestGetUserSettings(t *testing.T) {
 	if settings.Version != models.CurrentVersion {
 		t.Errorf("esperava version %d, obtive %d", models.CurrentVersion, settings.Version)
 	}
-	if settings.Config != (models.UserConfig{}) {
-		t.Errorf("esperava config vazio, obtive %+v", settings.Config)
+	if settings.Config != models.DefaultUserConfig() {
+		t.Errorf("esperava config Padrão, obtive %+v", settings.Config)
 	}
 	if settings.UpdatedAt.IsZero() {
 		t.Error("esperava updated_at preenchido")
