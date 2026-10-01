@@ -895,6 +895,9 @@ func ListPinnedMessages(ctx context.Context, channelID, userID string) (models.P
 // permissão em ao menos uma das roles atribuídas a ele.
 func userHasChannelPermission(ctx context.Context, channel models.Channel, userID string, freeIfOpen bool, hasPermission func(models.ChannelPermission) bool) (bool, error) {
 	if channel.Type == "dm" {
+		if !freeIfOpen {
+			return false, nil
+		}
 		member, blocked, err := storage.DirectConversationAccess(ctx, channel.ID, userID)
 		if errors.Is(err, storage.ErrNotFound) {
 			return false, nil
