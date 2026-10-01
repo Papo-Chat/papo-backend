@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"papo/internal/storage"
@@ -50,5 +51,30 @@ func TestCreateMessageRejectsCategoryAndAllowsVoice(t *testing.T) {
 	if err != nil { t.Fatalf("CreateChannel voice: %v", err) }
 	if _, err := CreateMessage(testCtx(), voice.ID, owner.ID, "permitido", "", nil); err != nil {
 		t.Fatalf("voice deveria aceitar mensagem: %v", err)
+	}
+}
+
+
+func TestTranslatePushMentionsPrefersNicknameThenUsername(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil { t.Fatalf("Register: %v", err) }
+
+	nickname := "apelido"
+	user.Nickname = &nickname
+	if _, err := storage.UpdateUser(testCtx(), user.ID, user); err != nil {
+		t.Fatalf("UpdateUser nickname: %v", err)
+	}
+
+	content := fmt.Sprintf("oi @mention(<@%s>)", user.ID)
+	if got := translatePushMentions(testCtx(), content); got != "oi @apelido" {
+		t.Fatalf("menção com nickname = %q", got)
+	}
+
+	user.Nickname = nil
+	if _, err := storage.UpdateUser(testCtx(), user.ID, user); err != nil {
+		t.Fatalf("UpdateUser remove nickname: %v", err)
+	}
+	if got := translatePushMentions(testCtx(), content); got != "oi @"+user.Username {
+		t.Fatalf("fallback para username = %q", got)
 	}
 }
