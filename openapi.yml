@@ -320,12 +320,9 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  users:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/UserSummary'
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserSummary'
         '400':
           description: ids vazio, com item vazio ou acima de 1000 itens
           content:
