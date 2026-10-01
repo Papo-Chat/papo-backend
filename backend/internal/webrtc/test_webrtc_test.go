@@ -1086,3 +1086,64 @@ func TestPeerConnectionWithICEUDPMux(t *testing.T) {
 
 	connectPCs(t, clientPC, serverPC)
 }
+
+
+func TestReleaseAllFromPublishesAudioRoutes(t *testing.T) {
+	events := make(chan any, 1)
+	m := testManager(t, &config.Config{VoiceAudioSlots: 1})
+	m.signaler.SendToClient = func(clientID string, event any) {
+		if clientID != "subscriber-client" {
+			t.Fatalf("clientID = %q, esperado subscriber-client", clientID)
+		}
+		events <- event
+	}
+
+	room := &Room{m: m, channelID: "voice-channel"}
+	pub := &Peer{userID: "publisher-user"}
+	sub := &Peer{
+		m:               m,
+		room:            room,
+		userID:          "subscriber-user",
+		signalingClient: "subscriber-client",
+	}
+
+	opus := webrtc.RTPCodecCapability{
+		MimeType:  webrtc.MimeTypeOpus,
+		ClockRate: 48000,
+		Channels:  2,
+	}
+	local, err := webrtc.NewTrackLocalStaticRTP(opus, "papo-audio-0", "papo-audio")
+	if err != nil {
+		t.Fatalf("NewTrackLocalStaticRTP: %v", err)
+	}
+
+	sub.audioSlots = []*slot{{
+		peer:  sub,
+		local: local,
+		owner: pub,
+		kind:  "audio",
+	}}
+
+	routes := sub.audioRoutesLocked()
+	if len(routes) != 1 || routes[0].TrackID != "papo-audio-0" || routes[0].UserID != "publisher-user" {
+		t.Fatalf("routes iniciais = %#v", routes)
+	}
+
+	sub.releaseAllFrom(pub)
+
+	select {
+	case raw := <-events:
+		event, ok := raw.(VoiceAudioRoutes)
+		if !ok {
+			t.Fatalf("evento = %T, esperado VoiceAudioRoutes", raw)
+		}
+		if event.Type != EventTypeVoiceAudioRoutes || event.ChannelID != "voice-channel" {
+			t.Fatalf("evento inválido: %#v", event)
+		}
+		if len(event.Routes) != 0 {
+			t.Fatalf("routes após release = %#v, esperado vazio", event.Routes)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("voice_audio_routes não foi enviado")
+	}
+}
