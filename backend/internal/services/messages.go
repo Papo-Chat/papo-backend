@@ -294,7 +294,9 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 	}
 	if channel.Type == "dm" {
 		if err := storage.ShowDirectConversationForMembers(ctx, channelID); err != nil {
-			return models.MessageWithAttachment{}, err
+			// A mensagem já foi persistida. Não transforme uma falha auxiliar de
+			// visibilidade da rail em 500, pois o cliente poderia repetir o envio.
+			utils.Errorf("falha ao reabrir DM %s após mensagem %s: %v", channelID, message.ID, err)
 		}
 	}
 
