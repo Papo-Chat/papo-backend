@@ -917,6 +917,46 @@ func TestJWTMiddlewareValidSession(t *testing.T) {
 	}
 }
 
+func TestJWTMiddlewareBannedUserRevokesSessionAndClearsCookie(t *testing.T) {
+	userID := newUser(t)
+	token := newSessionToken(t, userID, time.Now())
+
+	// Simula um estado legado/race em que o usuário foi marcado como banido
+	// enquanto uma conexão de sessão ainda está ativa.
+	if _, err := storage.GetDB().ExecContext(context.Background(),
+		"UPDATE users SET banned = TRUE WHERE id = $1", userID); err != nil {
+		t.Fatalf("falha ao marcar usuário como banido: %v", err)
+	}
+
+	rec, reached := doJWTRequest(t, token)
+	if reached {
+		t.Fatal("usuário banido não deveria alcançar o handler protegido")
+	}
+	assertProblem(t, rec, http.StatusForbidden, "banned",
+		"Usuário banido", "usuário banido; autenticação revogada", "")
+
+	foundExpiredAuth := false
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name != authCookieName {
+			continue
+		}
+		foundExpiredAuth = true
+		if cookie.Value != "" {
+			t.Errorf("cookie Auth deveria ser limpo, obtive valor %q", cookie.Value)
+		}
+		if cookie.MaxAge >= 0 && !cookie.Expires.Before(time.Now()) {
+			t.Errorf("cookie Auth deveria estar expirado: %+v", cookie)
+		}
+	}
+	if !foundExpiredAuth {
+		t.Fatal("esperava Set-Cookie expirando Auth")
+	}
+
+	if err := storage.CheckUserConnection(context.Background(), userID, utils.HashToken(token)); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("middleware deveria revogar a sessão do usuário banido, obtive %v", err)
+	}
+}
+
 func TestJWTMiddlewareMissingCookie(t *testing.T) {
 	rec, reached := doJWTRequest(t, "")
 	if reached {
