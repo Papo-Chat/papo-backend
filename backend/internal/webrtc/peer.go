@@ -3,6 +3,7 @@ package webrtc
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"papo/internal/models"
 
@@ -70,11 +71,20 @@ type Peer struct {
 	videoSlots []*slot
 	audioSlots []*slot
 
-	// estado de voz (o que a UI precisa)
+	// Estado publicado para a UI. cameraOn/screenSharing só viram true quando
+	// a TrackRemote correspondente já existe no SFU; isso impede subscribers
+	// de correrem na frente da renegociação e receberem voice-not-found.
 	muted         bool
 	cameraOn      bool
 	screenSharing bool
-	audioSet      []string // top-K de áudio atual (p/ detecção de mudança)
+
+	// Intenção enviada pelo cliente ANTES do voice_offer. É separada do estado
+	// publicado para que o backend consiga classificar os MIDs sem anunciar
+	// mídia que ainda não chegou ao SFU.
+	cameraIntent bool
+	screenIntent bool
+
+	audioSet []string // top-K de áudio atual (p/ detecção de mudança)
 
 	// fila de renegociação (D4): worker sequencial por PC
 	renegQueue chan func() error
@@ -286,10 +296,12 @@ func (p *Peer) handleOffer(
 
 	if cameraStopped {
 		p.room.releasePublishedKind(p, "video")
+		p.room.setPublishedKind(p, "video", false)
 	}
 
 	if screenStopped {
 		p.room.releasePublishedKind(p, "screen")
+		p.room.setPublishedKind(p, "screen", false)
 	}
 
 	answer, err := pc.CreateAnswer(nil)
@@ -436,8 +448,14 @@ func (p *Peer) onIncomingTrack(track *webrtc.TrackRemote, mid string) {
 		// sem subscribers, senão scores/top-K nunca nascem.
 		_ = p.fanoutFor("audio", track)
 	case roleCamera:
+		// Só anuncia camera_on depois que a track está armazenada e portanto
+		// Subscribe(video) já pode passar em hasActiveTrack.
+		p.room.setPublishedKind(p, "video", true)
 		p.room.rebindPublishedTrack(p, "video", track)
 	case roleScreen:
+		// Mesmo contrato para screen share: o evento de estado passa a ser um
+		// sinal de "track pronta", não apenas intenção de publicar.
+		p.room.setPublishedKind(p, "screen", true)
 		p.room.rebindPublishedTrack(p, "screen", track)
 	}
 }
@@ -476,7 +494,7 @@ func (p *Peer) rebindVideoSlot(pub *Peer, kind string, track *webrtc.TrackRemote
 	p.mu.Unlock()
 
 	if rebound {
-		sendPLI(pub.PC(), track)
+		sendPLIBurst(pub.PC(), track)
 	}
 }
 
@@ -672,8 +690,9 @@ func (p *Peer) assignVideoSlot(pub *Peer, kind string) error {
 
 	p.mu.Unlock()
 
-	// Pion chamada com p.mu solto.
-	sendPLI(pubPC, track)
+	// Pion chamada com p.mu solto. Um pequeno burst melhora a recuperação
+	// quando o primeiro PLI coincide com a ativação do encoder/browser.
+	sendPLIBurst(pubPC, track)
 
 	return nil
 }
@@ -888,11 +907,65 @@ func sendPLI(pc *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	})
 }
 
+func sendPLIBurst(pc *webrtc.PeerConnection, track *webrtc.TrackRemote) {
+	sendPLI(pc, track)
+	if pc == nil || track == nil {
+		return
+	}
+	go func() {
+		for _, delay := range []time.Duration{250 * time.Millisecond, time.Second} {
+			time.Sleep(delay)
+			if pc.ConnectionState() == webrtc.PeerConnectionStateClosed ||
+				pc.ConnectionState() == webrtc.PeerConnectionStateFailed {
+				return
+			}
+			sendPLI(pc, track)
+		}
+	}()
+}
+
 func (p *Peer) mediaIntent() (cameraOn, screenOn bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	return p.cameraOn, p.screenSharing
+	return p.cameraIntent, p.screenIntent
+}
+
+func (p *Peer) updateMediaIntent(cameraOn, screenSharing *bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if cameraOn != nil {
+		p.cameraIntent = *cameraOn
+	}
+	if screenSharing != nil {
+		p.screenIntent = *screenSharing
+	}
+}
+
+func (p *Peer) updatePublishedMedia(
+	cameraOn,
+	screenSharing *bool,
+) (models.VoiceState, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	changed := false
+	if cameraOn != nil && p.cameraOn != *cameraOn {
+		p.cameraOn = *cameraOn
+		changed = true
+	}
+	if screenSharing != nil && p.screenSharing != *screenSharing {
+		p.screenSharing = *screenSharing
+		changed = true
+	}
+
+	return models.VoiceState{
+		UserID:        p.userID,
+		Muted:         p.muted,
+		CameraOn:      p.cameraOn,
+		ScreenSharing: p.screenSharing,
+	}, changed
 }
 
 // state retorna o estado de voz do peer (p/ voice_joined e voice_state_update).
