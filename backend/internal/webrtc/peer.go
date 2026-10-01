@@ -1044,6 +1044,19 @@ func sendPLI(pc *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	})
 }
 
+func (p *Peer) requestKeyframe(track *webrtc.TrackRemote) {
+	if p == nil || track == nil {
+		return
+	}
+
+	pc := p.PC()
+	if pc == nil {
+		return
+	}
+
+	sendPLI(pc, track)
+}
+
 func sendPLIBurst(pc *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	sendPLI(pc, track)
 	if pc == nil || track == nil {
