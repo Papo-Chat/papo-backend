@@ -722,7 +722,7 @@ func TestDispatchMessageNotificationsRespectsChannelPermissions(t *testing.T) {
 	}
 
 	// Menção ao sem-leitura: não notifica.
-	message, err = storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @"+stranger.ID, "", nil)
+	message, err = storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @mention(<@"+stranger.ID+">)", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -732,7 +732,7 @@ func TestDispatchMessageNotificationsRespectsChannelPermissions(t *testing.T) {
 	}
 
 	// Menção ao leitor: notifica.
-	message, err = storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @"+reader.ID, "", nil)
+	message, err = storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @mention(<@"+reader.ID+">)", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
