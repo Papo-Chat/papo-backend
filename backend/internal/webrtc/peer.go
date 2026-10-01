@@ -641,7 +641,14 @@ func (p *Peer) fanoutFor(kind string, track *webrtc.TrackRemote) *fanout {
 	}
 	f := newFanout(track)
 	p.fanouts[kind] = f
-	f.start()
+
+	// Áudio precisa ser lido mesmo sem subscribers para alimentar active
+	// speaker. Vídeo/screen ficam lazy até assignWithFanout(), para não
+	// consumir o keyframe inicial antes do subscriber estar conectado.
+	if kind == "audio" {
+		f.start()
+	}
+
 	return f
 }
 

@@ -61,8 +61,12 @@ func (s *slot) assignWithFanout(
 	s.src = track
 	s.fwd = newForwarder(s, owner, kind, fanout)
 
+	// Para vídeo/screen, o fanout é criado de forma lazy. Inscreva e inicie o
+	// forwarder ANTES de liberar o reader da TrackRemote; assim o keyframe
+	// inicial não pode ser consumido pelo SFU sem nenhum subscriber conectado.
 	fanout.subscribe(s.fwd)
 	s.fwd.start()
+	fanout.start()
 }
 
 // release para de forwardar (slot fica vazio — sem pacotes, D5). O
@@ -214,10 +218,11 @@ func (f *forwarder) run() {
 type fanout struct {
 	track *webrtc.TrackRemote
 
-	mu   sync.Mutex
-	subs map[*forwarder]struct{}
-	done chan struct{}
-	once sync.Once
+	mu        sync.Mutex
+	subs      map[*forwarder]struct{}
+	done      chan struct{}
+	startOnce sync.Once
+	closeOnce sync.Once
 }
 
 func newFanout(track *webrtc.TrackRemote) *fanout {
@@ -228,8 +233,14 @@ func newFanout(track *webrtc.TrackRemote) *fanout {
 	}
 }
 
-// start inicia o reader único da track.
-func (f *fanout) start() { go f.readLoop() }
+// start inicia o reader único da track uma única vez. Para áudio ele começa
+// imediatamente; para vídeo/screen apenas depois que o primeiro forwarder já
+// foi inscrito, evitando perder o keyframe inicial.
+func (f *fanout) start() {
+	f.startOnce.Do(func() {
+		go f.readLoop()
+	})
+}
 
 // subscribe adiciona um forwarder (chamado com o fanout.mu solto — adquire
 // internamente).
@@ -255,7 +266,7 @@ func (f *fanout) unsubscribe(fwd *forwarder) {
 // destroy encerra o reader e todos os forwarders (idempotente). Chamado quando
 // a track é substituída (renegociação) ou o publisher sai/fecha.
 func (f *fanout) destroy() {
-	f.once.Do(func() {
+	f.closeOnce.Do(func() {
 		close(f.done)
 		f.mu.Lock()
 		subs := make([]*forwarder, 0, len(f.subs))
