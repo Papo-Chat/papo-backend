@@ -48,8 +48,9 @@ func SearchHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"pelo menos 1 filtro é obrigatório (text, author, date_start, date_end ou contains_attachment); "+
-				"order deve ser asc ou desc; date_start e date_end devem estar no formato YYYY-MM-DD com date_start <= date_end; "+
+			"pelo menos 1 filtro é obrigatório (text, author, channel_id, mention, has, date_start, date_end ou contains_attachment); "+
+				"channel_id e mention devem ser UUIDs válidos; has deve ser link; order deve ser asc ou desc; "+
+				"date_start e date_end devem estar no formato YYYY-MM-DD com date_start <= date_end; "+
 				"since e last_id devem ser informados juntos")
 	case err != nil:
 		utils.Errorf("request_id=%s falha ao buscar mensagens: %v",

@@ -451,7 +451,7 @@ func TestDispatchMessageNotificationsMention(t *testing.T) {
 	other := notificationTestUser(t)
 	channel := notificationTestChannel(t, owner.ID)
 
-	message, err := storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @"+other.ID, "", nil)
+	message, err := storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @mention(<@"+other.ID+">)", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -466,7 +466,7 @@ func TestDispatchMessageNotificationsMention(t *testing.T) {
 	if deliveries[0].EventID == "" {
 		t.Error("esperava event_id preenchido (row persistida)")
 	}
-	if deliveries[0].MessageContent != "olá @"+other.ID {
+	if deliveries[0].MessageContent != "olá @mention(<@"+other.ID+">)" {
 		t.Errorf("conteúdo inesperado: %q", deliveries[0].MessageContent)
 	}
 }
@@ -563,7 +563,7 @@ func TestDispatchMessageNotificationsOffSetting(t *testing.T) {
 	if _, err := UpdateChannelUserSetting(testCtx(), other.ID, channel.ID, other.ID, "off"); err != nil {
 		t.Fatalf("falha ao atualizar configuração: %v", err)
 	}
-	message, err := storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @"+other.ID, "", nil)
+	message, err := storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @mention(<@"+other.ID+">)", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -657,7 +657,7 @@ func TestDispatchMessageNotificationsIdempotent(t *testing.T) {
 	other := notificationTestUser(t)
 	channel := notificationTestChannel(t, owner.ID)
 
-	message, err := storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @"+other.ID, "", nil)
+	message, err := storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @mention(<@"+other.ID+">)", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -722,7 +722,7 @@ func TestDispatchMessageNotificationsRespectsChannelPermissions(t *testing.T) {
 	}
 
 	// Menção ao sem-leitura: não notifica.
-	message, err = storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @"+stranger.ID, "", nil)
+	message, err = storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @mention(<@"+stranger.ID+">)", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}
@@ -732,7 +732,7 @@ func TestDispatchMessageNotificationsRespectsChannelPermissions(t *testing.T) {
 	}
 
 	// Menção ao leitor: notifica.
-	message, err = storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @"+reader.ID, "", nil)
+	message, err = storage.CreateMessage(context.Background(), channel.ID, owner.ID, "olá @mention(<@"+reader.ID+">)", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem: %v", err)
 	}

@@ -48,8 +48,10 @@ func ListMessagesHandler(baseURL string, c echo.Context) error {
 	}
 	lastID := c.QueryParam("last_id")
 
-	list, err := services.ListMessages(c.Request().Context(), channelID, userID, since, lastID)
+	list, err := services.ListMessagesOrdered(c.Request().Context(), channelID, userID, since, lastID, c.QueryParam("order"))
 	switch {
+	case errors.Is(err, services.ErrInvalidInput):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "order deve ser asc ou desc")
 	case errors.Is(err, services.ErrChannelNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "canal não encontrado")

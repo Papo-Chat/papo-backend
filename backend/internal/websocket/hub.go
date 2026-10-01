@@ -8,6 +8,7 @@ import (
 
 	"papo/internal/storage"
 	"papo/internal/utils"
+	"papo/internal/webrtc"
 )
 
 // Hub mantém os clientes WebSocket ativos em memória e o estado efêmero de
@@ -329,9 +330,15 @@ func (h *Hub) presenceOnline(c *Client) {
 		}, c)
 	}
 
+	members := h.presence.OnlineMembers()
+	if manager := webrtc.GetManager(); manager != nil {
+		for i := range members {
+			members[i].UserVoice = manager.UserVoiceChannels(members[i].UserID)
+		}
+	}
 	c.sendEvent(PresenceSyncOutbound{
 		Type:    EventTypePresenceSync,
-		Members: h.presence.OnlineMembers(),
+		Members: members,
 	})
 }
 

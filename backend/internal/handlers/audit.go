@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -35,9 +36,13 @@ func ListAuditLogsHandler(baseURL string, c echo.Context) error {
 		until = &parsed
 	}
 
-	resp, err := services.ListAuditLogs(c.Request().Context(),
+	resp, err := services.ListAuditLogsOrdered(c.Request().Context(),
 		c.QueryParam("action"), c.QueryParam("actor_id"), c.QueryParam("entity_type"),
-		since, until, c.QueryParam("last_id"))
+		since, until, c.QueryParam("last_id"), c.QueryParam("order"))
+	if errors.Is(err, services.ErrInvalidInput) {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "order deve ser asc ou desc")
+	}
 	if err != nil {
 		utils.Errorf("request_id=%s falha ao listar auditoria: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)

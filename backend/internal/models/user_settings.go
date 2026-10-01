@@ -36,3 +36,17 @@ type Display struct {
 	ShowTimestamps bool   `json:"showTimestamps"`
 	ShowAvatars    bool   `json:"showAvatars"`
 }
+
+
+func DefaultUserConfig() UserConfig {
+	return UserConfig{
+		Theme: "system",
+		Notifications: Notifications{
+			Enabled: true, MessagePreview: true, Sound: true, Mentions: true,
+		},
+		Display: Display{
+			FontSize: "medium", MessageDensity: "normal",
+			ShowTimestamps: true, ShowAvatars: true,
+		},
+	}
+}

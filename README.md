@@ -55,6 +55,7 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [ ] Bootstrap do servidor através de arquivo boot.strap
 - [ ] Hashed Resync para conexão instável
 - [ ] Mais informação no endpoint conexão
+- [ ] Reply Notifications Toggle (@ON @OFF)
 - [ ] 2P-Auth (Authenticator)
 - [ ] SFU com simulcast
 - [ ] Direct Messages / Block User
@@ -66,6 +67,7 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [ ] Moderação de vídeos
 - [ ] Threads
 - [ ] Eventos
+- [ ] Rich Presence
 
 ### E Além...
 

@@ -13,6 +13,8 @@ import (
 	"papo/internal/models"
 	"papo/internal/storage"
 	"papo/internal/utils"
+
+	"github.com/google/uuid"
 )
 
 var ErrUserNotReset = errors.New("flag reset_password ausente")
@@ -48,6 +50,8 @@ const userListLimit = 100
 
 // profileBatchLimit é o limite de ids por requisição de perfis em lote.
 const profileBatchLimit = 50
+
+const userSummaryBatchLimit = 1000
 
 // UpdateSettings valida e salva as configurações do usuário autenticado.
 // Retorna ErrUserNotFound quando o usuário não existe e ErrInvalidInput
@@ -219,7 +223,19 @@ func ProfilesBatch(ctx context.Context, ids []string) ([]models.User, error) {
 // cursor é o par (created_at, id) e usuários do mesmo timestamp com id maior
 // que lastID também são incluídos (evita pular usuários com timestamp igual).
 func ListUsers(ctx context.Context, since *time.Time, lastID string) (models.UserList, error) {
-	users, err := storage.ListUsers(ctx, since, lastID, userListLimit+1)
+	return ListUsersOrdered(ctx, since, lastID, "asc")
+}
+
+func ListUsersOrdered(ctx context.Context, since *time.Time, lastID, order string) (models.UserList, error) {
+	orderAsc := true
+	switch order {
+	case "", "asc":
+	case "desc":
+		orderAsc = false
+	default:
+		return models.UserList{}, ErrInvalidInput
+	}
+	users, err := storage.ListUsersOrdered(ctx, since, lastID, orderAsc, userListLimit+1)
 	if err != nil {
 		return models.UserList{}, err
 	}
@@ -242,6 +258,34 @@ func ListUsers(ctx context.Context, since *time.Time, lastID string) (models.Use
 	}
 
 	return models.UserList{Users: users, HasMore: hasMore}, nil
+}
+
+// UserSummariesBatch retorna UserSummary na ordem da requisição,
+// pulando ids inexistentes e duplicados após a primeira ocorrência.
+func UserSummariesBatch(ctx context.Context, ids []string) ([]models.UserSummary, error) {
+	if len(ids) == 0 || len(ids) > userSummaryBatchLimit { return nil, ErrInvalidInput }
+	seen := make(map[string]struct{}, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" { return nil, ErrInvalidInput }
+		parsed, err := uuid.Parse(id)
+		if err != nil { return nil, ErrInvalidInput }
+		id = parsed.String()
+		if _, ok := seen[id]; ok { continue }
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	summaries, err := storage.GetUserSummariesByIDs(ctx, unique)
+	if err != nil { return nil, err }
+	byID := make(map[string]models.UserSummary, len(summaries))
+	foundIDs := make([]string, 0, len(summaries))
+	for _, summary := range summaries { byID[summary.ID] = summary; foundIDs = append(foundIDs, summary.ID) }
+	rolesByUser, err := storage.GetRoleSummariesByUsers(ctx, foundIDs)
+	if err != nil { return nil, err }
+	for id, summary := range byID { summary.Roles = rolesByUser[id]; byID[id] = summary }
+	result := make([]models.UserSummary, 0, len(summaries))
+	for _, id := range unique { if summary, ok := byID[id]; ok { result = append(result, summary) } }
+	return result, nil
 }
 
 // UpdateUser atualiza o nickname, o status, a description e o typing do

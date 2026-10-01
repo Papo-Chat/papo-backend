@@ -2,6 +2,7 @@ package webrtc
 
 import (
 	"errors"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -375,6 +376,17 @@ func (m *Manager) reserveUserRoom(userID, channelID string) error {
 	}
 	set[channelID] = struct{}{}
 	return nil
+}
+
+// UserVoiceChannels retorna os canais de voz em que o usuário possui
+// peer ativo, em ordem determinística.
+func (m *Manager) UserVoiceChannels(userID string) []string {
+	m.userMu.Lock()
+	defer m.userMu.Unlock()
+	channels := make([]string, 0, len(m.userRooms[userID]))
+	for channelID := range m.userRooms[userID] { channels = append(channels, channelID) }
+	sort.Strings(channels)
+	return channels
 }
 
 func (m *Manager) ClientOffline(userID, clientID string) {

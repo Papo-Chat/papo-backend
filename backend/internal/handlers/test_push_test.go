@@ -279,9 +279,9 @@ func TestPushJobCreatedOnMention(t *testing.T) {
 		t.Fatalf("registro dispositivo: esperava 204, obtive %d", rec.Code)
 	}
 
-	// Menção direta @<user_id> gera notificação (e job de push) para o alvo.
+	// Menção direta @mention(<@user_id>) gera notificação (e job de push) para o alvo.
 	rec = doMultipart(t, e, http.MethodPost, "/messages",
-		map[string]string{"channel_id": channel.ID, "content": "olá @" + otherID}, nil, authCookie(ownerToken))
+		map[string]string{"channel_id": channel.ID, "content": "olá @mention(<@" + otherID + ">)"}, nil, authCookie(ownerToken))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("mensagem: esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
@@ -300,6 +300,13 @@ func TestPushJobCreatedOnMention(t *testing.T) {
 	}
 	if payload.Author == "" {
 		t.Fatal("payload sem author")
+	}
+	mentioned, err := storage.GetUserByID(context.Background(), otherID)
+	if err != nil {
+		t.Fatalf("falha ao buscar usuário mencionado: %v", err)
+	}
+	if payload.Preview != "olá @"+mentioned.Username {
+		t.Fatalf("preview deveria traduzir a menção para username; obtive %q", payload.Preview)
 	}
 }
 

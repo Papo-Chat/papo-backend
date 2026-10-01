@@ -7,6 +7,8 @@ import (
 
 	"papo/internal/models"
 	"papo/internal/storage"
+
+	"github.com/google/uuid"
 )
 
 // searchResultLimit é o número máximo de resultados por página de busca
@@ -18,7 +20,8 @@ const searchDateLayout = "2006-01-02"
 
 // SearchMessages executa a busca de mensagens (POST /search) com full-text
 // search em português (mesmo config 'portuguese' do tsvector) e filtros
-// combináveis: texto, autor, intervalo de datas (inclusive) e attachment.
+// combináveis: texto, autor, canal, menção, link, intervalo de datas
+// (inclusive) e attachment.
 // Pelo menos 1 filtro é obrigatório.
 //
 // A autorização é a mesma da leitura de mensagens: os resultados são
@@ -40,7 +43,31 @@ func SearchMessages(ctx context.Context, req models.SearchRequest, since *time.T
 	}
 
 	text := strings.TrimSpace(req.Text)
-	if text == "" && req.Author == "" && req.DateStart == "" && req.DateEnd == "" && req.ContainsAttachment == nil {
+	if text == "" && req.Author == "" && req.ChannelID == "" && req.Mention == "" &&
+		req.Has == "" && req.DateStart == "" && req.DateEnd == "" && req.ContainsAttachment == nil {
+		return models.SearchResponse{}, ErrInvalidInput
+	}
+
+	channelID := ""
+	if req.ChannelID != "" {
+		parsed, err := uuid.Parse(req.ChannelID)
+		if err != nil { return models.SearchResponse{}, ErrInvalidInput }
+		channelID = parsed.String()
+	}
+
+	mentionToken := ""
+	if req.Mention != "" {
+		parsed, err := uuid.Parse(req.Mention)
+		if err != nil { return models.SearchResponse{}, ErrInvalidInput }
+		mentionToken = "@mention(<@" + parsed.String() + ">)"
+	}
+
+	hasLink := false
+	switch req.Has {
+	case "":
+	case "link":
+		hasLink = true
+	default:
 		return models.SearchResponse{}, ErrInvalidInput
 	}
 
@@ -84,6 +111,9 @@ func SearchMessages(ctx context.Context, req models.SearchRequest, since *time.T
 		UserID:             userID,
 		Text:               text,
 		AuthorID:           req.Author,
+		ChannelID:          channelID,
+		MentionToken:       mentionToken,
+		HasLink:            hasLink,
 		DateStart:          dateStart,
 		DateEndExclusive:   dateEndExclusive,
 		ContainsAttachment: req.ContainsAttachment,

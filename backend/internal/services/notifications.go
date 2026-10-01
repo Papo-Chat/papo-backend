@@ -24,9 +24,44 @@ const (
 )
 
 var (
-	notificationMentionRegex  = regexp.MustCompile(`(?i)@([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
+	notificationMentionRegex  = regexp.MustCompile(`(?i)@mention\(<@([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})>\)`)
 	notificationEveryoneRegex = regexp.MustCompile(`(?i)@everyone\b`)
 )
+
+// translatePushMentions troca @mention(<@userId>) por @nickname, com
+// fallback para @username, apenas no preview enviado ao push.
+func translatePushMentions(ctx context.Context, content string) string {
+	matches := notificationMentionRegex.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 { return content }
+
+	seen := make(map[string]struct{}, len(matches))
+	ids := make([]string, 0, len(matches))
+	for _, match := range matches {
+		id := match[1]
+		if _, ok := seen[id]; ok { continue }
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+
+	users, err := storage.GetUsersByIDs(ctx, ids)
+	if err != nil {
+		utils.Errorf("notificações: falha ao traduzir menções para push: %v", err)
+		return content
+	}
+	names := make(map[string]string, len(users))
+	for _, user := range users {
+		name := user.Username
+		if user.Nickname != nil && *user.Nickname != "" { name = *user.Nickname }
+		names[user.ID] = name
+	}
+
+	return notificationMentionRegex.ReplaceAllStringFunc(content, func(raw string) string {
+		match := notificationMentionRegex.FindStringSubmatch(raw)
+		if len(match) != 2 { return raw }
+		if name, ok := names[match[1]]; ok { return "@" + name }
+		return raw
+	})
+}
 
 // truncateNotificationContent limita o conteúdo ao preview de notificação
 // (512 caracteres, rune-safe).
@@ -90,11 +125,24 @@ func UpdateChannelUserSetting(ctx context.Context, actorID, channelID, targetID,
 // o cursor since + lastID (mesma convenção de mensagens) e limite de 100.
 // O preview do conteúdo da mensagem é truncado a 512 caracteres.
 func ListUserNotifications(ctx context.Context, actorID, targetID string, since *time.Time, lastID string) (models.NotificationList, error) {
+	return ListUserNotificationsOrdered(ctx, actorID, targetID, since, lastID, "desc")
+}
+
+func ListUserNotificationsOrdered(ctx context.Context, actorID, targetID string, since *time.Time, lastID, order string) (models.NotificationList, error) {
 	if actorID != targetID {
 		return models.NotificationList{}, ErrPermissionDenied
 	}
 
-	summaries, err := storage.ListUserNotifications(ctx, targetID, since, lastID, notificationListLimit)
+	orderAsc := false
+	switch order {
+	case "", "desc":
+	case "asc":
+		orderAsc = true
+	default:
+		return models.NotificationList{}, ErrInvalidInput
+	}
+
+	summaries, err := storage.ListUserNotificationsOrdered(ctx, targetID, since, lastID, orderAsc, notificationListLimit)
 	if err != nil {
 		return models.NotificationList{}, err
 	}
@@ -163,7 +211,7 @@ type NotificationDelivery struct {
 // por uma mensagem nova e retorna as entregas a enviar via WebSocket.
 // Rotina async/best-effort: falhas individuais são logadas e puladas.
 //
-// Triggers (geram row + evento): menção direta @user_id no conteúdo,
+// Triggers (geram row + evento): menção direta @mention(<@user_id>) no conteúdo,
 // reply_to de uma mensagem do usuário e @everyone (somente quando o autor
 // tem a permissão everyone_message; sem a permissão, @everyone não faz
 // nada). O autor da mensagem nunca é notificado. Configuração 'all' sem
@@ -179,6 +227,10 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 	}
 	if message.Content != nil {
 		content = *message.Content
+	}
+	pushContent := content
+	if cfg.UseFCMRelay {
+		pushContent = translatePushMentions(ctx, content)
 	}
 
 	triggered := make(map[string]bool)
@@ -288,7 +340,7 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 			if cfg.UseFCMRelay {
 				notificationID = &notification.ID
 
-				payload := buildPushJobPayload(notificationID, message.ID, message.ChannelID, authorUsername, content)
+				payload := buildPushJobPayload(notificationID, message.ID, message.ChannelID, authorUsername, pushContent)
 				if err := storage.CreatePushJobInTx(tx, ctx, candidate.UserID, notificationID, payload); err != nil {
 					utils.Errorf("request_id=%s notificações: falha ao gravar o job de push do usuário %s: %v",
 						requestID, candidate.UserID, err)
@@ -313,7 +365,7 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 
 			if cfg.UseFCMRelay {
 				notificationID = &ephemeralID
-				payload := buildPushJobPayload(notificationID, message.ID, message.ChannelID, authorUsername, content)
+				payload := buildPushJobPayload(notificationID, message.ID, message.ChannelID, authorUsername, pushContent)
 				if err := storage.CreatePushJob(ctx, candidate.UserID, notificationID, payload); err != nil {
 					utils.Errorf("request_id=%s notificações: falha ao gravar o job de push do usuário %s: %v",
 						requestID, candidate.UserID, err)

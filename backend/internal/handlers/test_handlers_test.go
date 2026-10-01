@@ -3949,8 +3949,9 @@ func TestSearchRouteNoFilter(t *testing.T) {
 	rec := do(t, e, http.MethodPost, "/search", body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"pelo menos 1 filtro é obrigatório (text, author, date_start, date_end ou contains_attachment); "+
-			"order deve ser asc ou desc; date_start e date_end devem estar no formato YYYY-MM-DD com date_start <= date_end; "+
+		"pelo menos 1 filtro é obrigatório (text, author, channel_id, mention, has, date_start, date_end ou contains_attachment); "+
+			"channel_id e mention devem ser UUIDs válidos; has deve ser link; order deve ser asc ou desc; "+
+			"date_start e date_end devem estar no formato YYYY-MM-DD com date_start <= date_end; "+
 			"since e last_id devem ser informados juntos")
 }
 
@@ -4808,8 +4809,8 @@ func TestWhoamiHandlerSuccess(t *testing.T) {
 	if resp.Settings.Version != models.CurrentVersion {
 		t.Errorf("esperava settings.version %d, obtive %d", models.CurrentVersion, resp.Settings.Version)
 	}
-	if resp.Settings.Config != (models.UserConfig{}) {
-		t.Errorf("esperava settings.config vazio, obtive %+v", resp.Settings.Config)
+	if resp.Settings.Config != models.DefaultUserConfig() {
+		t.Errorf("esperava settings.config padrão, obtive %+v", resp.Settings.Config)
 	}
 }
 
@@ -10485,8 +10486,9 @@ func TestSearchHandlerNoFilter(t *testing.T) {
 		t.Fatalf("SearchHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"pelo menos 1 filtro é obrigatório (text, author, date_start, date_end ou contains_attachment); "+
-			"order deve ser asc ou desc; date_start e date_end devem estar no formato YYYY-MM-DD com date_start <= date_end; "+
+		"pelo menos 1 filtro é obrigatório (text, author, channel_id, mention, has, date_start, date_end ou contains_attachment); "+
+			"channel_id e mention devem ser UUIDs válidos; has deve ser link; order deve ser asc ou desc; "+
+			"date_start e date_end devem estar no formato YYYY-MM-DD com date_start <= date_end; "+
 			"since e last_id devem ser informados juntos")
 }
 
@@ -10516,8 +10518,9 @@ func TestSearchHandlerSinceWithoutLastID(t *testing.T) {
 		t.Fatalf("SearchHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"pelo menos 1 filtro é obrigatório (text, author, date_start, date_end ou contains_attachment); "+
-			"order deve ser asc ou desc; date_start e date_end devem estar no formato YYYY-MM-DD com date_start <= date_end; "+
+		"pelo menos 1 filtro é obrigatório (text, author, channel_id, mention, has, date_start, date_end ou contains_attachment); "+
+			"channel_id e mention devem ser UUIDs válidos; has deve ser link; order deve ser asc ou desc; "+
+			"date_start e date_end devem estar no formato YYYY-MM-DD com date_start <= date_end; "+
 			"since e last_id devem ser informados juntos")
 }
 

@@ -78,18 +78,24 @@ func GetEmojiByID(ctx context.Context, id string) (models.Emoji, error) {
 // pular emojis com timestamp igual).
 // Se limit for > 0, retorna no máximo limit emojis.
 func ListEmojis(ctx context.Context, since *time.Time, lastID string, limit int) ([]models.Emoji, error) {
+	return ListEmojisOrdered(ctx, since, lastID, true, limit)
+}
+
+func ListEmojisOrdered(ctx context.Context, since *time.Time, lastID string, orderAsc bool, limit int) ([]models.Emoji, error) {
 	query := "SELECT " + emojiColumns + " " + emojiFrom
 	args := []any{}
 	where := ""
+	op, order := "<", "DESC"
+	if orderAsc { op, order = ">", "ASC" }
 	if since != nil {
 		var cond string
 		if lastID != "" {
-			cond = "(e.created_at > $" + strconv.Itoa(len(args)+1) +
+			cond = "(e.created_at " + op + " $" + strconv.Itoa(len(args)+1) +
 				" OR (e.created_at = $" + strconv.Itoa(len(args)+1) +
-				" AND e.id > $" + strconv.Itoa(len(args)+2) + "))"
+				" AND e.id " + op + " $" + strconv.Itoa(len(args)+2) + "))"
 			args = append(args, *since, lastID)
 		} else {
-			cond = "e.created_at > $" + strconv.Itoa(len(args)+1)
+			cond = "e.created_at " + op + " $" + strconv.Itoa(len(args)+1)
 			args = append(args, *since)
 		}
 		if where != "" {
@@ -100,7 +106,7 @@ func ListEmojis(ctx context.Context, since *time.Time, lastID string, limit int)
 	if where != "" {
 		query += " WHERE " + where
 	}
-	query += " ORDER BY e.created_at, e.id"
+	query += " ORDER BY e.created_at " + order + ", e.id " + order
 	if limit > 0 {
 		query += " LIMIT $" + strconv.Itoa(len(args)+1)
 		args = append(args, limit)

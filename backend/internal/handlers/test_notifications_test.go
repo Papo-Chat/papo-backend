@@ -524,7 +524,7 @@ func storageMustCreateMessage(t *testing.T, channelID, authorID string) string {
 // --- disparo de notificações (POST /messages) ---
 
 // TestCreateMessageRouteMentionCreatesNotification garante que uma menção
-// direta @<user_id> gera notificação persistida para o usuário mencionado
+// direta @mention(<@user_id>) gera notificação persistida para o usuário mencionado
 // (configuração padrão only_mentions).
 func TestCreateMessageRouteMentionCreatesNotification(t *testing.T) {
 	e := newApp()
@@ -534,7 +534,7 @@ func TestCreateMessageRouteMentionCreatesNotification(t *testing.T) {
 	otherID, otherToken := registerAndLogin(t, e)
 
 	rec := doMultipart(t, e, http.MethodPost, "/messages",
-		map[string]string{"channel_id": channel.ID, "content": "olá @" + otherID}, nil, authCookie(ownerToken))
+		map[string]string{"channel_id": channel.ID, "content": "olá @mention(<@" + otherID + ">)"}, nil, authCookie(ownerToken))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
@@ -648,7 +648,7 @@ func TestCreateMessageRouteOffSettingSuppressesNotification(t *testing.T) {
 	setChannelNotificationSetting(t, e, otherToken, channel.ID, otherID, "off")
 
 	rec := doMultipart(t, e, http.MethodPost, "/messages",
-		map[string]string{"channel_id": channel.ID, "content": "olá @" + otherID}, nil, authCookie(ownerToken))
+		map[string]string{"channel_id": channel.ID, "content": "olá @mention(<@" + otherID + ">)"}, nil, authCookie(ownerToken))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
@@ -665,7 +665,7 @@ func TestCreateMessageRouteAuthorNotNotified(t *testing.T) {
 	channel := createChannelFor(t, "chn_"+randHex(4))
 
 	rec := doMultipart(t, e, http.MethodPost, "/messages",
-		map[string]string{"channel_id": channel.ID, "content": "olá @" + ownerID}, nil, authCookie(ownerToken))
+		map[string]string{"channel_id": channel.ID, "content": "olá @mention(<@" + ownerID + ">)"}, nil, authCookie(ownerToken))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
@@ -721,7 +721,7 @@ func TestCreateMessageRouteSendsNewNotificationEvent(t *testing.T) {
 	// primeiro evento: presence_sync da própria conexão
 	readWSMessage(t, conn)
 
-	content := "olá @" + otherID
+	content := "olá @mention(<@" + otherID + ">)"
 	rec := doMultipart(t, e, http.MethodPost, "/messages",
 		map[string]string{"channel_id": channel.ID, "content": content}, nil, authCookie(ownerToken))
 	if rec.Code != http.StatusCreated {

@@ -182,6 +182,10 @@ func derefString(s *string) string {
 // seguindo a convenção do restante do storage; o count de cada grupo é o
 // número de usuários do grupo na página.
 func ListReactionsByMessage(ctx context.Context, messageID string, since *time.Time, lastID string, limit int) ([]models.MessageReactionGroup, bool, error) {
+	return ListReactionsByMessageOrdered(ctx, messageID, since, lastID, false, limit)
+}
+
+func ListReactionsByMessageOrdered(ctx context.Context, messageID string, since *time.Time, lastID string, orderAsc bool, limit int) ([]models.MessageReactionGroup, bool, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
@@ -189,19 +193,22 @@ func ListReactionsByMessage(ctx context.Context, messageID string, since *time.T
 
 	query := "SELECT id, emoji_id, unicode, user_id, created_at FROM message_reactions WHERE message_id = $1"
 	args := []any{messageID}
+	op, order := "<", "DESC"
+	if orderAsc { op, order = ">", "ASC" }
 
 	if since != nil {
 		if lastID != "" {
-			query += " AND (created_at < $2 OR (created_at = $2 AND id < $3))"
+			query += " AND (created_at " + op + " $2 OR (created_at = $2 AND id " + op + " $3))"
 			args = append(args, *since, lastID)
-			query += " ORDER BY created_at DESC, id DESC LIMIT $4"
+			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $4"
 		} else {
+			// since sem last_id mantém o filtro histórico "criado depois".
 			query += " AND created_at > $2"
 			args = append(args, *since)
-			query += " ORDER BY created_at DESC, id DESC LIMIT $3"
+			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $3"
 		}
 	} else {
-		query += " ORDER BY created_at DESC, id DESC LIMIT $2"
+		query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $2"
 	}
 	args = append(args, fetch)
 

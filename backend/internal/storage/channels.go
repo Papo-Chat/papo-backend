@@ -202,6 +202,20 @@ func UpdateChannelPermissions(ctx context.Context, channelID, roleID string, per
 	return channel, nil
 }
 
+// DeleteChannelRolePermission remove a entrada da role das permissões
+// JSONB do canal. Ausência do vínculo é idempotente.
+func DeleteChannelRolePermission(ctx context.Context, channelID, roleID string) error {
+	result, err := GetDB().ExecContext(ctx,
+		`UPDATE channels
+		 SET permissions = COALESCE(permissions, '{}'::jsonb) - $2::text
+		 WHERE id = $1`,
+		channelID, roleID,
+	)
+	if err != nil { return fmt.Errorf("falha ao remover role das permissões do canal: %w", err) }
+	if n, _ := result.RowsAffected(); n == 0 { return ErrNotFound }
+	return nil
+}
+
 // ChangeChannelPosition move um canal para newPosition e recalcula as
 // posições dos demais canais (as posições permanecem contíguas, de 1 até o
 // número de canais). A operação é serializada com o mesmo advisory lock da

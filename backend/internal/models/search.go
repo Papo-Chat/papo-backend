@@ -3,11 +3,14 @@ package models
 import "time"
 
 // SearchRequest é o corpo de POST /search. Pelo menos 1 filtro é
-// obrigatório (text, author, date_start, date_end ou contains_attachment);
-// os filtros podem ser combinados.
+// obrigatório (text, author, channel_id, mention, has, date_start, date_end
+// ou contains_attachment); os filtros podem ser combinados.
 type SearchRequest struct {
 	Text               string `json:"text"`
 	Author             string `json:"author"`
+	ChannelID          string `json:"channel_id"`
+	Mention            string `json:"mention"`
+	Has                string `json:"has"`
 	Order              string `json:"order"`
 	DateStart          string `json:"date_start"`
 	DateEnd            string `json:"date_end"`

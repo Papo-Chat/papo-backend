@@ -144,6 +144,25 @@ func ProfileBatchHandler(baseURL string, c echo.Context) error {
 	return c.JSON(http.StatusOK, profileBatchResponse{Profiles: profiles})
 }
 
+func UserSummaryBatchHandler(baseURL string, c echo.Context) error {
+	if _, ok := c.Get(middleware.UserIDContextKey).(string); !ok {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado", "token de autenticação ausente, inválido ou expirado")
+	}
+	var req profileBatchRequest
+	if err := c.Bind(&req); err != nil {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
+	}
+	users, err := services.UserSummariesBatch(c.Request().Context(), req.IDs)
+	switch {
+	case errors.Is(err, services.ErrInvalidInput):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "ids deve conter entre 1 e 1000 ids não vazios")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao recuperar resumos dos usuários: %v", c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError, "internal", "Erro interno", "falha ao recuperar resumos dos usuários")
+	}
+	return c.JSON(http.StatusOK, users)
+}
+
 // ListUsersHandler implementa GET /users.
 // Os parâmetros de query since (timestamp ISO 8601 para polling de novos
 // usuários) e last_id (id do último usuário da página anterior, usado com
@@ -167,7 +186,10 @@ func ListUsersHandler(baseURL string, c echo.Context) error {
 	}
 	lastID := c.QueryParam("last_id")
 
-	list, err := services.ListUsers(c.Request().Context(), since, lastID)
+	list, err := services.ListUsersOrdered(c.Request().Context(), since, lastID, c.QueryParam("order"))
+	if errors.Is(err, services.ErrInvalidInput) {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "order deve ser asc ou desc")
+	}
 	if err != nil {
 		utils.Errorf("request_id=%s falha ao listar usuários: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)

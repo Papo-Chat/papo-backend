@@ -219,12 +219,12 @@ func ListReactionsHandler(baseURL string, c echo.Context) error {
 	}
 	lastID := c.QueryParam("last_id")
 
-	list, err := services.ListMessageReactions(c.Request().Context(), channelID, messageID, userID, since, lastID)
+	list, err := services.ListMessageReactionsOrdered(c.Request().Context(), channelID, messageID, userID, since, lastID, c.QueryParam("order"))
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"channel_id e message_id são obrigatórios")
+			"channel_id e message_id são obrigatórios; order deve ser asc ou desc")
 	case errors.Is(err, services.ErrMessageNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado",

@@ -396,3 +396,31 @@ func UpdateChannelPermissions(ctx context.Context, actorID, channelID, roleID st
 
 	return permission, nil
 }
+
+
+// DeleteChannelRolePermission remove apenas o vínculo de permissões da role
+// com o canal. Canal e role precisam existir; vínculo ausente é idempotente.
+func DeleteChannelRolePermission(ctx context.Context, actorID, channelID, roleID string) error {
+	if channelID == "" { return ErrChannelNotFound }
+	if roleID == "" { return ErrRoleNotFound }
+
+	if _, err := storage.GetChannelByID(ctx, channelID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) { return ErrChannelNotFound }
+		return err
+	}
+	if _, err := storage.GetRoleByID(ctx, roleID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) { return ErrRoleNotFound }
+		return err
+	}
+	if err := storage.DeleteChannelRolePermission(ctx, channelID, roleID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) { return ErrChannelNotFound }
+		return err
+	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID: actorID, Action: ActionChannelPermUpdate,
+		EntityType: EntityChannel, EntityID: &channelID,
+		Metadata: map[string]any{"role_id": roleID, "removed": true},
+	})
+	return nil
+}

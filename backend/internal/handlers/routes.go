@@ -50,6 +50,9 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	e.POST("/users/profile_batch", func(c echo.Context) error {
 		return ProfileBatchHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
+	e.POST("/users/user_summary_batch", func(c echo.Context) error {
+		return UserSummaryBatchHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
 	e.PUT("/users/settings", func(c echo.Context) error {
 		return UpdateSettingsHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
@@ -129,6 +132,9 @@ func RegisterChannelRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware)
 	e.PUT("/channels/:channel_id/permissions/:role_id", func(c echo.Context) error {
 		return UpdateChannelPermissionsHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware, middleware.RequireManageChannels())
+	e.DELETE("/channels/:channel_id/role/:role_id", func(c echo.Context) error {
+		return DeleteChannelRoleHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware, middleware.RequireManageChannels())
 	e.POST("/channels/:channel_id/user/:user_id/settings", func(c echo.Context) error {
 		return UpdateChannelUserSettingHandler(cfg.BaseURL, c)
