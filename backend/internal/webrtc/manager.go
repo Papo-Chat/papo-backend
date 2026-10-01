@@ -513,7 +513,7 @@ func (m *Manager) Subscribe(
 		return ErrVoiceNotFound
 	}
 
-	return sub.assignVideoSlot(pub, kind)
+	return sub.subscribeVideo(pub, kind)
 }
 
 // Unsubscribe para de forwardar a track de vídeo/screen do publisher para o
