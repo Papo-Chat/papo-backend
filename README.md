@@ -228,6 +228,10 @@ THUMBNAIL_ENABLED=true
 # Ative para a aplicação reconhecer o routing de IPs e Proxy do CloudFlare, recomendado que o operador use CloudFlare proxy (a nuvem laranja) e ative o CSAM interno do mesmo
 CLOUDFLARE_PROXY=false
 
+# Se houver nginx/Caddy/HAProxy na mesma máquina, confie apenas no peer local.
+# Não use junto com CLOUDFLARE_PROXY=true.
+TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+
 # Moderação assíncrona de imagens. Desativada por padrão;
 # requer Python 3.10+ com `pip install -r moderation_worker/requirements.txt`.
 # off | flag | blur | block (block exclui a mensagem).
