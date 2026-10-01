@@ -1973,9 +1973,17 @@ func TestUpdateSettingsNonexistentUser(t *testing.T) {
 // --- BanUser ---
 
 func TestBanUser(t *testing.T) {
-	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	username := newRandomUsername()
+	password := newRandomPassword()
+	ip := newRandomIP()
+	user, err := Register(testCtx(), username, password, ip)
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	token, _, err := CreateSessionConnection(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("falha ao criar sessão antes do banimento: %v", err)
 	}
 
 	if err := BanUser(testCtx(), testActorID(), user.ID, true); err != nil {
@@ -1988,6 +1996,12 @@ func TestBanUser(t *testing.T) {
 	if !stored.Banned {
 		t.Error("esperava banned = true")
 	}
+	if err := storage.CheckUserConnection(testCtx(), user.ID, utils.HashToken(token)); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("sessão existente deveria ser revogada no banimento, obtive %v", err)
+	}
+	if _, err := Login(testCtx(), username, password, newRandomIP()); !errors.Is(err, ErrBannedIP) {
+		t.Fatalf("usuário banido não deveria autenticar novamente, obtive %v", err)
+	}
 
 	if err := BanUser(testCtx(), testActorID(), user.ID, false); err != nil {
 		t.Fatalf("BanUser(false) retornou erro: %v", err)
@@ -1998,6 +2012,12 @@ func TestBanUser(t *testing.T) {
 	}
 	if stored.Banned {
 		t.Error("esperava banned = false após desbanir")
+	}
+	if err := storage.CheckUserConnection(testCtx(), user.ID, utils.HashToken(token)); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("desbanir não deve reativar sessão antiga, obtive %v", err)
+	}
+	if _, err := Login(testCtx(), username, password, newRandomIP()); err != nil {
+		t.Fatalf("usuário desbanido deveria poder autenticar novamente: %v", err)
 	}
 }
 

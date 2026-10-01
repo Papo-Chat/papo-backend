@@ -592,7 +592,13 @@ paths:
     put:
       tags: [Users]
       summary: Bane ou desbane um usuário (banimento global)
-      description: "Permission Check: dono de um servidor ou `manage_server`"
+      description: |
+        Permission Check: dono de um servidor ou `manage_server`.
+        Ao banir (`ban_state: true`), todas as sessões do usuário são
+        revogadas imediatamente e suas conexões WebSocket são encerradas.
+        Cookies de sessão remanescentes são rejeitados e expirados na próxima
+        requisição autenticada. O usuário banido não pode realizar novo login.
+        Desbanir não reativa sessões antigas; é necessário autenticar novamente.
       parameters:
         - $ref: '#/components/parameters/UserId'
       requestBody:

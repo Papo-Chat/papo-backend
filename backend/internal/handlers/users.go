@@ -502,18 +502,28 @@ func BanUserHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "campo 'ban_state' é obrigatório")
 	}
 
-	switch err := services.BanUser(c.Request().Context(), userID, targetID, *req.BanState); {
-	case errors.Is(err, services.ErrUserNotFound):
-		return utils.SendProblem(c, baseURL, http.StatusNotFound,
-			"not-found", "Recurso não encontrado", "usuário não encontrado")
-	case errors.Is(err, services.ErrServerOwner):
-		return utils.SendProblem(c, baseURL, http.StatusConflict,
-			"conflict", "Ação proibida", "usuário dono do servidor")
-	case err != nil:
-		utils.Errorf("request_id=%s falha ao alterar o estado de banimento do usuário: %v",
-			c.Request().Header.Get(echo.HeaderXRequestID), err)
-		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
-			"internal", "Erro interno", "falha ao alterar o estado de banimento do usuário")
+	if err := services.BanUser(c.Request().Context(), userID, targetID, *req.BanState); err != nil {
+		switch {
+		case errors.Is(err, services.ErrUserNotFound):
+			return utils.SendProblem(c, baseURL, http.StatusNotFound,
+				"not-found", "Recurso não encontrado", "usuário não encontrado")
+		case errors.Is(err, services.ErrServerOwner):
+			return utils.SendProblem(c, baseURL, http.StatusConflict,
+				"conflict", "Ação proibida", "usuário dono do servidor")
+		default:
+			utils.Errorf("request_id=%s falha ao alterar o estado de banimento do usuário: %v",
+				c.Request().Header.Get(echo.HeaderXRequestID), err)
+			return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+				"internal", "Erro interno", "falha ao alterar o estado de banimento do usuário")
+		}
+	}
+
+	if *req.BanState {
+		disconnected := websocket.GetHub().DisconnectUser(targetID)
+		if disconnected > 0 {
+			utils.Infof("request_id=%s usuário banido %s: %d websocket(s) encerrado(s)",
+				c.Request().Header.Get(echo.HeaderXRequestID), targetID, disconnected)
+		}
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{

@@ -327,7 +327,12 @@ func ListUsersWithActiveConnections(ctx context.Context, userIDs []string) (map[
 	}
 
 	rows, err := GetDB().QueryContext(ctx,
-		"SELECT DISTINCT user_id FROM user_connections WHERE user_id = ANY($1) AND replaced_at IS NULL",
+		`SELECT DISTINCT uc.user_id
+		 FROM user_connections uc
+		 JOIN users u ON u.id = uc.user_id
+		 WHERE uc.user_id = ANY($1)
+		   AND uc.replaced_at IS NULL
+		   AND u.banned = FALSE`,
 		userIDs,
 	)
 	if err != nil {
