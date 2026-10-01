@@ -37,7 +37,12 @@ func ListUserBlocks(ctx context.Context, userID string) (UserBlockList, error) {
 }
 
 func BlockUser(ctx context.Context, userID, targetID string) error {
-	if _, err := uuid.Parse(targetID); err != nil || targetID == userID {
+	parsedTarget, err := uuid.Parse(targetID)
+	if err != nil {
+		return ErrInvalidInput
+	}
+	targetID = parsedTarget.String()
+	if targetID == userID {
 		return ErrInvalidInput
 	}
 	if _, err := storage.GetUserByID(ctx, targetID); err != nil {
@@ -52,7 +57,12 @@ func BlockUser(ctx context.Context, userID, targetID string) error {
 // UnblockUser é idempotente: desbloquear um usuário que já não está
 // bloqueado retorna sucesso.
 func UnblockUser(ctx context.Context, userID, targetID string) error {
-	if _, err := uuid.Parse(targetID); err != nil || targetID == userID {
+	parsedTarget, err := uuid.Parse(targetID)
+	if err != nil {
+		return ErrInvalidInput
+	}
+	targetID = parsedTarget.String()
+	if targetID == userID {
 		return ErrInvalidInput
 	}
 	return storage.DeleteUserBlock(ctx, userID, targetID)
