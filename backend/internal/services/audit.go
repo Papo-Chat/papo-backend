@@ -117,6 +117,18 @@ func RecordAudit(ctx context.Context, e AuditEntry) {
 // (last_id), 100 por página. A autorização (manage_server) é feita no
 // middleware da rota; este serviço apenas aplica os filtros e monta a página.
 func ListAuditLogs(ctx context.Context, action, actorID, entityType string, since, until *time.Time, lastID string) (models.AuditLogList, error) {
+	return ListAuditLogsOrdered(ctx, action, actorID, entityType, since, until, lastID, "desc")
+}
+
+func ListAuditLogsOrdered(ctx context.Context, action, actorID, entityType string, since, until *time.Time, lastID, order string) (models.AuditLogList, error) {
+	orderAsc := false
+	switch order {
+	case "", "desc":
+	case "asc":
+		orderAsc = true
+	default:
+		return models.AuditLogList{}, ErrInvalidInput
+	}
 	logs, err := storage.ListAuditLogs(ctx, storage.AuditLogParams{
 		Action:     action,
 		ActorID:    actorID,
@@ -124,6 +136,7 @@ func ListAuditLogs(ctx context.Context, action, actorID, entityType string, sinc
 		Since:      since,
 		Until:      until,
 		LastID:     lastID,
+		OrderAsc:   orderAsc,
 		Limit:      auditLogPageSize,
 	})
 	if err != nil {

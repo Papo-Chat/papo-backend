@@ -24,6 +24,7 @@ type AuditLogParams struct {
 	Since      *time.Time
 	Until      *time.Time
 	LastID     string
+	OrderAsc   bool
 	Limit      int
 }
 
@@ -136,8 +137,10 @@ func ListAuditLogs(ctx context.Context, p AuditLogParams) ([]models.AuditLog, er
 	if lastCreatedAt != nil {
 		cursorTimeArg := arg(*lastCreatedAt)
 		lastIDArg := arg(p.LastID)
-		conds = append(conds, "(created_at < "+cursorTimeArg+
-			" OR (created_at = "+cursorTimeArg+" AND id < "+lastIDArg+"))")
+		op := "<"
+		if p.OrderAsc { op = ">" }
+		conds = append(conds, "(created_at "+op+" "+cursorTimeArg+
+			" OR (created_at = "+cursorTimeArg+" AND id "+op+" "+lastIDArg+"))")
 	}
 
 	where := ""
@@ -145,8 +148,10 @@ func ListAuditLogs(ctx context.Context, p AuditLogParams) ([]models.AuditLog, er
 		where = " WHERE " + strings.Join(conds, " AND ")
 	}
 
+	order := "DESC"
+	if p.OrderAsc { order = "ASC" }
 	query := "SELECT " + auditLogColumns + " FROM audit_logs" + where +
-		" ORDER BY created_at DESC, id DESC LIMIT " + arg(fetch)
+		" ORDER BY created_at " + order + ", id " + order + " LIMIT " + arg(fetch)
 
 	rows, err := GetDB().QueryContext(ctx, query, args...)
 	if err != nil {
