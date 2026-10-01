@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/rtcp"
@@ -12,10 +13,13 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-// forwarderBuffer é o tamanho do buffer de pacotes por forwarder (slot).
-// Absorve bursts; quando estoura (subscriber lento), o pacote é descartado
-// (drop-on-overflow) para não dar backpressure ao reader único do fanout.
-const forwarderBuffer = 64
+// Buffers curtos absorvem jitter de scheduler sem transformar congestionamento
+// em centenas de ms de latência. Vídeo recebe mais espaço porque um frame pode
+// ocupar dezenas de pacotes RTP em 1080p/30.
+const (
+	audioForwarderBuffer = 64
+	videoForwarderBuffer = 128
+)
 
 // slot é um slot de envio pré-alocado de um subscriber (D5): uma
 // TrackLocalStaticRTP fixa, bound a um RTPSender na renegociação de join.
@@ -104,10 +108,12 @@ func (s *slot) startRTCPFeedback() {
 			needsKeyframe := false
 			for _, packet := range packets {
 				switch packet.(type) {
-				case *rtcp.PictureLossIndication,
-					*rtcp.FullIntraRequest,
-					*rtcp.TransportLayerNack:
+				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
 					needsKeyframe = true
+				case *rtcp.TransportLayerNack:
+					// RegisterDefaultInterceptors já instala o NACK responder
+					// no stream de saída e retransmite do cache usando o SSN do
+					// slot. Transformar todo NACK em PLI criava keyframe storms.
 				}
 			}
 			if !needsKeyframe {
@@ -124,7 +130,7 @@ func (s *slot) startRTCPFeedback() {
 				continue
 			}
 
-			sendPLI(owner.PC(), src)
+			owner.requestKeyframe(src)
 		}
 	}()
 }
@@ -146,6 +152,7 @@ type forwarder struct {
 	wasMuted          bool
 	waitingKeyframe   bool
 	lastKeyframePLIAt time.Time
+	resyncNeeded      atomic.Bool
 }
 
 func newForwarder(
@@ -154,12 +161,17 @@ func newForwarder(
 	kind string,
 	fanout *fanout,
 ) *forwarder {
+	bufferSize := audioForwarderBuffer
+	if kind == "video" || kind == "screen" {
+		bufferSize = videoForwarderBuffer
+	}
+
 	return &forwarder{
 		slot:            slot,
 		owner:           owner,
 		kind:            kind,
 		fanout:          fanout,
-		ch:              make(chan *rtp.Packet, forwarderBuffer),
+		ch:              make(chan *rtp.Packet, bufferSize),
 		done:            make(chan struct{}),
 		waitingKeyframe: kind == "video" || kind == "screen",
 	}
@@ -191,6 +203,15 @@ func (f *forwarder) run() {
 				return
 			}
 
+			if f.resyncNeeded.Swap(false) && f.kind != "audio" {
+				// Houve overflow local antes do envio. Como o translator esconde
+				// o gap de SSN, continuar o frame produziria corrupção visual no
+				// decoder. Descartamos até um novo keyframe.
+				f.waitingKeyframe = true
+				f.slot.translator.resetSource()
+				f.lastKeyframePLIAt = time.Time{}
+			}
+
 			if f.kind == "audio" {
 				if !f.owner.shouldForwardAudio() {
 					f.wasMuted = true
@@ -209,7 +230,7 @@ func (f *forwarder) run() {
 					now := time.Now()
 					if f.lastKeyframePLIAt.IsZero() || now.Sub(f.lastKeyframePLIAt) >= 500*time.Millisecond {
 						f.lastKeyframePLIAt = now
-						sendPLI(f.owner.PC(), f.fanout.track)
+						f.owner.requestKeyframe(f.fanout.track)
 					}
 					continue
 				}
@@ -240,7 +261,7 @@ func (f *forwarder) run() {
 type fanout struct {
 	track *webrtc.TrackRemote
 
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	subs      map[*forwarder]struct{}
 	done      chan struct{}
 	startOnce sync.Once
@@ -322,39 +343,53 @@ func (f *fanout) readLoop() {
 	}
 }
 
-// distribute replica o pacote aos forwarders ativos. Com 2+ subscribers cada
-// um recebe uma CÓPIA (o translator altera o SSN in-place); com 1 subscriber
-// recebe o pacote original (sem alocação). Subscriber lento → drop.
+// distribute replica o pacote aos forwarders ativos sem alocar uma slice de
+// subscribers a cada pacote. Em overflow descartamos o pacote MAIS ANTIGO e
+// mantemos o mais novo, evitando aumentar a latência. Para vídeo/screen,
+// qualquer overflow também força resync por keyframe para nunca entregar ao
+// decoder um frame parcialmente perdido.
 func (f *fanout) distribute(pkt *rtp.Packet) {
-	f.mu.Lock()
-	subs := make([]*forwarder, 0, len(f.subs))
-	for s := range f.subs {
-		subs = append(subs, s)
-	}
-	f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 
-	for _, s := range subs {
-		var p *rtp.Packet
-		if len(subs) > 1 {
+	subCount := len(f.subs)
+
+	for s := range f.subs {
+		p := pkt
+		if subCount > 1 {
 			p = cloneRTPPacket(pkt)
-		} else {
-			p = pkt
 		}
+
+		select {
+		case s.ch <- p:
+			continue
+		default:
+		}
+
+		// Mantém a fila próxima do tempo real: remove o mais antigo.
+		select {
+		case <-s.ch:
+		default:
+		}
+
+		if s.kind == "video" || s.kind == "screen" {
+			s.resyncNeeded.Store(true)
+		}
+
+		// Best effort: o consumidor pode ter alterado a fila entre os selects.
 		select {
 		case s.ch <- p:
 		default:
-			// subscriber lento: descarta (sem backpressure no reader único).
 		}
 	}
 }
 
-// cloneRTPPacket faz uma cópia suficiente para o fan-out: copia o header (o
-// translator só altera SequenceNumber, um valor) e o payload (compartilhado
-// seria corrompido por WriteRTP concorrente). CSRC/Extensions são lidos
-// somente, então podem ser compartilhados.
+// cloneRTPPacket precisa copiar apenas a struct/header, porque cada forwarder
+// altera SequenceNumber. O payload é imutável neste SFU e TrackLocalStaticRTP
+// copia a struct antes de ajustar SSRC/PT, portanto compartilhar []byte evita
+// uma alocação grande por pacote por subscriber.
 func cloneRTPPacket(pkt *rtp.Packet) *rtp.Packet {
 	c := *pkt
-	c.Payload = append([]byte(nil), pkt.Payload...)
 	return &c
 }
 
