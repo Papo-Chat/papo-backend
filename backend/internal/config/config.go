@@ -28,6 +28,7 @@ type Config struct {
 	CORSOrigins       []string
 	SameSite          bool
 	CloudflareProxy   bool
+	TrustedProxyCIDRs []string
 
 	// Thumbnails de imagens (attachment e preview)
 	ThumbnailEnabled   bool
@@ -150,7 +151,8 @@ func LoadConfig() *Config {
 		// CLOUDFLARE_PROXY: servidor atrás do proxy do Cloudflare. Só conexões
 		// vindas de IPs do Cloudflare são aceitas e o IP real do cliente vem do
 		// header CF-Connecting-IP (ver middleware.CloudflareProxy).
-		CloudflareProxy: getEnvBool("CLOUDFLARE_PROXY", false),
+		CloudflareProxy:   getEnvBool("CLOUDFLARE_PROXY", false),
+		TrustedProxyCIDRs: getEnvList("TRUSTED_PROXY_CIDRS", []string{}),
 
 		ThumbnailEnabled:   getEnvBool("THUMBNAIL_ENABLED", true),
 		ThumbnailMaxDim:    getEnvInt("THUMBNAIL_MAX_DIM", 1024),
