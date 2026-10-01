@@ -2119,6 +2119,7 @@ paths:
         | `voice_state_update` | outbound | `{ type: "voice_state_update", channel_id, user_id, muted, camera_on, screen_sharing }` |
         | `voice_leave`    | outbound  | `{ type: "voice_leave", channel_id, user_id }` (explícita, WS caiu, sessão revogada ou sala destruída) |
         | `active_speaker_update` | outbound | `{ type: "active_speaker_update", channel_id, user_ids: user_id[] }` (top-K active speakers) |
+        | `voice_audio_routes` | unicast | `{ type: "voice_audio_routes", channel_id, routes: { track_id, user_id }[] }` (snapshot específico do subscriber; `track_id` é o ID da track SFU `papo-audio-N`; substitui integralmente o snapshot anterior e permite volume/mute local por usuário) |
       responses:
         '101':
           description: WebSocket upgrade

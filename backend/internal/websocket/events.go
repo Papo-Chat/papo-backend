@@ -34,7 +34,7 @@ const (
 	EventTypeRoleRemove        EventType = "role_remove"
 	// Eventos de voz (canais type "voice" + SFU). Inbound: client → server.
 	// Outbound: voice_joined, voice_answer, voice_ice_candidate,
-	// voice_state_update, voice_leave, active_speaker_update.
+	// voice_state_update, voice_leave, active_speaker_update, voice_audio_routes.
 	EventTypeVoiceJoin         EventType = "voice_join"
 	EventTypeVoiceLeave        EventType = "voice_leave"
 	EventTypeVoiceOffer        EventType = "voice_offer"
@@ -46,6 +46,7 @@ const (
 	EventTypeVoiceCamera       EventType = "voice_camera"
 	EventTypeScreenShareStart  EventType = "screen_share_start"
 	EventTypeScreenShareStop   EventType = "screen_share_stop"
+	EventTypeVoiceAudioRoutes  EventType = "voice_audio_routes"
 	// EventTypeAttachmentModerationUpdate é o evento de mudança de estado da
 	// moderação assíncrona de um attachment de imagem (sensitive; o blocked
 	// chega como message_delete, pois a mensagem inteira é excluída).
