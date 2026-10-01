@@ -190,7 +190,10 @@ func ListUsersHandler(baseURL string, c echo.Context) error {
 	}
 	lastID := c.QueryParam("last_id")
 
-	list, err := services.ListUsers(c.Request().Context(), since, lastID)
+	list, err := services.ListUsersOrdered(c.Request().Context(), since, lastID, c.QueryParam("order"))
+	if errors.Is(err, services.ErrInvalidInput) {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "order deve ser asc ou desc")
+	}
 	if err != nil {
 		utils.Errorf("request_id=%s falha ao listar usuários: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)

@@ -221,7 +221,19 @@ func ProfilesBatch(ctx context.Context, ids []string) ([]models.User, error) {
 // cursor é o par (created_at, id) e usuários do mesmo timestamp com id maior
 // que lastID também são incluídos (evita pular usuários com timestamp igual).
 func ListUsers(ctx context.Context, since *time.Time, lastID string) (models.UserList, error) {
-	users, err := storage.ListUsers(ctx, since, lastID, userListLimit+1)
+	return ListUsersOrdered(ctx, since, lastID, "asc")
+}
+
+func ListUsersOrdered(ctx context.Context, since *time.Time, lastID, order string) (models.UserList, error) {
+	orderAsc := true
+	switch order {
+	case "", "asc":
+	case "desc":
+		orderAsc = false
+	default:
+		return models.UserList{}, ErrInvalidInput
+	}
+	users, err := storage.ListUsersOrdered(ctx, since, lastID, orderAsc, userListLimit+1)
 	if err != nil {
 		return models.UserList{}, err
 	}

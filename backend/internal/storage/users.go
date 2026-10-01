@@ -215,20 +215,26 @@ func GetUserByUsername(ctx context.Context, username string) (models.User, error
 // lastID (evita pular usuários com timestamp igual).
 // Se limit for > 0, retorna no máximo limit usuários.
 func ListUsers(ctx context.Context, since *time.Time, lastID string, limit int) ([]models.UserSummary, error) {
+	return ListUsersOrdered(ctx, since, lastID, true, limit)
+}
+
+func ListUsersOrdered(ctx context.Context, since *time.Time, lastID string, orderAsc bool, limit int) ([]models.UserSummary, error) {
 	query := "SELECT " + userSummaryColumns + " FROM users"
 	args := []any{}
+	op, order := "<", "DESC"
+	if orderAsc { op, order = ">", "ASC" }
 	if since != nil {
 		if lastID != "" {
-			query += " WHERE (created_at > $" + strconv.Itoa(len(args)+1) +
+			query += " WHERE (created_at " + op + " $" + strconv.Itoa(len(args)+1) +
 				" OR (created_at = $" + strconv.Itoa(len(args)+1) +
-				" AND id > $" + strconv.Itoa(len(args)+2) + "))"
+				" AND id " + op + " $" + strconv.Itoa(len(args)+2) + "))"
 			args = append(args, *since, lastID)
 		} else {
-			query += " WHERE created_at > $" + strconv.Itoa(len(args)+1)
+			query += " WHERE created_at " + op + " $" + strconv.Itoa(len(args)+1)
 			args = append(args, *since)
 		}
 	}
-	query += " ORDER BY created_at, id"
+	query += " ORDER BY created_at " + order + ", id " + order
 	if limit > 0 {
 		query += " LIMIT $" + strconv.Itoa(len(args)+1)
 		args = append(args, limit)
