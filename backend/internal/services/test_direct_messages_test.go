@@ -17,6 +17,15 @@ func newDirectTestUser(t *testing.T) models.User {
 	return user
 }
 
+func cleanupDirectTestUsers(t *testing.T, users ...models.User) {
+	t.Helper()
+	for _, user := range users {
+		if _, err := storage.GetDB().ExecContext(testCtx(), "DELETE FROM users WHERE id = $1", user.ID); err != nil {
+			t.Errorf("falha ao limpar usuário de apoio %s: %v", user.ID, err)
+		}
+	}
+}
+
 func TestDirectMessagesReuseMessagePipelineAndStayPrivate(t *testing.T) {
 	if err := cleanServers(testCtx()); err != nil {
 		t.Fatalf("cleanServers: %v", err)
@@ -25,6 +34,12 @@ func TestDirectMessagesReuseMessagePipelineAndStayPrivate(t *testing.T) {
 	owner := newDirectTestUser(t)
 	a := newDirectTestUser(t)
 	b := newDirectTestUser(t)
+	defer func() {
+		if err := cleanServers(testCtx()); err != nil {
+			t.Errorf("cleanServers final: %v", err)
+		}
+		cleanupDirectTestUsers(t, owner, a, b)
+	}()
 	if _, err := storage.CreateServer(testCtx(), "server_"+randHex(8), &owner.ID); err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
@@ -91,6 +106,7 @@ func TestDirectMessagesReuseMessagePipelineAndStayPrivate(t *testing.T) {
 
 func TestOpenDirectConversationEdgeCases(t *testing.T) {
 	u := newDirectTestUser(t)
+	defer cleanupDirectTestUsers(t, u)
 	if _, _, err := OpenDirectConversation(testCtx(), u.ID, u.ID); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("DM consigo mesmo deveria ser inválida, recebeu %v", err)
 	}
