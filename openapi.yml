@@ -3246,6 +3246,7 @@ components:
 
     CreateMessageRequest:
       type: object
+      description: Mensagens só podem ser enviadas para canais type text ou voice.
       required: [channel_id]
       properties:
         channel_id:
@@ -3253,6 +3254,7 @@ components:
           format: uuid
         content:
           type: string
+          description: "Menções de usuário usam o formato canônico @mention(<@userId>)."
         reply_to:
           type: string
           format: uuid
@@ -3271,6 +3273,7 @@ components:
       properties:
         content:
           type: string
+          description: "Menções de usuário usam o formato canônico @mention(<@userId>)."
 
     Attachment:
       type: object
