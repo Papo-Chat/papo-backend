@@ -183,6 +183,7 @@ func main() {
 	handlers.RegisterServerRoutes(e, cfg)
 	handlers.RegisterChannelRoutes(e, cfg)
 	handlers.RegisterVoiceRoutes(e, cfg)
+	handlers.RegisterDirectMessageRoutes(e, cfg)
 	handlers.RegisterMessageRoutes(e, cfg)
 	handlers.RegisterAttachmentRoutes(e, cfg)
 	handlers.RegisterMediaRoutes(e, cfg)
