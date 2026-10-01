@@ -129,6 +129,10 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrChannelNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "canal não encontrado")
+	case errors.Is(err, services.ErrDirectMessageBlocked):
+		return utils.SendProblem(c, baseURL, http.StatusForbidden,
+			"dm-blocked", "Mensagem direta indisponível",
+			"não é possível enviar mensagens nesta conversa")
 	case errors.Is(err, services.ErrPermissionDenied):
 		return utils.SendProblem(c, baseURL, http.StatusForbidden,
 			"forbidden", "Acesso negado",
@@ -156,6 +160,7 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 		ReplyTo:     message.ReplyTo,
 		Attachments: message.Attachments,
 	})
+	broadcastDirectConversationUpdates(c.Request().Context(), message.ChannelID)
 
 	// Enfileira os attachments na moderação assíncrona de imagens
 	// (nudez/gore): o worker processa em background e, se blocked, exclui a
@@ -211,6 +216,10 @@ func UpdateMessageHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrMessageNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "mensagem não encontrada")
+	case errors.Is(err, services.ErrDirectMessageBlocked):
+		return utils.SendProblem(c, baseURL, http.StatusForbidden,
+			"dm-blocked", "Mensagem direta indisponível",
+			"não é possível editar mensagens nesta conversa")
 	case errors.Is(err, services.ErrPermissionDenied):
 		return utils.SendProblem(c, baseURL, http.StatusForbidden,
 			"forbidden", "Acesso negado",
@@ -554,3 +563,28 @@ func derefTime(t *time.Time) time.Time {
 	}
 	return *t
 }
+
+// broadcastDirectConversationUpdates mantém a rail de DM sincronizada. Em
+// canais normais a função termina silenciosamente.
+func broadcastDirectConversationUpdates(ctx context.Context, channelID string) {
+	members, err := services.DirectConversationMembers(ctx, channelID)
+	if errors.Is(err, services.ErrDirectMessageNotFound) {
+		return
+	}
+	if err != nil {
+		utils.Errorf("DM %s: falha ao listar participantes para atualização websocket: %v", channelID, err)
+		return
+	}
+	for _, userID := range members {
+		dm, err := services.GetDirectConversation(ctx, userID, channelID)
+		if err != nil {
+			utils.Errorf("DM %s: falha ao montar atualização websocket para %s: %v", channelID, userID, err)
+			continue
+		}
+		websocket.GetHub().SendToUser(userID, websocket.DMUpdateOutbound{
+			Type: websocket.EventTypeDMUpdate,
+			DM:   dm,
+		})
+	}
+}
+
