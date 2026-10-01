@@ -56,6 +56,18 @@ const messageListLimit = 100
 // Retorna ErrChannelNotFound quando o canal não existe e
 // ErrPermissionDenied quando o usuário não pode ler o canal.
 func ListMessages(ctx context.Context, channelID, userID string, since *time.Time, lastID string) (models.MessageList, error) {
+	return ListMessagesOrdered(ctx, channelID, userID, since, lastID, "desc")
+}
+
+func ListMessagesOrdered(ctx context.Context, channelID, userID string, since *time.Time, lastID, order string) (models.MessageList, error) {
+	orderAsc := false
+	switch order {
+	case "", "desc":
+	case "asc":
+		orderAsc = true
+	default:
+		return models.MessageList{}, ErrInvalidInput
+	}
 	if channelID == "" {
 		return models.MessageList{}, ErrChannelNotFound
 	}
@@ -78,7 +90,7 @@ func ListMessages(ctx context.Context, channelID, userID string, since *time.Tim
 		return models.MessageList{}, ErrPermissionDenied
 	}
 
-	messages, err := storage.ListMessagesWithAttachmentsByChannel(ctx, channelID, since, lastID, messageListLimit)
+	messages, err := storage.ListMessagesWithAttachmentsByChannelOrdered(ctx, channelID, since, lastID, orderAsc, messageListLimit)
 	if err != nil {
 		return models.MessageList{}, err
 	}
@@ -123,7 +135,9 @@ func ListMessages(ctx context.Context, channelID, userID string, since *time.Tim
 	// Atualiza o último read do usuário no canal para a mensagem mais nova
 	// retornada (best-effort: uma falha não impede a listagem).
 	if len(messages) > 0 {
-		if err := storage.TouchLastReadMessage(ctx, userID, channelID, messages[0].Message); err != nil {
+		readIndex := 0
+		if orderAsc { readIndex = len(messages) - 1 }
+		if err := storage.TouchLastReadMessage(ctx, userID, channelID, messages[readIndex].Message); err != nil {
 			utils.Errorf("falha ao atualizar o último read do usuário %s no canal %s: %v", userID, channelID, err)
 		}
 	}

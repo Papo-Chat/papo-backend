@@ -118,16 +118,16 @@ func ListMessagesByChannel(ctx context.Context, channelID string, since *time.Ti
 
 	if since != nil {
 		if lastID != "" {
-			query += " AND (created_at < $2 OR (created_at = $2 AND id < $3))"
+			query += " AND (created_at " + op + " $2 OR (created_at = $2 AND id " + op + " $3))"
 			args = append(args, *since, lastID)
-			query += " ORDER BY created_at DESC, id DESC LIMIT $4"
+			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $4"
 		} else {
-			query += " AND created_at > $2"
+			query += " AND created_at " + op + " $2"
 			args = append(args, *since)
-			query += " ORDER BY created_at DESC, id DESC LIMIT $3"
+			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $3"
 		}
 	} else {
-		query += " ORDER BY created_at DESC, id DESC LIMIT $2"
+		query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $2"
 	}
 	args = append(args, lim)
 
@@ -165,6 +165,10 @@ func ListMessagesByChannel(ctx context.Context, channelID string, since *time.Ti
 // limite. O LIMIT é aplicado antes do join com attachments, então o limite
 // conta mensagens (e não linhas de attachments).
 func ListMessagesWithAttachmentsByChannel(ctx context.Context, channelID string, since *time.Time, lastID string, limit int) ([]models.MessageWithAttachment, error) {
+	return ListMessagesWithAttachmentsByChannelOrdered(ctx, channelID, since, lastID, false, limit)
+}
+
+func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID string, since *time.Time, lastID string, orderAsc bool, limit int) ([]models.MessageWithAttachment, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
@@ -174,6 +178,8 @@ func ListMessagesWithAttachmentsByChannel(ctx context.Context, channelID string,
 		"a.id, m.mime_type, a.original_file_name, m.size_bytes, a.created_at " +
 		"FROM (SELECT " + messageColumns + " FROM messages WHERE channel_id = $1"
 	args := []any{channelID}
+	op, order := "<", "DESC"
+	if orderAsc { op, order = ">", "ASC" }
 
 	if since != nil {
 		if lastID != "" {
@@ -192,7 +198,7 @@ func ListMessagesWithAttachmentsByChannel(ctx context.Context, channelID string,
 
 	query += ") p LEFT JOIN attachments a ON a.messages_id = p.id " +
 		"LEFT JOIN media m ON m.sha_hash = a.media_sha_hash " +
-		"ORDER BY p.created_at DESC, p.id DESC, a.created_at, a.id"
+		"ORDER BY p.created_at " + order + ", p.id " + order + ", a.created_at, a.id"
 
 	rows, err := GetDB().QueryContext(ctx, query, args...)
 	if err != nil {
