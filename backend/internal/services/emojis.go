@@ -41,8 +41,19 @@ const emojiListLimit = 25
 // cursor é o par (created_at, id) e emojis do mesmo timestamp com id maior
 // que lastID também são incluídos (evita pular emojis com timestamp igual).
 func ListEmojis(ctx context.Context, since *time.Time, lastID string) (models.EmojiList, error) {
-	// Busca limit+1 para determinar has_more.
-	emojis, err := storage.ListEmojis(ctx, since, lastID, emojiListLimit+1)
+	return ListEmojisOrdered(ctx, since, lastID, "asc")
+}
+
+func ListEmojisOrdered(ctx context.Context, since *time.Time, lastID, order string) (models.EmojiList, error) {
+	orderAsc := true
+	switch order {
+	case "", "asc":
+	case "desc":
+		orderAsc = false
+	default:
+		return models.EmojiList{}, ErrInvalidInput
+	}
+	emojis, err := storage.ListEmojisOrdered(ctx, since, lastID, orderAsc, emojiListLimit+1)
 	if err != nil {
 		return models.EmojiList{}, err
 	}
