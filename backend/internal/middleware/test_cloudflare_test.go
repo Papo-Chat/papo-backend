@@ -199,3 +199,55 @@ func TestDirectChainRealIPIgnoresForwardedHeaders(t *testing.T) {
 		t.Errorf("esperava c.RealIP()=%s, obtive %q (fallback XFF/X-Real-IP foi honrado)", testNonCloudflareIP, got)
 	}
 }
+
+
+func TestTrustedProxyIPExtractorUsesXRealIPFromTrustedPeer(t *testing.T) {
+	extractor, err := TrustedProxyIPExtractor([]string{"127.0.0.1/32", "::1/128"})
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Real-IP", "203.0.113.9")
+
+	if got := extractor(req); got != "203.0.113.9" {
+		t.Errorf("esperava 203.0.113.9, obtive %q", got)
+	}
+}
+
+func TestTrustedProxyIPExtractorIgnoresHeaderFromUntrustedPeer(t *testing.T) {
+	extractor, err := TrustedProxyIPExtractor([]string{"127.0.0.1/32"})
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = testNonCloudflareIP + ":12345"
+	req.Header.Set("X-Real-IP", "203.0.113.9")
+
+	if got := extractor(req); got != testNonCloudflareIP {
+		t.Errorf("esperava o peer direto %s, obtive %q", testNonCloudflareIP, got)
+	}
+}
+
+func TestTrustedProxyIPExtractorInvalidHeaderFallsBackToPeer(t *testing.T) {
+	extractor, err := TrustedProxyIPExtractor([]string{"127.0.0.1/32"})
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Real-IP", "invalido")
+
+	if got := extractor(req); got != "127.0.0.1" {
+		t.Errorf("esperava fallback para 127.0.0.1, obtive %q", got)
+	}
+}
+
+func TestTrustedProxyIPExtractorRejectsInvalidCIDR(t *testing.T) {
+	if _, err := TrustedProxyIPExtractor([]string{"cidr-invalido"}); err == nil {
+		t.Fatal("esperava erro para CIDR inválido")
+	}
+}

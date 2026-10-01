@@ -123,6 +123,9 @@ func main() {
 	// em X-Forwarded-For/X-Real-IP sem validação de proxy confiável (spoofing
 	// de IP), então o extractor é sempre explícito.
 	var cfIPs *utils.CloudflareIPs
+	if cfg.CloudflareProxy && len(cfg.TrustedProxyCIDRs) > 0 {
+		utils.Fatal("CLOUDFLARE_PROXY e TRUSTED_PROXY_CIDRS são mutuamente exclusivos")
+	}
 	if cfg.CloudflareProxy {
 		// Lista de IPs do Cloudflare: busca no boot e a cada 12h via API
 		// (falha mantém a última lista válida; no boot, o fallback hardcoded).
@@ -134,6 +137,15 @@ func main() {
 		// IP real = header CF-Connecting-IP (confiável porque o middleware
 		// abaixo só deixa passar conexões vindas de IPs do Cloudflare).
 		e.IPExtractor = middleware.CloudflareIPExtractor(cfIPs)
+	} else if len(cfg.TrustedProxyCIDRs) > 0 {
+		// Reverse proxy conhecido (por exemplo nginx local): X-Real-IP só é
+		// aceito quando o peer direto pertence a uma CIDR explicitamente
+		// confiável. Clientes externos continuam sem poder forjar o IP.
+		extractor, err := middleware.TrustedProxyIPExtractor(cfg.TrustedProxyCIDRs)
+		if err != nil {
+			utils.Fatal("TRUSTED_PROXY_CIDRS inválido: " + err.Error())
+		}
+		e.IPExtractor = extractor
 	} else {
 		// Sem proxy: IP da conexão direta (nunca de headers).
 		e.IPExtractor = middleware.DirectIPExtractor

@@ -1,8 +1,10 @@
 package middleware
 
 import (
+	"fmt"
 	"net"
 	"net/http"
+	"strings"
 
 	"papo/internal/config"
 	"papo/internal/utils"
@@ -75,6 +77,47 @@ func CloudflareIPExtractor(ips *utils.CloudflareIPs) func(r *http.Request) strin
 		}
 		return peer.String()
 	}
+}
+
+// TrustedProxyIPExtractor confia em X-Real-IP somente quando a conexão direta
+// vem de uma das redes explicitamente configuradas em TRUSTED_PROXY_CIDRS.
+// Isso permite um reverse proxy local (por exemplo, nginx em 127.0.0.1) sem
+// voltar a confiar em headers enviados diretamente por clientes externos.
+// X-Forwarded-For é deliberadamente ignorado: o proxy deve normalizar o IP
+// validado para um único X-Real-IP.
+func TrustedProxyIPExtractor(cidrs []string) (func(*http.Request) string, error) {
+	trusted := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS contém CIDR inválido %q: %w", cidr, err)
+		}
+		trusted = append(trusted, network)
+	}
+
+	return func(r *http.Request) string {
+		peer, ok := peerIP(r)
+		if !ok {
+			return ""
+		}
+
+		isTrusted := false
+		for _, network := range trusted {
+			if network.Contains(peer) {
+				isTrusted = true
+				break
+			}
+		}
+		if !isTrusted {
+			return peer.String()
+		}
+
+		clientIP := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP")))
+		if clientIP == nil {
+			return peer.String()
+		}
+		return clientIP.String()
+	}, nil
 }
 
 // DirectIPExtractor é o echo.Echo.IPExtractor usado sem CLOUDFLARE_PROXY:
