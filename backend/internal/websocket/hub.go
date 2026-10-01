@@ -199,6 +199,25 @@ func (h *Hub) Clients() map[*Client]struct{} {
 	return snapshot
 }
 
+// DisconnectUser encerra imediatamente todas as conexões WebSocket de um
+// usuário. O ReadPump de cada cliente fará o unregister e liberará presença/voz.
+// Retorna quantas conexões foram fechadas.
+func (h *Hub) DisconnectUser(userID string) int {
+	if userID == "" {
+		return 0
+	}
+	disconnected := 0
+	for c := range h.Clients() {
+		if c.userID != userID {
+			continue
+		}
+		c.sendCloseFrame()
+		_ = c.conn.Close()
+		disconnected++
+	}
+	return disconnected
+}
+
 // Broadcast serializa o evento uma única vez e o envia a todos os clientes
 // conectados (eventos globais do backend: presença e canais). Para eventos
 // privados por canal, use BroadcastToUsers com a autorização pré-computada.
