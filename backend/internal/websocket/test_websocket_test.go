@@ -764,6 +764,43 @@ func TestPresenceStorePersistedStatus(t *testing.T) {
 	})
 }
 
+func TestHubDisconnectUserClosesOnlyTargetUser(t *testing.T) {
+	hub := newWSHub(t)
+	env := newWSTestServer(t, hub, nil)
+
+	connB := env.dial(t, "user_b")
+	readEvent(t, connB) // presence_sync de B
+
+	connA1 := env.dial(t, "user_a")
+	readEvent(t, connA1) // presence_sync de A
+	readEvent(t, connB)  // presence_update online de A
+
+	connA2 := env.dial(t, "user_a")
+	readEvent(t, connA2) // presence_sync da segunda conexão de A
+
+	if got := hub.DisconnectUser("user_a"); got != 2 {
+		t.Fatalf("DisconnectUser deveria fechar 2 conexões, fechou %d", got)
+	}
+
+	for i, conn := range []*ws.Conn{connA1, connA2} {
+		conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
+		if _, _, err := conn.ReadMessage(); err == nil {
+			t.Fatalf("conexão %d do usuário alvo deveria ter sido encerrada", i+1)
+		}
+	}
+
+	offline := readEvent(t, connB)
+	if offline.Type != string(EventTypePresenceUpdate) || offline.UserID != "user_a" || offline.Status != StatusOffline {
+		t.Fatalf("esperava presence_update offline de user_a, obtive %+v", offline)
+	}
+
+	hub.SendToUser("user_b", map[string]string{"type": "probe"})
+	probe := readEvent(t, connB)
+	if probe.Type != "probe" {
+		t.Fatalf("conexão de outro usuário não deveria ser encerrada, obtive %+v", probe)
+	}
+}
+
 func TestHubPresenceSyncPersistedStatus(t *testing.T) {
 	away := StatusAway
 	hub := newWSHub(t)
