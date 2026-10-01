@@ -18,9 +18,10 @@ const (
 // PresenceMember é uma entrada da lista de membros online enviada no
 // presence_sync.
 type PresenceMember struct {
-	UserID        string  `json:"user_id"`
-	Status        string  `json:"status"`
-	StatusMessage *string `json:"status_message,omitempty"`
+	UserID        string   `json:"user_id"`
+	Status        string   `json:"status"`
+	StatusMessage *string  `json:"status_message,omitempty"`
+	UserVoice     []string `json:"user_voice"`
 }
 
 // PresenceStore é o estado efêmero dos usuários online, mantido apenas em
@@ -209,6 +210,7 @@ func (p *PresenceStore) OnlineMembers() []PresenceMember {
 			UserID:        userID,
 			Status:        status,
 			StatusMessage: entry.statusMessage,
+			UserVoice:     []string{},
 		})
 	}
 	sort.Slice(members, func(i, j int) bool {

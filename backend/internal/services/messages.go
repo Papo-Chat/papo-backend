@@ -210,6 +210,9 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 	if err != nil {
 		return models.MessageWithAttachment{}, err
 	}
+	if channel.Type != "text" && channel.Type != "voice" {
+		return models.MessageWithAttachment{}, ErrPermissionDenied
+	}
 
 	allowed, err := userHasChannelPermission(ctx, channel, authorID, true, func(p models.ChannelPermission) bool {
 		return p.SendMessages
