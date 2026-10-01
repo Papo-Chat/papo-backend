@@ -72,7 +72,12 @@ func GetDirectConversation(ctx context.Context, userID, channelID string) (model
 }
 
 func OpenDirectConversation(ctx context.Context, userID, targetID string) (models.DirectConversation, bool, error) {
-	if _, err := uuid.Parse(targetID); err != nil || targetID == userID {
+	parsedTarget, err := uuid.Parse(targetID)
+	if err != nil {
+		return models.DirectConversation{}, false, ErrInvalidInput
+	}
+	targetID = parsedTarget.String()
+	if targetID == userID {
 		return models.DirectConversation{}, false, ErrInvalidInput
 	}
 	target, err := storage.GetUserByID(ctx, targetID)
