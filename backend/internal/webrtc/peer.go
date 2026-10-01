@@ -800,6 +800,43 @@ func (p *Peer) releaseVideoSlot(pubID, kind string) {
 	}
 }
 
+func (p *Peer) audioRoutesLocked() []VoiceAudioRoute {
+	routes := make([]VoiceAudioRoute, 0, len(p.audioSlots))
+	for _, s := range p.audioSlots {
+		if s == nil || s.local == nil || s.owner == nil {
+			continue
+		}
+		routes = append(routes, VoiceAudioRoute{
+			TrackID: s.local.ID(),
+			UserID:  s.owner.userID,
+		})
+	}
+	return routes
+}
+
+func sameAudioRoutes(a, b []VoiceAudioRoute) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *Peer) sendAudioRoutes(clientID string, routes []VoiceAudioRoute) {
+	if clientID == "" || p.m.signaler.SendToClient == nil {
+		return
+	}
+	p.m.signaler.SendToClient(clientID, VoiceAudioRoutes{
+		Type:      EventTypeVoiceAudioRoutes,
+		ChannelID: p.room.channelID,
+		Routes:    routes,
+	})
+}
+
 // releaseAllFrom libera todos os slots do subscriber que forwardam do
 // publisher (vídeo + áudio) — usado quando o publisher sai da sala.
 func (p *Peer) releaseAllFrom(pub *Peer) {
@@ -807,7 +844,7 @@ func (p *Peer) releaseAllFrom(pub *Peer) {
 		return
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	before := p.audioRoutesLocked()
 	for _, s := range p.videoSlots {
 		if s.owner == pub {
 			s.release()
@@ -817,6 +854,13 @@ func (p *Peer) releaseAllFrom(pub *Peer) {
 		if s.owner == pub {
 			s.release()
 		}
+	}
+	after := p.audioRoutesLocked()
+	clientID := p.signalingClient
+	p.mu.Unlock()
+
+	if !sameAudioRoutes(before, after) {
+		p.sendAudioRoutes(clientID, after)
 	}
 }
 
@@ -861,11 +905,12 @@ func (p *Peer) setAudioSet(
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if p.closed {
+		p.mu.Unlock()
 		return
 	}
+	beforeRoutes := p.audioRoutesLocked()
 
 	// Não mantenha referência à slice do caller.
 	p.audioSet = append(p.audioSet[:0], set...)
@@ -966,6 +1011,14 @@ func (p *Peer) setAudioSet(
 		)
 
 		assigned[owner] = true
+	}
+
+	afterRoutes := p.audioRoutesLocked()
+	clientID := p.signalingClient
+	p.mu.Unlock()
+
+	if !sameAudioRoutes(beforeRoutes, afterRoutes) {
+		p.sendAudioRoutes(clientID, afterRoutes)
 	}
 }
 
