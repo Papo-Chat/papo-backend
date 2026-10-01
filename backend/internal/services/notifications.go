@@ -229,6 +229,12 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 		content = *message.Content
 	}
 	pushContent := content
+	isDirectMessage := false
+	if channel, err := storage.GetChannelByID(ctx, message.ChannelID); err == nil {
+		isDirectMessage = channel.Type == "dm"
+	} else if !errors.Is(err, storage.ErrNotFound) {
+		utils.Errorf("request_id=%s notificações: falha ao buscar canal %s: %v", requestID, message.ChannelID, err)
+	}
 	if cfg.UseFCMRelay {
 		pushContent = translatePushMentions(ctx, content)
 	}
@@ -311,7 +317,7 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 			continue
 		}
 
-		isTriggered := triggered[candidate.UserID] || hasEveryone
+		isTriggered := isDirectMessage || triggered[candidate.UserID] || hasEveryone
 		if !isTriggered && candidate.NotificationSettings != models.NotificationTypeAll {
 			continue
 		}
