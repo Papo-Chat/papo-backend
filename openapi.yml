@@ -3505,7 +3505,7 @@ components:
             $ref: '#/components/schemas/SearchResult'
         has_more:
           type: boolean
-          description: Indica se existe próxima página (cursor since + last_id)
+          description: Indica se há mais itens na direção solicitada por order
 
     SearchRequest:
       type: object
