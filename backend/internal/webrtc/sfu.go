@@ -1,10 +1,14 @@
 package webrtc
 
 import (
+	"encoding/binary"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -139,7 +143,9 @@ type forwarder struct {
 	done chan struct{}
 	once sync.Once
 
-	wasMuted bool
+	wasMuted          bool
+	waitingKeyframe   bool
+	lastKeyframePLIAt time.Time
 }
 
 func newForwarder(
@@ -149,12 +155,13 @@ func newForwarder(
 	fanout *fanout,
 ) *forwarder {
 	return &forwarder{
-		slot:   slot,
-		owner:  owner,
-		kind:   kind,
-		fanout: fanout,
-		ch:     make(chan *rtp.Packet, forwarderBuffer),
-		done:   make(chan struct{}),
+		slot:            slot,
+		owner:           owner,
+		kind:            kind,
+		fanout:          fanout,
+		ch:              make(chan *rtp.Packet, forwarderBuffer),
+		done:            make(chan struct{}),
+		waitingKeyframe: kind == "video" || kind == "screen",
 	}
 }
 
@@ -197,6 +204,21 @@ func (f *forwarder) run() {
 					f.slot.translator.resetSource()
 					f.wasMuted = false
 				}
+			} else if f.waitingKeyframe {
+				if !isVideoKeyframe(f.fanout.track, pkt) {
+					now := time.Now()
+					if f.lastKeyframePLIAt.IsZero() || now.Sub(f.lastKeyframePLIAt) >= 500*time.Millisecond {
+						f.lastKeyframePLIAt = now
+						sendPLI(f.owner.PC(), f.fanout.track)
+					}
+					continue
+				}
+
+				// O primeiro pacote encaminhado para este subscriber deve iniciar
+				// um frame decodificável. Isso evita tela cinza quando ele entra
+				// no meio de um GOP ou perde o keyframe inicial.
+				f.waitingKeyframe = false
+				f.slot.translator.resetSource()
 			}
 
 			f.slot.translator.translate(pkt, f.owner)
@@ -334,6 +356,81 @@ func cloneRTPPacket(pkt *rtp.Packet) *rtp.Packet {
 	c := *pkt
 	c.Payload = append([]byte(nil), pkt.Payload...)
 	return &c
+}
+
+func isVideoKeyframe(track *webrtc.TrackRemote, pkt *rtp.Packet) bool {
+	if track == nil || pkt == nil || len(pkt.Payload) == 0 {
+		return false
+	}
+
+	switch strings.ToLower(track.Codec().MimeType) {
+	case strings.ToLower(webrtc.MimeTypeVP8):
+		var p codecs.VP8Packet
+		payload, err := p.Unmarshal(pkt.Payload)
+		if err != nil || p.S != 1 || p.PID != 0 || len(payload) == 0 {
+			return false
+		}
+		// RFC 6386: bit 0 do primeiro byte do frame tag é 0 em keyframe.
+		return payload[0]&0x01 == 0
+
+	case strings.ToLower(webrtc.MimeTypeVP9):
+		var p codecs.VP9Packet
+		if _, err := p.Unmarshal(pkt.Payload); err != nil {
+			return false
+		}
+		return p.B && !p.P
+
+	case strings.ToLower(webrtc.MimeTypeH264):
+		return isH264RandomAccessPacket(pkt.Payload)
+
+	default:
+		// Codec desconhecido: não bloqueie indefinidamente um stream válido.
+		return true
+	}
+}
+
+func isH264RandomAccessPacket(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+
+	const (
+		naluTypeMask = 0x1f
+		idrType      = 5
+		spsType      = 7
+		ppsType      = 8
+		stapAType    = 24
+		fuAType      = 28
+	)
+
+	switch typ := payload[0] & naluTypeMask; typ {
+	case idrType, spsType, ppsType:
+		return true
+
+	case fuAType:
+		if len(payload) < 2 {
+			return false
+		}
+		start := payload[1]&0x80 != 0
+		originalType := payload[1] & naluTypeMask
+		return start && originalType == idrType
+
+	case stapAType:
+		for off := 1; off+2 <= len(payload); {
+			n := int(binary.BigEndian.Uint16(payload[off : off+2]))
+			off += 2
+			if n <= 0 || off+n > len(payload) {
+				return false
+			}
+			typ := payload[off] & naluTypeMask
+			if typ == idrType || typ == spsType || typ == ppsType {
+				return true
+			}
+			off += n
+		}
+	}
+
+	return false
 }
 
 // ssnTranslator traduz o sequence number por slot (prática padrão de SFU):
