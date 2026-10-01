@@ -41,6 +41,15 @@ func RegisterAuthRoutes(e *echo.Echo, cfg *config.Config) {
 
 // RegisterUserRoutes registra as rotas de usuários.
 func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
+	e.GET("/users/blocks", func(c echo.Context) error {
+		return ListUserBlocksHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.POST("/users/:user_id/block", func(c echo.Context) error {
+		return BlockUserHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.DELETE("/users/:user_id/block", func(c echo.Context) error {
+		return UnblockUserHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
 	e.GET("/users", func(c echo.Context) error {
 		return ListUsersHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
@@ -138,6 +147,22 @@ func RegisterChannelRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware, middleware.RequireManageChannels())
 	e.POST("/channels/:channel_id/user/:user_id/settings", func(c echo.Context) error {
 		return UpdateChannelUserSettingHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+}
+
+// RegisterDirectMessageRoutes registra as rotas de mensagens diretas.
+func RegisterDirectMessageRoutes(e *echo.Echo, cfg *config.Config) {
+	e.GET("/dms", func(c echo.Context) error {
+		return ListDirectMessagesHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.POST("/dms", func(c echo.Context) error {
+		return OpenDirectMessageHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.GET("/dms/:dm_id", func(c echo.Context) error {
+		return GetDirectMessageHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.DELETE("/dms/:dm_id", func(c echo.Context) error {
+		return HideDirectMessageHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 }
 
