@@ -31,6 +31,11 @@ const (
 // nem durante chamadas do signaler (SendToUser/BroadcastToUsers) — essas são
 // feitas com p.mu solto. O worker de renegociação é sequencial por PC (D4), o
 // que serializa o signaling sem p.mu.
+type pendingVideoSubscription struct {
+	pub  *Peer
+	kind string
+}
+
 type Peer struct {
 	m      *Manager
 	room   *Room
@@ -71,6 +76,11 @@ type Peer struct {
 	videoSlots []*slot
 	audioSlots []*slot
 
+	// Subscribes podem chegar entre voice_joined e o primeiro voice_answer,
+	// antes de allocateSlots publicar os slots. Mantemos esses pedidos
+	// pendentes para eliminar a corrida de late join.
+	pendingVideoSubs map[string]pendingVideoSubscription
+
 	// Estado publicado para a UI. cameraOn/screenSharing só viram true quando
 	// a TrackRemote correspondente já existe no SFU; isso impede subscribers
 	// de correrem na frente da renegociação e receberem voice-not-found.
@@ -102,8 +112,9 @@ func newPeer(m *Manager, room *Room, userID, clientID string) *Peer {
 
 		muted: true,
 
-		fanouts:       make(map[string]*fanout),
-		midRole:       make(map[string]trackRole),
+		fanouts:          make(map[string]*fanout),
+		pendingVideoSubs: make(map[string]pendingVideoSubscription),
+		midRole:          make(map[string]trackRole),
 		activeMidRole: make(map[string]trackRole),
 		renegQueue:    make(chan func() error, 64),
 		renegStop:     make(chan struct{}),
@@ -566,7 +577,25 @@ func (p *Peer) allocateSlots() error {
 	p.mu.Lock()
 	p.videoSlots = videoSlots
 	p.audioSlots = audioSlots
+
+	pending := make([]pendingVideoSubscription, 0, len(p.pendingVideoSubs))
+	for _, sub := range p.pendingVideoSubs {
+		pending = append(pending, sub)
+	}
+	p.pendingVideoSubs = make(map[string]pendingVideoSubscription)
 	p.mu.Unlock()
+
+	// O primeiro answer já pode ser emitido depois disso; processar aqui garante
+	// que subscribes recebidos cedo não sejam perdidos.
+	for _, sub := range pending {
+		if err := p.assignVideoSlot(sub.pub, sub.kind); err != nil {
+			p.mu.Lock()
+			clientID := p.signalingClient
+			p.mu.Unlock()
+			p.m.sendErrorToClient(clientID, err)
+		}
+	}
+
 	return nil
 }
 
@@ -666,9 +695,41 @@ func (p *Peer) stopAllFanouts() {
 	}
 }
 
+func videoSubscriptionKey(pub *Peer, kind string) string {
+	if pub == nil {
+		return ""
+	}
+	return pub.userID + ":" + kind
+}
+
+// subscribeVideo aceita também o período entre voice_joined e allocateSlots.
+// Antes, len(videoSlots)==0 era interpretado como "sala cheia", embora os
+// slots simplesmente ainda não tivessem sido criados.
+func (p *Peer) subscribeVideo(pub *Peer, kind string) error {
+	if pub == nil {
+		return ErrVoiceNotFound
+	}
+
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return ErrVoiceRoomClosed
+	}
+	if len(p.videoSlots) == 0 {
+		p.pendingVideoSubs[videoSubscriptionKey(pub, kind)] = pendingVideoSubscription{
+			pub:  pub,
+			kind: kind,
+		}
+		p.mu.Unlock()
+		return nil
+	}
+	p.mu.Unlock()
+
+	return p.assignVideoSlot(pub, kind)
+}
+
 // assignVideoSlot faz o subscriber começar a receber a track de vídeo/screen
-// do publisher em um slot de vídeo (D5). Sem slot livre → ErrVoiceRoomFull
-// (o caminho de renegociação para adicionar slot é raro/fase 2).
+// do publisher em um slot de vídeo (D5). Sem slot livre → ErrVoiceRoomFull.
 func (p *Peer) assignVideoSlot(pub *Peer, kind string) error {
 	track := pub.trackOfKind(kind)
 	if track == nil {
@@ -729,6 +790,9 @@ func (p *Peer) releaseVideoSlot(pubID, kind string) {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if pub != nil {
+		delete(p.pendingVideoSubs, videoSubscriptionKey(pub, kind))
+	}
 	for _, s := range p.videoSlots {
 		if s.owner == pub && s.kind == kind {
 			s.release()
