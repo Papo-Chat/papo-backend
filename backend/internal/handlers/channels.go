@@ -63,7 +63,7 @@ func CreateChannelHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
+			"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text', 'category' ou 'voice'; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
 	case errors.Is(err, services.ErrChannelLimitReached):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"channel-limit-reached", "Limite de canais atingido",

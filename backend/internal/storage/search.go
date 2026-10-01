@@ -49,65 +49,119 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 
 	userID := arg(p.UserID)
 
-	var scoreExpr, textArg string
+	var scoreExpr string
+	var textArg string
+	var tsQuery string
+
 	if p.Text != "" {
 		textArg = arg(p.Text)
-		scoreExpr = "ts_rank(m.tsv_content, plainto_tsquery('portuguese', " + textArg + "))"
+
+		// plainto_tsquery normalmente gera:
+		// 'erro' & 'conect' & 'banc'
+		//
+		// Aqui transformamos em:
+		// 'erro' | 'conect' | 'banc'
+		//
+		// Assim, não é necessário que TODOS os termos existam na mensagem.
+		tsQuery = "replace(" +
+			"plainto_tsquery('portuguese', " + textArg + ")::text, " +
+			"'&', '|'" +
+			")::tsquery"
+
+		scoreExpr = "ts_rank(m.tsv_content, " + tsQuery + ")::float8"
 	} else {
 		scoreExpr = "NULL::float8"
 	}
 
 	conds := make([]string, 0, 8)
+
 	if textArg != "" {
-		conds = append(conds, "m.tsv_content @@ plainto_tsquery('portuguese', "+textArg+")")
+		conds = append(conds, "m.tsv_content @@ "+tsQuery)
 	}
+
 	if p.AuthorID != "" {
 		conds = append(conds, "m.author_id = "+arg(p.AuthorID))
 	}
+
 	if p.DateStart != nil {
 		conds = append(conds, "m.created_at >= "+arg(*p.DateStart))
 	}
+
 	if p.DateEndExclusive != nil {
 		conds = append(conds, "m.created_at < "+arg(*p.DateEndExclusive))
 	}
+
 	if p.ContainsAttachment != nil {
 		if *p.ContainsAttachment {
-			conds = append(conds, "EXISTS (SELECT 1 FROM attachments a WHERE a.messages_id = m.id)")
+			conds = append(
+				conds,
+				"EXISTS (SELECT 1 FROM attachments a WHERE a.messages_id = m.id)",
+			)
 		} else {
-			conds = append(conds, "NOT EXISTS (SELECT 1 FROM attachments a WHERE a.messages_id = m.id)")
-		}
-	}
-	if p.Since != nil {
-		sinceArg := arg(*p.Since)
-		lastIDArg := arg(p.LastID)
-		if p.OrderAsc {
-			conds = append(conds, "(m.created_at > "+sinceArg+" OR (m.created_at = "+sinceArg+" AND m.id > "+lastIDArg+"))")
-		} else {
-			conds = append(conds, "(m.created_at < "+sinceArg+" OR (m.created_at = "+sinceArg+" AND m.id < "+lastIDArg+"))")
+			conds = append(
+				conds,
+				"NOT EXISTS (SELECT 1 FROM attachments a WHERE a.messages_id = m.id)",
+			)
 		}
 	}
 
-	conds = append(conds, "( "+
-		"EXISTS (SELECT 1 FROM servers s WHERE s.owner_id = "+userID+") "+
-		"OR c.permissions IS NULL "+
-		"OR c.permissions = '{}'::jsonb "+
-		"OR EXISTS (SELECT 1 FROM user_roles ur "+
-		"JOIN roles r ON r.id = ur.role_id "+
-		"WHERE ur.user_id = "+userID+" AND (c.permissions -> r.id::text ->> 'read_channel') = 'true') "+
-		")")
+	if p.Since != nil {
+		sinceArg := arg(*p.Since)
+		lastIDArg := arg(p.LastID)
+
+		if p.OrderAsc {
+			conds = append(
+				conds,
+				"(m.created_at > "+sinceArg+
+					" OR (m.created_at = "+sinceArg+
+					" AND m.id > "+lastIDArg+"))",
+			)
+		} else {
+			conds = append(
+				conds,
+				"(m.created_at < "+sinceArg+
+					" OR (m.created_at = "+sinceArg+
+					" AND m.id < "+lastIDArg+"))",
+			)
+		}
+	}
+
+	conds = append(
+		conds,
+		"( "+
+			"EXISTS (SELECT 1 FROM servers s WHERE s.owner_id = "+userID+") "+
+			"OR c.permissions IS NULL "+
+			"OR c.permissions = '{}'::jsonb "+
+			"OR EXISTS ("+
+			"SELECT 1 FROM user_roles ur "+
+			"JOIN roles r ON r.id = ur.role_id "+
+			"WHERE ur.user_id = "+userID+
+			" AND (c.permissions -> r.id::text ->> 'read_channel') = 'true'"+
+			") "+
+			")",
+	)
 
 	order := "DESC"
 	if p.OrderAsc {
 		order = "ASC"
 	}
 
-	query := "SELECT m.id, m.content, m.created_at, c.id, c.name, m.author_id, u.username, " +
+	query := "" +
+		"SELECT " +
+		"m.id, " +
+		"m.content, " +
+		"m.created_at, " +
+		"c.id, " +
+		"c.name, " +
+		"m.author_id, " +
+		"u.username, " +
 		scoreExpr + " AS score " +
 		"FROM messages m " +
 		"JOIN channels c ON c.id = m.channel_id " +
 		"LEFT JOIN users u ON u.id = m.author_id " +
 		"WHERE " + strings.Join(conds, " AND ") +
-		" ORDER BY m.created_at " + order + ", m.id " + order + " LIMIT " + arg(fetch)
+		" ORDER BY m.created_at " + order + ", m.id " + order +
+		" LIMIT " + arg(fetch)
 
 	rows, err := GetDB().QueryContext(ctx, query, args...)
 	if err != nil {
@@ -116,8 +170,10 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 	defer rows.Close()
 
 	results := make([]models.SearchResult, 0, fetch)
+
 	for rows.Next() {
 		var result models.SearchResult
+
 		if err := rows.Scan(
 			&result.ID,
 			&result.Content,
@@ -130,9 +186,11 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler resultado da busca: %w", err)
 		}
+
 		result.Type = "message"
 		results = append(results, result)
 	}
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("falha ao buscar mensagens: %w", err)
 	}

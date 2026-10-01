@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"firebase.google.com/go/v4"
+	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/messaging"
 	"google.golang.org/api/option"
 
@@ -60,7 +60,7 @@ func (d *FCMDelivery) Send(ctx context.Context, message Message, targets []Targe
 		return Result{}, nil
 	}
 
-	responses, err := d.client.SendAll(ctx, msgs)
+	responses, err := d.client.SendEach(ctx, msgs)
 	if err != nil {
 		// Falha na batch (rede, credencial, etc.) → retryable.
 		return Result{retryable: true}, fmt.Errorf("falha ao enviar ao FCM: %w", err)

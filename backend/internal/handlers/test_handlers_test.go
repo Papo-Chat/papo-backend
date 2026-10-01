@@ -35,9 +35,9 @@ import (
 	"papo/internal/utils"
 	"papo/internal/websocket"
 
+	"github.com/google/uuid"
 	ws "github.com/gorilla/websocket"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
 )
@@ -1851,7 +1851,7 @@ func TestCreateChannelRouteInvalidInput(t *testing.T) {
 		body, _ := json.Marshal(map[string]string{"name": name})
 		rec := do(t, e, http.MethodPost, "/channels", body, authCookie(token))
 		assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-			"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
+			"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text', 'category' ou 'voice'; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
 	}
 }
 
@@ -7209,7 +7209,7 @@ func TestCreateChannelHandlerMissingName(t *testing.T) {
 		t.Fatalf("CreateChannelHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-		"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text' ou 'category'; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
+		"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text', 'category' ou 'voice'; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
 }
 
 func TestCreateChannelHandlerNameTaken(t *testing.T) {
