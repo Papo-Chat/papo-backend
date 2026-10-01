@@ -13,6 +13,7 @@ const (
 	EventTypeVoiceStateUpdate    = "voice_state_update"
 	EventTypeVoiceLeave          = "voice_leave"
 	EventTypeActiveSpeakerUpdate = "active_speaker_update"
+	EventTypeVoiceAudioRoutes    = "voice_audio_routes"
 )
 
 // Códigos de erro dos eventos de voz (evento `error` com `code`).
@@ -97,4 +98,22 @@ type ActiveSpeakerUpdate struct {
 	Type      string   `json:"type"`
 	ChannelID string   `json:"channel_id"`
 	UserIDs   []string `json:"user_ids"`
+}
+
+// VoiceAudioRoute associa a track de um slot de áudio do SFU ao publisher
+// atualmente encaminhado naquele slot. TrackID é o ID da TrackLocalStaticRTP
+// ("papo-audio-N"), exposto no browser como RTCTrackEvent.track.id.
+type VoiceAudioRoute struct {
+	TrackID string `json:"track_id"`
+	UserID  string `json:"user_id"`
+}
+
+// VoiceAudioRoutes é um snapshot completo, específico do subscriber, das
+// rotas de áudio atualmente recebidas por sua PeerConnection. É enviado em
+// unicast apenas para a conexão dona do signaling sempre que a associação de
+// slots muda. Um snapshot vazio remove todas as associações anteriores.
+type VoiceAudioRoutes struct {
+	Type      string            `json:"type"`
+	ChannelID string            `json:"channel_id"`
+	Routes    []VoiceAudioRoute `json:"routes"`
 }
