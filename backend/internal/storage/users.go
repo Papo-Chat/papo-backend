@@ -391,28 +391,58 @@ func isServerOwner(ctx context.Context, id string) (bool, error) {
 // O dono do servidor NÃO É BANÍVEL, a variável isOwner serve para assegurar isso
 func SetUserBanned(ctx context.Context, id string, banned bool) (bool, error) {
 	isOwner, err := isServerOwner(ctx, id)
-
 	if err != nil {
 		return false, err
 	}
-
 	if isOwner {
 		return true, nil
 	}
 
-	result, err := GetDB().ExecContext(ctx,
+	tx, err := GetDB().BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("falha ao iniciar atualização de banimento: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx,
 		"UPDATE users SET banned = $2 WHERE id = $1",
 		id, banned,
 	)
 	if err != nil {
 		return false, fmt.Errorf("falha ao atualizar banimento do usuário: %w", err)
 	}
-
 	if n, _ := result.RowsAffected(); n == 0 {
 		return false, ErrNotFound
 	}
 
+	// Banimento invalida todas as sessões existentes na mesma transação.
+	// Desbanir não reativa sessões antigas: o usuário precisa autenticar de novo.
+	if banned {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE user_connections SET replaced_at = now() WHERE user_id = $1 AND replaced_at IS NULL",
+			id,
+		); err != nil {
+			return false, fmt.Errorf("falha ao revogar sessões do usuário banido: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("falha ao confirmar atualização de banimento: %w", err)
+	}
 	return false, nil
+}
+
+// IsUserBanned retorna o estado de banimento atual do usuário.
+// Retorna ErrNotFound quando o usuário não existe.
+func IsUserBanned(ctx context.Context, id string) (bool, error) {
+	var banned bool
+	if err := GetDB().QueryRowContext(ctx,
+		"SELECT banned FROM users WHERE id = $1",
+		id,
+	).Scan(&banned); err != nil {
+		return false, mapStorageError(err)
+	}
+	return banned, nil
 }
 
 // UpdateUserPassword substitui o hash de senha do usuário, reinicia a flag de
