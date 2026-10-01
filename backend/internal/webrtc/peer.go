@@ -531,11 +531,13 @@ func (p *Peer) allocateSlots() error {
 			return err
 		}
 
-		videoSlots = append(videoSlots, &slot{
+		s := &slot{
 			peer:   p,
 			sender: sender,
 			local:  track,
-		})
+		}
+		s.startRTCPFeedback()
+		videoSlots = append(videoSlots, s)
 	}
 
 	audioSlots := make([]*slot, 0, k)
