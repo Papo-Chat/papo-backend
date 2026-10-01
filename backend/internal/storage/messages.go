@@ -118,18 +118,16 @@ func ListMessagesByChannel(ctx context.Context, channelID string, since *time.Ti
 
 	if since != nil {
 		if lastID != "" {
-			query += " AND (created_at " + op + " $2 OR (created_at = $2 AND id " + op + " $3))"
+			query += " AND (created_at < $2 OR (created_at = $2 AND id < $3))"
 			args = append(args, *since, lastID)
-			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $4"
+			query += " ORDER BY created_at DESC, id DESC LIMIT $4"
 		} else {
-			// since sem last_id mantém a semântica histórica de polling:
-			// retorna itens criados depois do timestamp, independentemente de order.
 			query += " AND created_at > $2"
 			args = append(args, *since)
-			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $3"
+			query += " ORDER BY created_at DESC, id DESC LIMIT $3"
 		}
 	} else {
-		query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $2"
+		query += " ORDER BY created_at DESC, id DESC LIMIT $2"
 	}
 	args = append(args, lim)
 
@@ -189,7 +187,8 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 			args = append(args, *since, lastID)
 			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $4"
 		} else {
-			query += " AND created_at " + op + " $2"
+			// since sem last_id mantém a semântica histórica de polling.
+			query += " AND created_at > $2"
 			args = append(args, *since)
 			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $3"
 		}
