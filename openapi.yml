@@ -2852,7 +2852,7 @@ components:
             $ref: '#/components/schemas/Notification'
         has_more:
           type: boolean
-                    description: Indica se há mais itens na direção solicitada por order
+          description: Indica se há mais itens na direção solicitada por order
 
     MarkNotificationsReadRequest:
       type: object
@@ -3109,7 +3109,7 @@ components:
             $ref: '#/components/schemas/Message'
         has_more:
           type: boolean
-                    description: Indica se há mais itens na direção solicitada por order
+          description: Indica se há mais itens na direção solicitada por order
 
     ReactionRequest:
       type: object
