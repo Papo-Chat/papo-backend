@@ -144,10 +144,6 @@ func ProfileBatchHandler(baseURL string, c echo.Context) error {
 	return c.JSON(http.StatusOK, profileBatchResponse{Profiles: profiles})
 }
 
-type userSummaryBatchResponse struct {
-	Users []models.UserSummary `json:"users"`
-}
-
 func UserSummaryBatchHandler(baseURL string, c echo.Context) error {
 	if _, ok := c.Get(middleware.UserIDContextKey).(string); !ok {
 		return utils.SendProblem(c, baseURL, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado", "token de autenticação ausente, inválido ou expirado")
@@ -164,7 +160,7 @@ func UserSummaryBatchHandler(baseURL string, c echo.Context) error {
 		utils.Errorf("request_id=%s falha ao recuperar resumos dos usuários: %v", c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError, "internal", "Erro interno", "falha ao recuperar resumos dos usuários")
 	}
-	return c.JSON(http.StatusOK, userSummaryBatchResponse{Users: users})
+	return c.JSON(http.StatusOK, users)
 }
 
 // ListUsersHandler implementa GET /users.
