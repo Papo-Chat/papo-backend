@@ -183,16 +183,16 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 
 	if since != nil {
 		if lastID != "" {
-			query += " AND (created_at < $2 OR (created_at = $2 AND id < $3))"
+			query += " AND (created_at " + op + " $2 OR (created_at = $2 AND id " + op + " $3))"
 			args = append(args, *since, lastID)
-			query += " ORDER BY created_at DESC, id DESC LIMIT $4"
+			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $4"
 		} else {
-			query += " AND created_at > $2"
+			query += " AND created_at " + op + " $2"
 			args = append(args, *since)
-			query += " ORDER BY created_at DESC, id DESC LIMIT $3"
+			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $3"
 		}
 	} else {
-		query += " ORDER BY created_at DESC, id DESC LIMIT $2"
+		query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $2"
 	}
 	args = append(args, fetch)
 
