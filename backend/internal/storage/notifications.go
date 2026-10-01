@@ -188,7 +188,8 @@ func ListUserNotificationsOrdered(ctx context.Context, userID string, since *tim
 			args = append(args, *since, lastID)
 			query += " ORDER BY n.created_at " + order + ", n.id " + order + " LIMIT $4"
 		} else {
-			query += " AND n.created_at " + op + " $2"
+			// since sem last_id é polling de novas notificações.
+			query += " AND n.created_at > $2"
 			args = append(args, *since)
 			query += " ORDER BY n.created_at " + order + ", n.id " + order + " LIMIT $3"
 		}
