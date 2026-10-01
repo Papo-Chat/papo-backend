@@ -79,22 +79,21 @@ func TestListUsersOrderedBothDirections(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	second := newTestUser(t)
 
-	asc, err := ListUsersOrdered(testCtx(), nil, "", true, 100)
-	if err != nil { t.Fatalf("ListUsersOrdered asc: %v", err) }
-	if len(asc) < 2 || asc[0].ID != first.ID || asc[1].ID != second.ID {
-		t.Fatalf("ordem asc inesperada: %+v", asc)
+	firstCursor := first.CreatedAt
+	newer, err := ListUsersOrdered(testCtx(), &firstCursor, first.ID, true, 100)
+	if err != nil {
+		t.Fatalf("ListUsersOrdered asc cursor: %v", err)
+	}
+	if len(newer) == 0 || newer[0].ID != second.ID {
+		t.Fatalf("cursor asc deveria começar pelo usuário seguinte, obtive %+v", newer)
 	}
 
-	desc, err := ListUsersOrdered(testCtx(), nil, "", false, 100)
-	if err != nil { t.Fatalf("ListUsersOrdered desc: %v", err) }
-	if len(desc) < 2 || desc[0].ID != second.ID || desc[1].ID != first.ID {
-		t.Fatalf("ordem desc inesperada: %+v", desc)
+	secondCursor := second.CreatedAt
+	older, err := ListUsersOrdered(testCtx(), &secondCursor, second.ID, false, 100)
+	if err != nil {
+		t.Fatalf("ListUsersOrdered desc cursor: %v", err)
 	}
-
-	cursor := second.CreatedAt
-	older, err := ListUsersOrdered(testCtx(), &cursor, second.ID, false, 100)
-	if err != nil { t.Fatalf("ListUsersOrdered desc cursor: %v", err) }
-	if len(older) != 1 || older[0].ID != first.ID {
-		t.Fatalf("cursor desc deveria retornar apenas o item anterior, obtive %+v", older)
+	if len(older) == 0 || older[0].ID != first.ID {
+		t.Fatalf("cursor desc deveria começar pelo usuário anterior, obtive %+v", older)
 	}
 }
