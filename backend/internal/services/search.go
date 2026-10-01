@@ -20,7 +20,8 @@ const searchDateLayout = "2006-01-02"
 
 // SearchMessages executa a busca de mensagens (POST /search) com full-text
 // search em português (mesmo config 'portuguese' do tsvector) e filtros
-// combináveis: texto, autor, intervalo de datas (inclusive) e attachment.
+// combináveis: texto, autor, canal, menção, link, intervalo de datas
+// (inclusive) e attachment.
 // Pelo menos 1 filtro é obrigatório.
 //
 // A autorização é a mesma da leitura de mensagens: os resultados são
