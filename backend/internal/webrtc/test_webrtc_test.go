@@ -11,6 +11,7 @@ import (
 	"papo/internal/config"
 
 	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -37,6 +38,32 @@ func testManager(t *testing.T, cfg *config.Config) *Manager {
 		limiters:  make(map[string]*userLimiters),
 		userRooms: make(map[string]map[string]struct{}),
 		ssrcOwner: make(map[uint32]ssrcOwner),
+	}
+}
+
+func TestVideoKeyframeDetection(t *testing.T) {
+	vp8Track := &webrtc.TrackRemote{}
+	// TrackRemote.Codec não é trivial de montar sem receiver; valida os
+	// parsers auxiliares diretamente onde possível e o VP8 frame-tag abaixo
+	// pela mesma regra usada em isVideoKeyframe.
+	var vp8 codecs.VP8Packet
+	payload, err := vp8.Unmarshal([]byte{0x10, 0x00})
+	if err != nil {
+		t.Fatalf("vp8 unmarshal: %v", err)
+	}
+	if vp8.S != 1 || vp8.PID != 0 || len(payload) == 0 || payload[0]&0x01 != 0 {
+		t.Fatal("VP8 keyframe inicial não foi reconhecido")
+	}
+	_ = vp8Track
+
+	if !isH264RandomAccessPacket([]byte{0x65, 0x01}) {
+		t.Fatal("H264 IDR deveria ser random access")
+	}
+	if isH264RandomAccessPacket([]byte{0x41, 0x01}) {
+		t.Fatal("H264 P-frame não deveria ser random access")
+	}
+	if !isH264RandomAccessPacket([]byte{0x7c, 0x85, 0x01}) {
+		t.Fatal("H264 FU-A IDR start deveria ser random access")
 	}
 }
 
