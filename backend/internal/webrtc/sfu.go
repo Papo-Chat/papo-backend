@@ -3,6 +3,7 @@ package webrtc
 import (
 	"sync"
 
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 )
@@ -73,6 +74,51 @@ func (s *slot) release() {
 		s.fwd.finish()
 		s.fwd = nil
 	}
+}
+
+// startRTCPFeedback consome feedback RTCP do receiver deste slot. Como o SFU
+// reescreve o stream para uma TrackLocal própria, PLI/NACK recebidos aqui não
+// chegam automaticamente ao publisher. Para vídeo/screen, convertemos feedback
+// de perda em PLI para a track de origem atual, permitindo recuperação de
+// keyframe em vez de deixar o subscriber preto/congelado.
+func (s *slot) startRTCPFeedback() {
+	if s == nil || s.sender == nil || s.peer == nil {
+		return
+	}
+
+	go func() {
+		for {
+			packets, _, err := s.sender.ReadRTCP()
+			if err != nil {
+				return
+			}
+
+			needsKeyframe := false
+			for _, packet := range packets {
+				switch packet.(type) {
+				case *rtcp.PictureLossIndication,
+					*rtcp.FullIntraRequest,
+					*rtcp.TransportLayerNack:
+					needsKeyframe = true
+				}
+			}
+			if !needsKeyframe {
+				continue
+			}
+
+			s.peer.mu.Lock()
+			owner := s.owner
+			src := s.src
+			kind := s.kind
+			s.peer.mu.Unlock()
+
+			if owner == nil || src == nil || (kind != "video" && kind != "screen") {
+				continue
+			}
+
+			sendPLI(owner.PC(), src)
+		}
+	}()
 }
 
 // forwarder é a goroutine de UM subscriber (slot): recebe os pacotes do
