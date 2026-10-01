@@ -9,7 +9,6 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/interceptor/pkg/gcc"
-	"github.com/pion/interceptor/pkg/pacing"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
 )
@@ -70,9 +69,8 @@ func videoCodecCapability(name string) (webrtc.RTPCodecParameters, bool) {
 //     TWCC feedback vem dos defaults; a extensão TWCC nos pacotes
 //     de saída é registrada explicitamente abaixo para o GCC send-side.
 //   - interceptors: NACK/RTX (ambos sentidos) + RTCP reports + TWCC + stats
-//     (RegisterDefaultInterceptors), GCC (SendSideBWE) alimentando o pacer
-//     (limita o bitrate enviado a cada subscriber) e o interceptor de
-//     audio-level (RFC 6464, não existe no pion — active_speaker.go).
+//     (RegisterDefaultInterceptors), GCC (SendSideBWE, com pacer próprio) e o
+//     interceptor de audio-level (RFC 6464, não existe no pion — active_speaker.go).
 func newSharedAPI(cfg *config.Config, m *Manager) (*webrtcAPI, error) {
 	videoCodec, ok := videoCodecCapability(cfg.VoiceVideoCodec)
 	if !ok {
@@ -108,22 +106,22 @@ func newSharedAPI(cfg *config.Config, m *Manager) (*webrtcAPI, error) {
 
 	registry := &interceptor.Registry{}
 
-	// GCC: estima a banda por PC a partir do feedback TWCC do subscriber e
-	// alimenta o pacer (o pacer limita o bitrate efetivamente enviado).
+	// GCC: estima a banda por PC a partir do feedback TWCC do subscriber.
+	//
+	// O default do pion começa em 10 kbps, muito baixo para vídeo e capaz de
+	// deixar screen share pixelado/baixo-FPS por vários segundos. Também não
+	// usamos um segundo pacing interceptor: o SendSideBWE já possui seu próprio
+	// pacer, então encadear outro pacer aplicava limitação duas vezes.
 	estimatorFactory, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
-		return gcc.NewSendSideBWE()
+		return gcc.NewSendSideBWE(
+			gcc.SendSideBWEInitialBitrate(4_000_000),
+			gcc.SendSideBWEMinBitrate(150_000),
+			gcc.SendSideBWEMaxBitrate(20_000_000),
+		)
 	})
 	if err != nil {
 		return nil, err
 	}
-	pacer := pacing.NewInterceptor()
-	estimatorFactory.OnNewPeerConnection(func(id string, estimator cc.BandwidthEstimator) {
-		estimator.OnTargetBitrateChange(func(bitrate int) {
-			if bitrate > 0 {
-				pacer.SetRate(id, bitrate)
-			}
-		})
-	})
 	registry.Add(estimatorFactory)
 
 	// Defaults: NACK (send+recv), RTCP reports, simulcast ext headers, stats
@@ -137,9 +135,6 @@ func newSharedAPI(cfg *config.Config, m *Manager) (*webrtcAPI, error) {
 	if err := webrtc.ConfigureTWCCHeaderExtensionSender(mediaEngine, registry); err != nil {
 		return nil, err
 	}
-
-	// Pacer por último.
-	registry.Add(pacer)
 
 	// Audio-level (RFC 6464): observa os pacotes de áudio recebidos e
 	// reporta o nível por SSRC (active_speaker.go).
