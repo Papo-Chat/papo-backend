@@ -75,8 +75,10 @@ func CreateOrShowDirectConversation(ctx context.Context, userID, targetID string
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO direct_conversation_state (channel_id, user_id, hidden_at)
-		 VALUES ($1, $2, NULL), ($1, $3, NULL)`,
-		channelID, low, high,
+		 VALUES
+		   ($1, $2, CASE WHEN $2::uuid = $4::uuid THEN NULL ELSE NOW() END),
+		   ($1, $3, CASE WHEN $3::uuid = $4::uuid THEN NULL ELSE NOW() END)`,
+		channelID, low, high, userID,
 	); err != nil {
 		return "", false, fmt.Errorf("falha ao criar estado da DM: %w", err)
 	}
