@@ -14,16 +14,16 @@ func newDirectTestUser(t *testing.T) models.User {
 	if err != nil {
 		t.Fatalf("falha ao criar usuário de apoio: %v", err)
 	}
-	return user
-}
-
-func cleanupDirectTestUsers(t *testing.T, users ...models.User) {
-	t.Helper()
-	for _, user := range users {
-		if _, err := storage.GetDB().ExecContext(testCtx(), "DELETE FROM users WHERE id = $1", user.ID); err != nil {
-			t.Errorf("falha ao limpar usuário de apoio %s: %v", user.ID, err)
-		}
+	// Os testes de services compartilham o banco e vários testes históricos
+	// assumem que seus usuários recentes ainda cabem na primeira página asc.
+	// Colocar estes fixtures no futuro evita alterar essa paginação sem tentar
+	// apagar usuários referenciados pelo audit log append-only.
+	if _, err := storage.GetDB().ExecContext(testCtx(),
+		"UPDATE users SET created_at = '9999-01-01T00:00:00Z' WHERE id = $1", user.ID,
+	); err != nil {
+		t.Fatalf("falha ao isolar created_at do fixture: %v", err)
 	}
+	return user
 }
 
 func TestDirectMessagesReuseMessagePipelineAndStayPrivate(t *testing.T) {
@@ -38,7 +38,6 @@ func TestDirectMessagesReuseMessagePipelineAndStayPrivate(t *testing.T) {
 		if err := cleanServers(testCtx()); err != nil {
 			t.Errorf("cleanServers final: %v", err)
 		}
-		cleanupDirectTestUsers(t, owner, a, b)
 	}()
 	if _, err := storage.CreateServer(testCtx(), "server_"+randHex(8), &owner.ID); err != nil {
 		t.Fatalf("CreateServer: %v", err)
@@ -106,7 +105,6 @@ func TestDirectMessagesReuseMessagePipelineAndStayPrivate(t *testing.T) {
 
 func TestOpenDirectConversationEdgeCases(t *testing.T) {
 	u := newDirectTestUser(t)
-	defer cleanupDirectTestUsers(t, u)
 	if _, _, err := OpenDirectConversation(testCtx(), u.ID, u.ID); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("DM consigo mesmo deveria ser inválida, recebeu %v", err)
 	}
