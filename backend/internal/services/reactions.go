@@ -213,6 +213,10 @@ func RemoveReactionFromMessage(ctx context.Context, channelID, messageID, userID
 // ErrChannelNotFound quando o canal não existe e ErrPermissionDenied quando o
 // usuário não pode ler o canal.
 func ListMessageReactions(ctx context.Context, channelID, messageID, userID string, since *time.Time, lastID string) (models.MessageReactionList, error) {
+	return ListMessageReactionsOrdered(ctx, channelID, messageID, userID, since, lastID, "desc")
+}
+
+func ListMessageReactionsOrdered(ctx context.Context, channelID, messageID, userID string, since *time.Time, lastID, order string) (models.MessageReactionList, error) {
 	if channelID == "" || messageID == "" || userID == "" {
 		return models.MessageReactionList{}, ErrInvalidInput
 	}
@@ -232,7 +236,16 @@ func ListMessageReactions(ctx context.Context, channelID, messageID, userID stri
 		return models.MessageReactionList{}, ErrPermissionDenied
 	}
 
-	groups, hasMore, err := storage.ListReactionsByMessage(ctx, messageID, since, lastID, reactionListLimit)
+	orderAsc := false
+	switch order {
+	case "", "desc":
+	case "asc":
+		orderAsc = true
+	default:
+		return models.MessageReactionList{}, ErrInvalidInput
+	}
+
+	groups, hasMore, err := storage.ListReactionsByMessageOrdered(ctx, messageID, since, lastID, orderAsc, reactionListLimit)
 	if err != nil {
 		return models.MessageReactionList{}, err
 	}
