@@ -4,17 +4,27 @@ import (
 	"errors"
 	"testing"
 
+	"papo/internal/models"
 	"papo/internal/storage"
 )
+
+func newDirectTestUser(t *testing.T) models.User {
+	t.Helper()
+	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário de apoio: %v", err)
+	}
+	return user
+}
 
 func TestDirectMessagesReuseMessagePipelineAndStayPrivate(t *testing.T) {
 	if err := cleanServers(testCtx()); err != nil {
 		t.Fatalf("cleanServers: %v", err)
 	}
 
-	owner := newTestUser(t)
-	a := newTestUser(t)
-	b := newTestUser(t)
+	owner := newDirectTestUser(t)
+	a := newDirectTestUser(t)
+	b := newDirectTestUser(t)
 	if _, err := storage.CreateServer(testCtx(), "server_"+randHex(8), &owner.ID); err != nil {
 		t.Fatalf("CreateServer: %v", err)
 	}
@@ -80,7 +90,7 @@ func TestDirectMessagesReuseMessagePipelineAndStayPrivate(t *testing.T) {
 }
 
 func TestOpenDirectConversationEdgeCases(t *testing.T) {
-	u := newTestUser(t)
+	u := newDirectTestUser(t)
 	if _, _, err := OpenDirectConversation(testCtx(), u.ID, u.ID); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("DM consigo mesmo deveria ser inválida, recebeu %v", err)
 	}
