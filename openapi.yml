@@ -300,6 +300,43 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /users/user_summary_batch:
+    post:
+      tags: [Users]
+      summary: UserSummary em lote (máx. 1000 ids)
+      description: |
+        Retorna um array de UserSummary na ordem dos ids informados.
+        Ids inexistentes são pulados e ids duplicados aparecem apenas na
+        primeira ocorrência.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserSummaryBatchRequest'
+      responses:
+        '200':
+          description: Resumos dos usuários encontrados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserSummary'
+        '400':
+          description: ids vazio, com item vazio ou acima de 1000 itens
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /users:
     get:
       tags: [Users]
@@ -319,6 +356,14 @@ paths:
             type: string
             format: uuid
           description: ID do último usuário da página anterior (cursor exato usado com since)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+          description: Direção da paginação e ordenação; has_more se refere a esta direção
       responses:
         '200':
           description: Lista de usuários
@@ -333,6 +378,7 @@ paths:
                       $ref: '#/components/schemas/UserSummary'
                   has_more:
                     type: boolean
+                    description: Indica se há mais itens na direção solicitada por order
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -716,7 +762,7 @@ paths:
   /users/{user_id}/notifications:
     get:
       tags: [Notifications]
-      summary: Lista as notificações do usuário em ordem decrescente (Limite de 100 por requisição, use cursor com since + last_id para paginar)
+      summary: Lista as notificações do usuário (Limite de 100; paginação por since + last_id; order asc/desc)
       description: "Permission Check: somente o próprio usuário (user_id autenticado)"
       parameters:
         - $ref: '#/components/parameters/UserId'
@@ -734,6 +780,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Direção da paginação e ordenação; has_more se refere a esta direção
       responses:
         '200':
           description: Notificações do usuário
@@ -1205,6 +1259,30 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /channels/{channel_id}/role/{role_id}:
+    delete:
+      tags: [Channels]
+      summary: Remove o vínculo de permissões de uma role com o canal
+      description: "Permission Check: `manage_channels`. Não remove a role; remove apenas sua entrada em channel.permissions."
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/RoleId'
+      responses:
+        '204':
+          description: Vínculo removido; também é idempotente se a role já não estiver vinculada
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Canal ou role inexistente
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /channels/{channel_id}/user/{user_id}/settings:
     post:
       tags: [Notifications]
@@ -1266,7 +1344,7 @@ paths:
   /channels/{channel_id}/messages:
     get:
       tags: [Messages]
-      summary: Lista mensagens do canal em ordem decrescente (Limite de 100 por Requisição, use cursor com since + last_id para paginar)
+      summary: Lista mensagens do canal (Limite de 100; paginação por since + last_id; order asc/desc)
       parameters:
         - $ref: '#/components/parameters/ChannelId'
         - name: since
@@ -1283,6 +1361,14 @@ paths:
             type: string
             format: uuid
           description: ID da última mensagem da página anterior (cursor exato usado com since)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Direção da paginação e ordenação; has_more se refere a esta direção
       responses:
         '200':
           description: Mensagens do canal
@@ -1532,8 +1618,8 @@ paths:
           $ref: '#/components/responses/InternalError'
     get:
       tags: [Messages]
-      summary: Lista reações da mensagem com os usuários que reagiram (Limite de 100 por requisição, use cursor com since + last_id para paginar)
-      description: "Permission Check: `read_channel` do canal. Resposta agrupada por tipo de emoji, em ordem decrescente de criação (created_at, id). O cursor da próxima página é o par (created_at, id) da última reação da página (cada usuário do grupo carrega os dois valores). `count` é o número de usuários do grupo na página retornada; o total por emoji está em `reactions` do corpo da mensagem."
+      summary: Lista reações da mensagem com os usuários que reagiram (Limite de 100; order asc/desc)
+      description: "Permission Check: `read_channel` do canal. Resposta agrupada por tipo de emoji e ordenada por (created_at, id) conforme order. O cursor da próxima página é o par (created_at, id) da última reação da página. `count` é o número de usuários do grupo na página retornada."
       parameters:
         - $ref: '#/components/parameters/ChannelId'
         - $ref: '#/components/parameters/MessageId'
@@ -1551,6 +1637,14 @@ paths:
             type: string
             format: uuid
           description: ID da última reação da página anterior (cursor exato usado com since)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Direção da paginação e ordenação; has_more se refere a esta direção
       responses:
         '200':
           description: Reações da mensagem
@@ -1624,6 +1718,14 @@ paths:
             type: string
             format: uuid
           description: ID do último emoji da página anterior (cursor exato usado com since)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+          description: Direção da paginação e ordenação; has_more se refere a esta direção
       responses:
         '200':
           description: Lista de emojis
@@ -1638,6 +1740,7 @@ paths:
                       $ref: '#/components/schemas/Emoji'
                   has_more:
                     type: boolean
+                    description: Indica se há mais itens na direção solicitada por order
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -1883,8 +1986,7 @@ paths:
       tags: [Admin]
       summary: Lista os logs de auditoria (Limite de 100 por requisição, use cursor com since + last_id para paginar)
       description: |
-        Retorna os eventos auditáveis em ordem decrescente (mais recentes
-        primeiro). Requer a permissão `manage_server` (dono do servidor ou role
+        Retorna os eventos auditáveis na direção definida por order. Requer a permissão `manage_server` (dono do servidor ou role
         com a permissão). Os filtros opcionais podem ser combinados.
       parameters:
         - name: action
@@ -1927,6 +2029,14 @@ paths:
             type: string
             format: uuid
           description: ID do último log da página anterior (cursor exato usado com since)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Direção da paginação e ordenação; has_more se refere a esta direção
       responses:
         '200':
           description: Logs de auditoria
@@ -1984,7 +2094,7 @@ paths:
         | `role_add`       | outbound  | `{ type: "role_add", user_id, role_id }` (role atribuída ao usuário)                     |
         | `role_remove`    | outbound  | `{ type: "role_remove", user_id, role_id }` (role removida do usuário)                   |
         | `presence_update`| outbound  | `{ type: "presence_update", user_id, status, status_message, typing, nickname }` (status: online/offline/away/busy) |
-        | `presence_sync`  | unicast   | `{ type: "presence_sync", members: (user_id, status, status_message)[] }` (status: online/offline/away/busy; enviado na conexão; sem nickname) |
+        | `presence_sync`  | unicast   | `{ type: "presence_sync", members: (user_id, status, status_message, user_voice: channel_id[])[] }` (status: online/offline/away/busy; user_voice lista os canais de voz atuais; enviado na conexão; sem nickname) |
         | `heartbeat`      | inbound   | `{ type: "heartbeat" }`                                                                 |
         | `heartbeat_ack`  | outbound  | `{ type: "heartbeat_ack" }`                                                             |
         | `error`          | outbound  | `{ type: "error", message, code? }`                                                     |
@@ -2203,6 +2313,9 @@ components:
         nickname:
           type: string
           nullable: true
+        banned:
+          type: boolean
+          description: Indica se o usuário está banido
         status:
           type: string
           nullable: true
@@ -2280,6 +2393,18 @@ components:
           description: Roles atribuídas ao usuário
           items:
             $ref: '#/components/schemas/RoleSummary'
+
+    UserSummaryBatchRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            type: string
+            format: uuid
 
     ProfileBatchRequest:
       type: object
@@ -2411,6 +2536,7 @@ components:
         theme:
           type: string
           enum: [dark, light, system]
+          default: system
         notifications:
           $ref: '#/components/schemas/Notifications'
         display:
@@ -2421,12 +2547,16 @@ components:
       properties:
         enabled:
           type: boolean
+          default: true
         messagePreview:
           type: boolean
+          default: true
         sound:
           type: boolean
+          default: true
         mentions:
           type: boolean
+          default: true
 
     Display:
       type: object
@@ -2434,13 +2564,17 @@ components:
         fontSize:
           type: string
           enum: [small, medium, huge]
+          default: medium
         messageDensity:
           type: string
           enum: [compact, normal, comfortable]
+          default: normal
         showTimestamps:
           type: boolean
+          default: true
         showAvatars:
           type: boolean
+          default: true
 
     UpdateUserRequest:
       type: object
@@ -2721,6 +2855,7 @@ components:
             $ref: '#/components/schemas/Notification'
         has_more:
           type: boolean
+                    description: Indica se há mais itens na direção solicitada por order
 
     MarkNotificationsReadRequest:
       type: object
@@ -2977,6 +3112,7 @@ components:
             $ref: '#/components/schemas/Message'
         has_more:
           type: boolean
+                    description: Indica se há mais itens na direção solicitada por order
 
     ReactionRequest:
       type: object
@@ -3092,7 +3228,7 @@ components:
             emoji_id/unicode).
         has_more:
           type: boolean
-          description: Indica se existe próxima página (cursor since + last_id)
+          description: Indica se há mais itens na direção solicitada por order
 
     MessageUserReaction:
       type: object
@@ -3376,7 +3512,7 @@ components:
 
     SearchRequest:
       type: object
-      description: Pelo menos 1 campo obrigatório; os filtros podem ser combinados
+      description: Pelo menos 1 filtro é obrigatório; os filtros podem ser combinados. Menções usam o formato canônico @mention(<@userId>).
       properties:
         text:
           type: string
@@ -3385,6 +3521,18 @@ components:
           type: string
           format: uuid
           description: Filtro por autor da mensagem
+        channel_id:
+          type: string
+          format: uuid
+          description: Filtra mensagens de um canal específico
+        mention:
+          type: string
+          format: uuid
+          description: Filtra mensagens contendo a menção canônica @mention(<@userId>) deste usuário
+        has:
+          type: string
+          enum: [link]
+          description: "link filtra conteúdo que contenha URL http:// ou https://"
         order:
           type: string
           enum: [asc, desc]
