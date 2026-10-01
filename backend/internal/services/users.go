@@ -13,6 +13,8 @@ import (
 	"papo/internal/models"
 	"papo/internal/storage"
 	"papo/internal/utils"
+
+	"github.com/google/uuid"
 )
 
 var ErrUserNotReset = errors.New("flag reset_password ausente")
@@ -266,6 +268,9 @@ func UserSummariesBatch(ctx context.Context, ids []string) ([]models.UserSummary
 	unique := make([]string, 0, len(ids))
 	for _, id := range ids {
 		if id == "" { return nil, ErrInvalidInput }
+		parsed, err := uuid.Parse(id)
+		if err != nil { return nil, ErrInvalidInput }
+		id = parsed.String()
 		if _, ok := seen[id]; ok { continue }
 		seen[id] = struct{}{}
 		unique = append(unique, id)
