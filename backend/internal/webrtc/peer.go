@@ -130,6 +130,17 @@ func (p *Peer) isMuted() bool {
 	return p.muted
 }
 
+func (p *Peer) shouldForwardAudio() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// O frontend publica uma única track mixada (mic + áudio da tela).
+	// Quando o mic está mutado, a fonte do mic é zerada localmente; durante
+	// screen share a track ainda precisa ser encaminhada por causa do áudio
+	// capturado da aba/sistema.
+	return !p.muted || p.screenSharing
+}
+
 // renegWorker processa a fila de renegociação sequencialmente (D4 — pion não
 // serializa CreateOffer/SetLocalDescription/SetRemoteDescription).
 func (p *Peer) renegWorker() {
@@ -162,7 +173,7 @@ func (p *Peer) audioRoutingSnapshot() (
 		return true, nil, nil
 	}
 
-	return p.muted,
+	return p.muted && !p.screenSharing,
 		p.trackOfKindLocked("audio"),
 		append([]string(nil), p.audioSet...)
 }
@@ -1031,6 +1042,19 @@ func sendPLI(pc *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	_ = pc.WriteRTCP([]rtcp.Packet{
 		&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())},
 	})
+}
+
+func (p *Peer) requestKeyframe(track *webrtc.TrackRemote) {
+	if p == nil || track == nil {
+		return
+	}
+
+	pc := p.PC()
+	if pc == nil {
+		return
+	}
+
+	sendPLI(pc, track)
 }
 
 func sendPLIBurst(pc *webrtc.PeerConnection, track *webrtc.TrackRemote) {
