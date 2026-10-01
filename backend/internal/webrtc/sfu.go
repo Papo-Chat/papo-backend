@@ -192,7 +192,7 @@ func (f *forwarder) run() {
 			}
 
 			if f.kind == "audio" {
-				if f.owner.isMuted() {
+				if !f.owner.shouldForwardAudio() {
 					f.wasMuted = true
 					continue
 				}
