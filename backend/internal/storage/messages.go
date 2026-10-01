@@ -122,7 +122,9 @@ func ListMessagesByChannel(ctx context.Context, channelID string, since *time.Ti
 			args = append(args, *since, lastID)
 			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $4"
 		} else {
-			query += " AND created_at " + op + " $2"
+			// since sem last_id mantém a semântica histórica de polling:
+			// retorna itens criados depois do timestamp, independentemente de order.
+			query += " AND created_at > $2"
 			args = append(args, *since)
 			query += " ORDER BY created_at " + order + ", id " + order + " LIMIT $3"
 		}
