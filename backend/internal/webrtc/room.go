@@ -687,16 +687,45 @@ func (r *Room) setMuted(userID string, muted bool) {
 
 	state := peer.updateState(&muted, nil, nil)
 
+	var (
+		activeSpeakersChanged bool
+		activeSpeakers        []string
+	)
+
 	if muted {
 		r.mu.Lock()
 
 		delete(r.scores, userID)
 		delete(r.lastAudioActivity, userID)
 
+		if len(r.lastTopK) > 0 {
+			next := make([]string, 0, len(r.lastTopK))
+			for _, id := range r.lastTopK {
+				if id == userID {
+					activeSpeakersChanged = true
+					continue
+				}
+				next = append(next, id)
+			}
+
+			if activeSpeakersChanged {
+				r.lastTopK = next
+				activeSpeakers = append([]string{}, next...)
+			}
+		}
+
 		r.mu.Unlock()
 	}
 
 	r.broadcastState(state)
+
+	if activeSpeakersChanged {
+		r.m.broadcastVoice(r.channelID, ActiveSpeakerUpdate{
+			Type:      EventTypeActiveSpeakerUpdate,
+			ChannelID: r.channelID,
+			UserIDs:   activeSpeakers,
+		})
+	}
 }
 
 // setCameraOn registra apenas a intenção de câmera. O estado camera_on só é

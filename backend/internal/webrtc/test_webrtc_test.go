@@ -1147,3 +1147,59 @@ func TestReleaseAllFromPublishesAudioRoutes(t *testing.T) {
 		t.Fatal("voice_audio_routes não foi enviado")
 	}
 }
+
+
+func TestSetMutedEvictsActiveSpeakerImmediately(t *testing.T) {
+	events := make(chan any, 4)
+	m := testManager(t, &config.Config{VoiceAudioSlots: 2})
+	m.signaler.BroadcastToUsers = func(_ map[string]bool, event any) {
+		events <- event
+	}
+
+	peer := &Peer{userID: "speaker"}
+	r := &Room{
+		m:                 m,
+		channelID:         "voice-channel",
+		peers:             map[string]*Peer{"speaker": peer},
+		scores:            map[string]float64{"speaker": -10, "other": -20},
+		lastTopK:          []string{"speaker", "other"},
+		lastAudioActivity: map[string]time.Time{"speaker": time.Now(), "other": time.Now()},
+	}
+
+	r.setMuted("speaker", true)
+
+	if _, ok := r.scores["speaker"]; ok {
+		t.Fatal("score do usuário mutado não foi removido")
+	}
+	if _, ok := r.lastAudioActivity["speaker"]; ok {
+		t.Fatal("atividade do usuário mutado não foi removida")
+	}
+	if len(r.lastTopK) != 1 || r.lastTopK[0] != "other" {
+		t.Fatalf("lastTopK = %v, esperado [other]", r.lastTopK)
+	}
+
+	var (
+		gotState  bool
+		gotActive bool
+	)
+	for i := 0; i < 2; i++ {
+		select {
+		case raw := <-events:
+			switch event := raw.(type) {
+			case VoiceStateUpdate:
+				gotState = event.UserID == "speaker" && event.Muted
+			case ActiveSpeakerUpdate:
+				gotActive = len(event.UserIDs) == 1 && event.UserIDs[0] == "other"
+			}
+		case <-time.After(time.Second):
+			t.Fatal("eventos de mute/active-speaker não foram enviados")
+		}
+	}
+
+	if !gotState {
+		t.Fatal("voice_state_update de mute não foi enviado")
+	}
+	if !gotActive {
+		t.Fatal("active_speaker_update sem o usuário mutado não foi enviado")
+	}
+}
