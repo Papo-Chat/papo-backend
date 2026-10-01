@@ -699,23 +699,48 @@ func (r *Room) setMuted(userID string, muted bool) {
 	r.broadcastState(state)
 }
 
-// setCameraOn atualiza o estado da câmera e notifica os leitores do canal.
+// setCameraOn registra apenas a intenção de câmera. O estado camera_on só é
+// publicado por setPublishedKind quando a TrackRemote já existe no SFU.
 func (r *Room) setCameraOn(userID string, on bool) {
 	peer := r.peer(userID)
 	if peer == nil {
 		return
 	}
-	r.broadcastState(peer.updateState(nil, &on, nil))
+	peer.updateMediaIntent(&on, nil)
 }
 
-// setScreenSharing atualiza o estado de screen share e notifica os leitores
-// do canal (a track nova/removida chega na renegociação do publisher).
+// setScreenSharing registra apenas a intenção. screen_sharing=true só é
+// publicado quando a TrackRemote da tela efetivamente chegou ao SFU.
 func (r *Room) setScreenSharing(userID string, on bool) {
 	peer := r.peer(userID)
 	if peer == nil {
 		return
 	}
-	r.broadcastState(peer.updateState(nil, nil, &on))
+	peer.updateMediaIntent(nil, &on)
+}
+
+func (r *Room) setPublishedKind(peer *Peer, kind string, on bool) {
+	if peer == nil {
+		return
+	}
+
+	var (
+		state   models.VoiceState
+		changed bool
+	)
+
+	switch kind {
+	case "video":
+		state, changed = peer.updatePublishedMedia(&on, nil)
+	case "screen":
+		state, changed = peer.updatePublishedMedia(nil, &on)
+	default:
+		return
+	}
+
+	if changed {
+		r.broadcastState(state)
+	}
 }
 
 // broadcastState distribui o estado de voz de um usuário aos leitores do
