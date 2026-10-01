@@ -38,11 +38,12 @@ type User struct {
 }
 
 // UserSummary representa uma visão reduzida de usuário para listagens (GET /users),
-// sem campos sensíveis ou densos (password_hash, avatar, banned, last_ip).
+// sem campos sensíveis ou densos (password_hash, avatar, last_ip).
 type UserSummary struct {
 	ID              string     `db:"id" json:"id"`
 	Username        string     `db:"username" json:"username"`
 	Nickname        *string    `db:"nickname" json:"nickname"`
+	Banned          bool       `db:"banned" json:"banned"`
 	Status          *string    `db:"status" json:"status"`
 	StatusMessage   *string    `db:"status_message" json:"status_message"`
 	Typing          *string    `db:"typing" json:"typing"`

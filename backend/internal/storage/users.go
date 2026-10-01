@@ -19,7 +19,7 @@ const userColumns = "id, username, nickname, password_hash, avatar_media, banner
 const userPublicColumns = "id, username, nickname, avatar_media, banner_media, description, banned, reset_password, connection_violation, last_ip, status, status_message, typing, status_updated_at, created_at"
 
 // userSummaryColumns é a visão reduzida para listagens (GET /users).
-const userSummaryColumns = "id, username, nickname, status, status_message, typing, status_updated_at, created_at"
+const userSummaryColumns = "id, username, nickname, banned, status, status_message, typing, status_updated_at, created_at"
 
 func scanUser(row rowScanner) (models.User, error) {
 	var user models.User
@@ -80,6 +80,7 @@ func scanUserSummary(row rowScanner) (models.UserSummary, error) {
 		&user.ID,
 		&user.Username,
 		&user.Nickname,
+		&user.Banned,
 		&user.Status,
 		&user.StatusMessage,
 		&user.Typing,
@@ -93,7 +94,7 @@ func scanUserSummary(row rowScanner) (models.UserSummary, error) {
 	return user, nil
 }
 
-// CreateUser cria um novo usuário com settings vazias e retorna o registro criado.
+// CreateUser cria um novo usuário com settings padrão e retorna o registro criado.
 func CreateUser(ctx context.Context, username, passwordHash, ip string) (models.User, models.UserSettings, error) {
 	tx, err := GetDB().BeginTx(ctx, nil)
 	if err != nil {
@@ -107,15 +108,14 @@ func CreateUser(ctx context.Context, username, passwordHash, ip string) (models.
 		return models.User{}, models.UserSettings{}, mapStorageError(err)
 	}
 
-	emptyUserSettings, errJson := json.Marshal(models.UserSettings{})
-
-	if errJson != nil {
-		return models.User{}, models.UserSettings{}, mapStorageError(err)
+	defaultConfigJSON, err := json.Marshal(models.DefaultUserConfig())
+	if err != nil {
+		return models.User{}, models.UserSettings{}, fmt.Errorf("falha ao codificar configurações padrão do usuário: %w", err)
 	}
 
 	userSettings, err := scanUserSettings(tx.QueryRowContext(ctx,
 		`INSERT INTO user_settings (user_id, config, version) VALUES ($1, $2, $3) RETURNING `+userSettingsColumns,
-		user.ID, string(emptyUserSettings), models.CurrentVersion,
+		user.ID, string(defaultConfigJSON), models.CurrentVersion,
 	))
 	if err != nil {
 		return models.User{}, models.UserSettings{}, mapStorageError(err)
@@ -171,6 +171,22 @@ func GetUsersByIDs(ctx context.Context, ids []string) ([]models.User, error) {
 		return nil, fmt.Errorf("falha ao buscar usuários por ids: %w", err)
 	}
 
+	return users, nil
+}
+
+// GetUserSummariesByIDs busca UserSummary pelos ids informados.
+func GetUserSummariesByIDs(ctx context.Context, ids []string) ([]models.UserSummary, error) {
+	if len(ids) == 0 { return []models.UserSummary{}, nil }
+	rows, err := GetDB().QueryContext(ctx, "SELECT "+userSummaryColumns+" FROM users WHERE id = ANY($1)", ids)
+	if err != nil { return nil, fmt.Errorf("falha ao buscar resumos de usuários por ids: %w", err) }
+	defer rows.Close()
+	users := make([]models.UserSummary, 0, len(ids))
+	for rows.Next() {
+		user, err := scanUserSummary(rows)
+		if err != nil { return nil, fmt.Errorf("falha ao ler resumo de usuário: %w", err) }
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil { return nil, fmt.Errorf("falha ao buscar resumos de usuários por ids: %w", err) }
 	return users, nil
 }
 

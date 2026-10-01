@@ -49,6 +49,8 @@ const userListLimit = 100
 // profileBatchLimit é o limite de ids por requisição de perfis em lote.
 const profileBatchLimit = 50
 
+const userSummaryBatchLimit = 1000
+
 // UpdateSettings valida e salva as configurações do usuário autenticado.
 // Retorna ErrUserNotFound quando o usuário não existe e ErrInvalidInput
 // quando a configuração contém valores fora dos permitidos.
@@ -242,6 +244,31 @@ func ListUsers(ctx context.Context, since *time.Time, lastID string) (models.Use
 	}
 
 	return models.UserList{Users: users, HasMore: hasMore}, nil
+}
+
+// UserSummariesBatch retorna UserSummary na ordem da requisição,
+// pulando ids inexistentes e duplicados após a primeira ocorrência.
+func UserSummariesBatch(ctx context.Context, ids []string) ([]models.UserSummary, error) {
+	if len(ids) == 0 || len(ids) > userSummaryBatchLimit { return nil, ErrInvalidInput }
+	seen := make(map[string]struct{}, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" { return nil, ErrInvalidInput }
+		if _, ok := seen[id]; ok { continue }
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	summaries, err := storage.GetUserSummariesByIDs(ctx, unique)
+	if err != nil { return nil, err }
+	byID := make(map[string]models.UserSummary, len(summaries))
+	foundIDs := make([]string, 0, len(summaries))
+	for _, summary := range summaries { byID[summary.ID] = summary; foundIDs = append(foundIDs, summary.ID) }
+	rolesByUser, err := storage.GetRoleSummariesByUsers(ctx, foundIDs)
+	if err != nil { return nil, err }
+	for id, summary := range byID { summary.Roles = rolesByUser[id]; byID[id] = summary }
+	result := make([]models.UserSummary, 0, len(summaries))
+	for _, id := range unique { if summary, ok := byID[id]; ok { result = append(result, summary) } }
+	return result, nil
 }
 
 // UpdateUser atualiza o nickname, o status, a description e o typing do
