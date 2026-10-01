@@ -352,8 +352,8 @@ func TestCreateUser(t *testing.T) {
 	if settings.Version != models.CurrentVersion {
 		t.Errorf("esperava settings.version = %d, obtive %d", models.CurrentVersion, settings.Version)
 	}
-	if settings.Config != (models.UserConfig{}) {
-		t.Errorf("esperava settings.config vazio, obtive %+v", settings.Config)
+	if settings.Config != models.DefaultUserConfig() {
+		t.Errorf("esperava settings.config padrão, obtive %+v", settings.Config)
 	}
 	if settings.UpdatedAt.IsZero() {
 		t.Error("esperava settings.updated_at preenchido")
