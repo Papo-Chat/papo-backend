@@ -8,6 +8,9 @@ import "time"
 type SearchRequest struct {
 	Text               string `json:"text"`
 	Author             string `json:"author"`
+	ChannelID          string `json:"channel_id"`
+	Mention            string `json:"mention"`
+	Has                string `json:"has"`
 	Order              string `json:"order"`
 	DateStart          string `json:"date_start"`
 	DateEnd            string `json:"date_end"`

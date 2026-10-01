@@ -133,6 +133,9 @@ func RegisterChannelRoutes(e *echo.Echo, cfg *config.Config) {
 	e.PUT("/channels/:channel_id/permissions/:role_id", func(c echo.Context) error {
 		return UpdateChannelPermissionsHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware, middleware.RequireManageChannels())
+	e.DELETE("/channels/:channel_id/role/:role_id", func(c echo.Context) error {
+		return DeleteChannelRoleHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware, middleware.RequireManageChannels())
 	e.POST("/channels/:channel_id/user/:user_id/settings", func(c echo.Context) error {
 		return UpdateChannelUserSettingHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)

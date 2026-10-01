@@ -19,6 +19,9 @@ type SearchParams struct {
 	UserID             string
 	Text               string
 	AuthorID           string
+	ChannelID          string
+	MentionToken       string
+	HasLink            bool
 	DateStart          *time.Time
 	DateEndExclusive   *time.Time
 	ContainsAttachment *bool
@@ -81,6 +84,15 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 
 	if p.AuthorID != "" {
 		conds = append(conds, "m.author_id = "+arg(p.AuthorID))
+	}
+	if p.ChannelID != "" {
+		conds = append(conds, "m.channel_id = "+arg(p.ChannelID))
+	}
+	if p.MentionToken != "" {
+		conds = append(conds, "strpos(lower(COALESCE(m.content, '')), lower("+arg(p.MentionToken)+")) > 0")
+	}
+	if p.HasLink {
+		conds = append(conds, "COALESCE(m.content, '') ~* 'https?://'")
 	}
 
 	if p.DateStart != nil {

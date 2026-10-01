@@ -340,3 +340,27 @@ func ChangeChannelPositionHandler(baseURL string, c echo.Context) error {
 
 	return c.JSON(http.StatusOK, channel)
 }
+
+
+// DeleteChannelRoleHandler implementa DELETE /channels/:channel_id/role/:role_id.
+func DeleteChannelRoleHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado", "token de autenticação ausente, inválido ou expirado")
+	}
+	channelID, roleID := c.Param("channel_id"), c.Param("role_id")
+	if channelID == "" || roleID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "channel_id e role_id são obrigatórios")
+	}
+	err := services.DeleteChannelRolePermission(c.Request().Context(), userID, channelID, roleID)
+	switch {
+	case errors.Is(err, services.ErrChannelNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound, "not-found", "Recurso não encontrado", "canal não encontrado")
+	case errors.Is(err, services.ErrRoleNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound, "not-found", "Recurso não encontrado", "role não encontrada")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao remover role do canal: %v", c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError, "internal", "Erro interno", "falha ao remover role do canal")
+	}
+	return c.NoContent(http.StatusNoContent)
+}
