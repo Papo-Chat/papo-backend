@@ -5,6 +5,10 @@ import "testing"
 func TestDirectConversationLifecycleAndBlocks(t *testing.T) {
 	a := newTestUser(t)
 	b := newTestUser(t)
+	defer func() {
+		_, _ = GetDB().ExecContext(testCtx(), "DELETE FROM users WHERE id = $1", a.ID)
+		_, _ = GetDB().ExecContext(testCtx(), "DELETE FROM users WHERE id = $1", b.ID)
+	}()
 
 	channelID, created, err := CreateOrShowDirectConversation(testCtx(), a.ID, b.ID)
 	if err != nil {
@@ -93,6 +97,7 @@ func TestDirectConversationLifecycleAndBlocks(t *testing.T) {
 
 func TestUserBlockRejectsSelfAtDatabaseConstraint(t *testing.T) {
 	u := newTestUser(t)
+	defer func() { _, _ = GetDB().ExecContext(testCtx(), "DELETE FROM users WHERE id = $1", u.ID) }()
 	if err := CreateUserBlock(testCtx(), u.ID, u.ID); err == nil {
 		t.Fatal("esperava erro ao bloquear a si mesmo no storage")
 	}
