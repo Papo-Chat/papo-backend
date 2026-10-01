@@ -165,6 +165,10 @@ func CreateNotificationInTx(tx *sql.Tx, ctx context.Context, userID, messageID s
 // (evita pular notificações com timestamp igual). É buscada 1 row a mais que
 // o limite para o chamador determinar has_more.
 func ListUserNotifications(ctx context.Context, userID string, since *time.Time, lastID string, limit int) ([]models.NotificationSummary, error) {
+	return ListUserNotificationsOrdered(ctx, userID, since, lastID, false, limit)
+}
+
+func ListUserNotificationsOrdered(ctx context.Context, userID string, since *time.Time, lastID string, orderAsc bool, limit int) ([]models.NotificationSummary, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
@@ -175,19 +179,21 @@ func ListUserNotifications(ctx context.Context, userID string, since *time.Time,
 		"JOIN messages m ON m.id = n.message_id " +
 		"WHERE n.user_id = $1"
 	args := []any{userID}
+	op, order := "<", "DESC"
+	if orderAsc { op, order = ">", "ASC" }
 
 	if since != nil {
 		if lastID != "" {
-			query += " AND (n.created_at < $2 OR (n.created_at = $2 AND n.id < $3))"
+			query += " AND (n.created_at " + op + " $2 OR (n.created_at = $2 AND n.id " + op + " $3))"
 			args = append(args, *since, lastID)
-			query += " ORDER BY n.created_at DESC, n.id DESC LIMIT $4"
+			query += " ORDER BY n.created_at " + order + ", n.id " + order + " LIMIT $4"
 		} else {
-			query += " AND n.created_at > $2"
+			query += " AND n.created_at " + op + " $2"
 			args = append(args, *since)
-			query += " ORDER BY n.created_at DESC, n.id DESC LIMIT $3"
+			query += " ORDER BY n.created_at " + order + ", n.id " + order + " LIMIT $3"
 		}
 	} else {
-		query += " ORDER BY n.created_at DESC, n.id DESC LIMIT $2"
+		query += " ORDER BY n.created_at " + order + ", n.id " + order + " LIMIT $2"
 	}
 	args = append(args, fetch)
 

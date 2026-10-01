@@ -125,11 +125,24 @@ func UpdateChannelUserSetting(ctx context.Context, actorID, channelID, targetID,
 // o cursor since + lastID (mesma convenção de mensagens) e limite de 100.
 // O preview do conteúdo da mensagem é truncado a 512 caracteres.
 func ListUserNotifications(ctx context.Context, actorID, targetID string, since *time.Time, lastID string) (models.NotificationList, error) {
+	return ListUserNotificationsOrdered(ctx, actorID, targetID, since, lastID, "desc")
+}
+
+func ListUserNotificationsOrdered(ctx context.Context, actorID, targetID string, since *time.Time, lastID, order string) (models.NotificationList, error) {
 	if actorID != targetID {
 		return models.NotificationList{}, ErrPermissionDenied
 	}
 
-	summaries, err := storage.ListUserNotifications(ctx, targetID, since, lastID, notificationListLimit)
+	orderAsc := false
+	switch order {
+	case "", "desc":
+	case "asc":
+		orderAsc = true
+	default:
+		return models.NotificationList{}, ErrInvalidInput
+	}
+
+	summaries, err := storage.ListUserNotificationsOrdered(ctx, targetID, since, lastID, orderAsc, notificationListLimit)
 	if err != nil {
 		return models.NotificationList{}, err
 	}

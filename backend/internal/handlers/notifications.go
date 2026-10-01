@@ -101,8 +101,11 @@ func ListUserNotificationsHandler(baseURL string, c echo.Context) error {
 	}
 	lastID := c.QueryParam("last_id")
 
-	list, err := services.ListUserNotifications(c.Request().Context(), userID, targetID, since, lastID)
+	list, err := services.ListUserNotificationsOrdered(c.Request().Context(), userID, targetID, since, lastID, c.QueryParam("order"))
 	switch {
+	case errors.Is(err, services.ErrInvalidInput):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "order deve ser asc ou desc")
 	case errors.Is(err, services.ErrPermissionDenied):
 		return utils.SendProblem(c, baseURL, http.StatusForbidden,
 			"forbidden", "Acesso negado",
