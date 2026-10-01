@@ -71,7 +71,7 @@ func DeleteUserBlock(ctx context.Context, userID, blockedUserID string) error {
 
 func ListBlockedUsers(ctx context.Context, userID string) ([]models.UserSummary, error) {
 	rows, err := GetDB().QueryContext(ctx, `
-		SELECT `+userSummaryColumns+`
+		SELECT u.id, u.username, u.nickname, u.banned, u.status, u.status_message, u.typing, u.status_updated_at, u.created_at
 		FROM user_blocks b
 		JOIN users u ON u.id = b.blocked_user_id
 		WHERE b.user_id = $1
