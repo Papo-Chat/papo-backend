@@ -2293,6 +2293,10 @@ func TestChangePassword(t *testing.T) {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
+	if err := ResetUserPassword(testCtx(), user.ID, user.ID); err != nil {
+		t.Fatalf("ResetUserPassword retornou erro: %v", err)
+	}
+
 	newPassword := newRandomPassword()
 	if err := ChangePassword(testCtx(), user.ID, newPassword); err != nil {
 		t.Fatalf("ChangePassword retornou erro: %v", err)
