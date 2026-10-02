@@ -291,6 +291,7 @@ type fxTwitterPhoto struct {
 }
 
 type fxTwitterVideo struct {
+	URL          string `json:"url"`
 	ThumbnailURL string `json:"thumbnail_url"`
 }
 
@@ -298,6 +299,26 @@ type fxTwitterCard struct {
 	Image *struct {
 		URL string `json:"url"`
 	} `json:"image"`
+}
+
+func fxTwitterVideoURL(status *fxTwitterStatus) string {
+	if status == nil || len(status.Media.Videos) == 0 {
+		return ""
+	}
+
+	raw := strings.TrimSpace(status.Media.Videos[0].URL)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "video.twimg.com" && !strings.HasSuffix(host, ".video.twimg.com") {
+		return ""
+	}
+	return u.String()
 }
 
 func fxTwitterImageURL(status *fxTwitterStatus) string {
@@ -363,6 +384,9 @@ func fetchFxTwitterPreview(ctx context.Context, cfg *config.Config, original *ur
 		ProviderName: &provider,
 	}
 
+	if videoURL := fxTwitterVideoURL(payload.Status); videoURL != "" {
+		preview.VideoURL = &videoURL
+	}
 	if imageURL := fxTwitterImageURL(payload.Status); imageURL != "" {
 		if imgMedia, err := downloadPreviewImage(ctx, cfg, imageURL); err == nil {
 			preview.ImageMedia = &imgMedia
@@ -392,13 +416,22 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 		return models.LinkPreview{}, false, err
 	}
 	normalized := u.String()
+	statusID, isTwitterStatus := twitterStatusID(u)
 
 	// 2. Cache (mesma URL normalizada, fetched_at dentro do TTL).
 	if cached, err := storage.GetPreviewByURL(ctx, normalized); err == nil {
-		if time.Since(cached.FetchedAt) < cfg.LinkPreviewCacheTTL {
-			return cached, false, nil
+		age := time.Since(cached.FetchedAt)
+		if age < cfg.LinkPreviewCacheTTL {
+			// Previews antigos de X/Twitter podiam ter sido persistidos antes do
+			// fetch via FxEmbed, sem thumbnail/vídeo. Damos uma janela curta antes
+			// de tentar completar esse cache incompleto, sem transformar tweets
+			// realmente text-only em fetch a cada mensagem.
+			missingTwitterMedia := isTwitterStatus && cached.ImageMedia == nil && cached.VideoURL == nil
+			if !missingTwitterMedia || age < 5*time.Minute {
+				return cached, false, nil
+			}
 		}
-		// expirado → refetch (fall through; o upsert atualiza a row)
+		// expirado ou X/Twitter sem mídia → refetch (o upsert atualiza a row)
 	} else if !errors.Is(err, storage.ErrNotFound) {
 		return models.LinkPreview{}, false, err
 	}
@@ -412,7 +445,7 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 	// realm fxtwitter/fixupx. Esses hosts alteram a resposta por User-Agent e
 	// podem redirecionar clientes humanos, enquanto api.fxtwitter.com/2 é a
 	// superfície estável documentada pelo próprio projeto.
-	if statusID, ok := twitterStatusID(u); ok {
+	if isTwitterStatus {
 		preview, err := fetchFxTwitterPreview(ctx, cfg, u, statusID)
 		return preview, err == nil, err
 	}
