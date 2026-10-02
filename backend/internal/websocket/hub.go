@@ -226,6 +226,17 @@ func (h *Hub) DisconnectUser(userID string) int {
 	return disconnected
 }
 
+// DisconnectAll encerra imediatamente todas as conexões WebSocket ativas sem
+// parar o Hub. Novas conexões continuam podendo ser registradas normalmente.
+func (h *Hub) DisconnectAll() int {
+	clients := h.Clients()
+	for c := range clients {
+		c.sendCloseFrame()
+		_ = c.conn.Close()
+	}
+	return len(clients)
+}
+
 // Broadcast serializa o evento uma única vez e o envia a todos os clientes
 // conectados (eventos globais do backend: presença e canais). Para eventos
 // privados por canal, use BroadcastToUsers com a autorização pré-computada.

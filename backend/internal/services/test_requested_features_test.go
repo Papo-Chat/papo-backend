@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"papo/internal/storage"
+	"papo/internal/utils"
 )
 
 func TestUserSummariesBatchIncludesBannedAndPreservesOrder(t *testing.T) {
@@ -76,5 +77,88 @@ func TestTranslatePushMentionsPrefersNicknameThenUsername(t *testing.T) {
 	}
 	if got := translatePushMentions(testCtx(), content); got != "oi @"+user.Username {
 		t.Fatalf("fallback para username = %q", got)
+	}
+}
+
+
+func TestServerPasswordChangeRevokesAllSessions(t *testing.T) {
+	if err := cleanServers(testCtx()); err != nil {
+		t.Fatalf("cleanServers: %v", err)
+	}
+
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("Register owner: %v", err)
+	}
+	other, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("Register other: %v", err)
+	}
+
+	oldPassword := newRandomPassword()
+	if _, err := CreateServerWithIcon(testCtx(), newRandomServerName(), "", "", false, &oldPassword, &owner.ID); err != nil {
+		t.Fatalf("CreateServerWithIcon: %v", err)
+	}
+
+	ownerToken, _, err := CreateSessionConnection(testCtx(), owner.ID)
+	if err != nil {
+		t.Fatalf("CreateSessionConnection owner: %v", err)
+	}
+	otherToken, _, err := CreateSessionConnection(testCtx(), other.ID)
+	if err != nil {
+		t.Fatalf("CreateSessionConnection other: %v", err)
+	}
+
+	newPassword := newRandomPassword()
+	result, err := PatchServerWithResult(testCtx(), owner.ID, nil, nil, nil, nil, &newPassword)
+	if err != nil {
+		t.Fatalf("PatchServerWithResult: %v", err)
+	}
+	if !result.PasswordChanged {
+		t.Fatal("esperava PasswordChanged=true")
+	}
+
+	for name, session := range map[string]struct {
+		userID string
+		token  string
+	}{
+		"owner": {owner.ID, ownerToken},
+		"other": {other.ID, otherToken},
+	} {
+		if err := storage.CheckUserConnection(testCtx(), session.userID, utils.HashToken(session.token)); !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("%s: sessão deveria estar revogada, obtive %v", name, err)
+		}
+	}
+}
+
+func TestServerPasswordUnchangedPreservesSessions(t *testing.T) {
+	if err := cleanServers(testCtx()); err != nil {
+		t.Fatalf("cleanServers: %v", err)
+	}
+
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("Register owner: %v", err)
+	}
+
+	password := newRandomPassword()
+	if _, err := CreateServerWithIcon(testCtx(), newRandomServerName(), "", "", false, &password, &owner.ID); err != nil {
+		t.Fatalf("CreateServerWithIcon: %v", err)
+	}
+
+	token, _, err := CreateSessionConnection(testCtx(), owner.ID)
+	if err != nil {
+		t.Fatalf("CreateSessionConnection: %v", err)
+	}
+
+	result, err := PatchServerWithResult(testCtx(), owner.ID, nil, nil, nil, nil, &password)
+	if err != nil {
+		t.Fatalf("PatchServerWithResult: %v", err)
+	}
+	if result.PasswordChanged {
+		t.Fatal("esperava PasswordChanged=false para a mesma senha")
+	}
+	if err := storage.CheckUserConnection(testCtx(), owner.ID, utils.HashToken(token)); err != nil {
+		t.Fatalf("sessão deveria continuar ativa, obtive %v", err)
 	}
 }

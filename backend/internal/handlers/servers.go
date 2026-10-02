@@ -10,6 +10,7 @@ import (
 	"papo/internal/models"
 	"papo/internal/services"
 	"papo/internal/utils"
+	"papo/internal/websocket"
 
 	"github.com/labstack/echo/v4"
 )
@@ -162,8 +163,8 @@ func ReplaceServerHandler(baseURL string, c echo.Context) error {
 			"campos 'name', 'icon_blob', 'icon_format', 'password' e 'public' são obrigatórios")
 	}
 
-	err := services.ReplaceServer(c.Request().Context(), userID, *req.Name, *req.IconBlob, *req.IconFormat, *req.Password, *req.Public)
-	return serverUpdateResponse(baseURL, c, err)
+	result, err := services.ReplaceServerWithResult(c.Request().Context(), userID, *req.Name, *req.IconBlob, *req.IconFormat, *req.Password, *req.Public)
+	return serverUpdateResponse(baseURL, c, result, err)
 }
 
 // PatchServerHandler implementa PATCH /server como atualização parcial.
@@ -182,11 +183,11 @@ func PatchServerHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	err := services.PatchServer(c.Request().Context(), userID, req.Name, req.IconBlob, req.IconFormat, req.Public, req.Password)
-	return serverUpdateResponse(baseURL, c, err)
+	result, err := services.PatchServerWithResult(c.Request().Context(), userID, req.Name, req.IconBlob, req.IconFormat, req.Public, req.Password)
+	return serverUpdateResponse(baseURL, c, result, err)
 }
 
-func serverUpdateResponse(baseURL string, c echo.Context, err error) error {
+func serverUpdateResponse(baseURL string, c echo.Context, result services.ServerUpdateResult, err error) error {
 	cfg := config.LoadConfig()
 	if resp, ok := passwordPolicyResponse(c, baseURL, err, cfg.MinPasswordLength); ok {
 		return resp
@@ -204,6 +205,12 @@ func serverUpdateResponse(baseURL string, c echo.Context, err error) error {
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
 			"internal", "Erro interno", "falha ao atualizar o servidor")
+	}
+
+	if result.PasswordChanged {
+		disconnected := websocket.GetHub().DisconnectAll()
+		utils.Infof("request_id=%s senha do servidor alterada: %d websocket(s) encerrado(s)",
+			c.Request().Header.Get(echo.HeaderXRequestID), disconnected)
 	}
 
 	updated, err := services.GetServer(c.Request().Context())

@@ -2867,7 +2867,7 @@ func TestReplaceServerRequiresCompleteState(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := updateServer(testCtx(), testActorID(), tc.serverName, tc.icon, tc.format, tc.public, tc.password, true)
+			_, err := updateServer(testCtx(), testActorID(), tc.serverName, tc.icon, tc.format, tc.public, tc.password, true)
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("esperava ErrInvalidInput, obtive %v", err)
 			}
