@@ -56,8 +56,13 @@ resolve_deploy_branch() {
     # Quando o script pertence a um checkout Git, o próprio checkout é a
     # fonte de verdade. PAPO_BRANCH só existe para uso standalone (script
     # copiado/baixado fora de um repositório).
-    if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        BRANCH="$(git -C "$SCRIPT_DIR" symbolic-ref --quiet --short HEAD || true)"
+    #
+    # O -c safe.directory vale apenas para estas invocações. Isso permite que
+    # "sudo ./deploy.sh" leia um checkout pertencente ao usuário original sem
+    # alterar a configuração global do Git.
+    local git_cmd=(git -c "safe.directory=$SCRIPT_DIR" -C "$SCRIPT_DIR")
+    if "${git_cmd[@]}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        BRANCH="$("${git_cmd[@]}" symbolic-ref --quiet --short HEAD || true)"
         [[ -n "$BRANCH" ]] || die "checkout Git está com HEAD destacado; faça checkout de um branch antes do deploy"
         echo "    Branch detectado do checkout: $BRANCH"
         return
