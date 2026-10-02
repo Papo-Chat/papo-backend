@@ -318,6 +318,14 @@ func fxTwitterVideoURL(status *fxTwitterStatus) string {
 	if host != "video.twimg.com" && !strings.HasSuffix(host, ".video.twimg.com") {
 		return ""
 	}
+
+	// O CDN do X passou a retornar 403 para algumas variantes MP4 quando o
+	// parâmetro transitório ?tag= está presente. Ele não é necessário para
+	// identificar o arquivo e removê-lo mantém a URL estável para playback.
+	q := u.Query()
+	q.Del("tag")
+	u.RawQuery = q.Encode()
+
 	return u.String()
 }
 
