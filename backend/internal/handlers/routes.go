@@ -102,7 +102,7 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware, middleware.RequireServerOwnerOrManageServer())
 	e.POST("/users/:user_id/reset", func(c echo.Context) error {
 		return ResetUserHandler(cfg.BaseURL, c)
-	}, middleware.JWTMiddleware, middleware.RequireServerOwnerOrManageServer())
+	}, middleware.JWTMiddleware, middleware.RequireSelfOrServerOwnerOrManageServer())
 }
 
 // RegisterServerRoutes registra as rotas do servidor (1 backend = 1
