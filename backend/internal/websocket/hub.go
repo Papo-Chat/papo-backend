@@ -57,7 +57,11 @@ func NewHub() *Hub {
 // dos usuários conectados (auth híbrida): quem teve a sessão revogada no
 // banco (logout, drop de conexão, troca de senha, reuso de token) é
 // desconectado do WebSocket.
-const sessionRecheckInterval = 30 * time.Second
+const (
+	sessionRecheckInterval = 30 * time.Second
+	autoAwayAfter          = 5 * time.Minute
+	autoAwayCheckInterval  = 15 * time.Second
+)
 
 // Run processa o registro e o desregistro de clientes, mantém o estado de
 // presença atualizado e revalida periodicamente as conexões de sessão. Deve
@@ -65,12 +69,16 @@ const sessionRecheckInterval = 30 * time.Second
 // canal stop.
 func (h *Hub) Run() {
 	recheck := time.NewTicker(sessionRecheckInterval)
+	autoAwayCheck := time.NewTicker(autoAwayCheckInterval)
 	defer recheck.Stop()
+	defer autoAwayCheck.Stop()
 
 	for {
 		select {
 		case <-recheck.C:
 			h.disconnectRevokedUsers()
+		case <-autoAwayCheck.C:
+			h.updateAutoAwayUsers(time.Now())
 		case c := <-h.register:
 			h.mu.Lock()
 			if h.shuttingDown {
@@ -252,6 +260,57 @@ func (h *Hub) OnlineUserIDs() []string {
 	return ids
 }
 
+func (h *Hub) broadcastPresence(userID string) {
+	h.Broadcast(PresenceUpdateOutbound{
+		Type:          EventTypePresenceUpdate,
+		UserID:        userID,
+		Status:        h.presence.EffectiveStatus(userID),
+		StatusMessage: h.presence.StatusMessage(userID),
+		Typing:        h.presence.Typing(userID),
+		Nickname:      h.presence.Nickname(userID),
+	})
+}
+
+// MarkActivity registra atividade real de uma conexão. Se o usuário estava em
+// away automático, qualquer conexão ativa o traz de volta imediatamente.
+func (h *Hub) MarkActivity(c *Client) {
+	if c == nil {
+		return
+	}
+	c.markActivity()
+	if h.presence.HasPersistedStatus(c.userID) || !h.presence.IsAutoAway(c.userID) {
+		return
+	}
+	if h.presence.SetAutoAway(c.userID, false) {
+		h.broadcastPresence(c.userID)
+	}
+}
+
+func (h *Hub) updateAutoAwayUsers(now time.Time) {
+	clients := h.Clients()
+	latest := make(map[string]time.Time)
+	for c := range clients {
+		activity := c.lastActivity()
+		if prev, ok := latest[c.userID]; !ok || activity.After(prev) {
+			latest[c.userID] = activity
+		}
+	}
+
+	for userID, activity := range latest {
+		// Manual away/busy is authoritative and independent from inactivity.
+		if h.presence.HasPersistedStatus(userID) {
+			continue
+		}
+		shouldAway := now.Sub(activity) >= autoAwayAfter
+		if h.presence.IsAutoAway(userID) == shouldAway {
+			continue
+		}
+		if h.presence.SetAutoAway(userID, shouldAway) {
+			h.broadcastPresence(userID)
+		}
+	}
+}
+
 // BroadcastToUsers serializa o evento uma única vez e o envia somente aos
 // clientes cujo usuário está no conjunto allowed (autorização para escutar o
 // evento). Os demais clientes não recebem o evento. Se o buffer de envio de
@@ -337,16 +396,23 @@ func (h *Hub) broadcastExcept(event any, exclude *Client) {
 // online), exceto o próprio cliente em conexão, que já recebe o estado
 // completo no presence_sync.
 func (h *Hub) presenceOnline(c *Client) {
+	previousStatus := h.presence.EffectiveStatus(c.userID)
 	becameOnline := h.presence.AddConnection(c.userID, c.statusMessage, c.typing, c.nickname, c.persistedStatus)
+	// A fresh connection is activity. This is what makes F5/reopen robust:
+	// automatic away never survives reconnect because it was never persisted.
+	h.presence.SetAutoAway(c.userID, false)
+	currentStatus := h.presence.EffectiveStatus(c.userID)
 	if becameOnline {
 		h.broadcastExcept(PresenceUpdateOutbound{
 			Type:          EventTypePresenceUpdate,
 			UserID:        c.userID,
-			Status:        h.presence.EffectiveStatus(c.userID),
+			Status:        currentStatus,
 			StatusMessage: h.presence.StatusMessage(c.userID),
 			Typing:        h.presence.Typing(c.userID),
 			Nickname:      h.presence.Nickname(c.userID),
 		}, c)
+	} else if previousStatus != currentStatus {
+		h.broadcastPresence(c.userID)
 	}
 
 	members := h.presence.OnlineMembers()
