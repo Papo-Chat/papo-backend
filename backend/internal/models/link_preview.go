@@ -15,6 +15,7 @@ type LinkPreview struct {
 	Description    *string   `db:"description" json:"description"`
 	ProviderName   *string   `db:"provider_name" json:"provider_name"`
 	EmbedURL       *string   `db:"embed_url" json:"embed_url"`
+	VideoURL       *string   `db:"video_url" json:"video_url"`
 	ImageMedia     *string   `db:"image_media" json:"-"`
 	ImageMimeType  *string   `json:"image_mime_type"`
 	ImageSizeBytes *int64    `json:"image_size_bytes"`
