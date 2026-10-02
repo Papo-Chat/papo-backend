@@ -574,6 +574,30 @@ func BanUser(ctx context.Context, actorID, targetID string, banState bool) error
 	return nil
 }
 
+// ResetUserPassword marca o próprio usuário para a próxima troca de senha.
+// O endpoint administrativo usa CreatePasswordResetLink para outros usuários.
+func ResetUserPassword(ctx context.Context, actorID, targetID string) error {
+	if targetID == "" {
+		return ErrUserNotFound
+	}
+	if err := storage.SetUserResetPassword(ctx, targetID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("falha ao marcar o usuário para reset de senha: %w", err)
+	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:      actorID,
+		Action:       ActionUserResetPassword,
+		EntityType:   EntityUser,
+		EntityID:     &targetID,
+		TargetUserID: &targetID,
+		Metadata:     map[string]any{"method": "self_settings"},
+	})
+	return nil
+}
+
 // CreatePasswordResetLink cria um token aleatório de uso único para que um
 // administrador entregue o link ao usuário. Apenas o hash do token é salvo.
 func CreatePasswordResetLink(ctx context.Context, actorID, targetID string) (PasswordResetLink, error) {
@@ -661,11 +685,15 @@ func ChangePassword(ctx context.Context, userID, password string) error {
 		return ErrUserNotFound
 	}
 
-	if _, err := storage.GetUserByID(ctx, userID); err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return ErrUserNotFound
-		}
+	user, err := storage.GetUserByID(ctx, userID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return ErrUserNotFound
+	}
+	if err != nil {
 		return err
+	}
+	if !user.ResetPassword {
+		return ErrUserNotReset
 	}
 
 	cfg := config.LoadConfig()
