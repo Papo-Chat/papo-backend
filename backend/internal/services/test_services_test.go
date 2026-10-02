@@ -2161,12 +2161,13 @@ func TestPasswordResetLinkSupersedesPrevious(t *testing.T) {
 // --- ListUsers ---
 
 func TestListUsers(t *testing.T) {
+	since := time.Now()
 	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	users, err := ListUsers(testCtx(), nil, "")
+	users, err := ListUsers(testCtx(), &since, "")
 	if err != nil {
 		t.Fatalf("ListUsers retornou erro: %v", err)
 	}
@@ -2188,6 +2189,7 @@ func TestListUsers(t *testing.T) {
 }
 
 func TestListUsersIncludesRoles(t *testing.T) {
+	since := time.Now()
 	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
@@ -2201,7 +2203,7 @@ func TestListUsersIncludesRoles(t *testing.T) {
 		t.Fatalf("falha ao atribuir role: %v", err)
 	}
 
-	users, err := ListUsers(testCtx(), nil, "")
+	users, err := ListUsers(testCtx(), &since, "")
 	if err != nil {
 		t.Fatalf("ListUsers retornou erro: %v", err)
 	}
@@ -2335,9 +2337,9 @@ func TestChangePasswordWithoutResetFlag(t *testing.T) {
 	if err := ChangePassword(testCtx(), user.ID, newPassword); err != nil {
 		t.Fatalf("troca voluntária de senha não deveria exigir reset_password: %v", err)
 	}
-	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	stored, err := storage.GetUserByUsername(testCtx(), user.Username)
 	if err != nil {
-		t.Fatalf("GetUserByID retornou erro: %v", err)
+		t.Fatalf("GetUserByUsername retornou erro: %v", err)
 	}
 	if err := utils.CheckPassword(newPassword, stored.PasswordHash); err != nil {
 		t.Fatalf("nova senha não foi persistida: %v", err)
