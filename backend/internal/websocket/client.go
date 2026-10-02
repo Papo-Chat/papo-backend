@@ -57,6 +57,9 @@ type Client struct {
 	// closeFrameOnce garante que o close frame do servidor seja enviado
 	// no máximo uma vez (RFC 6455).
 	closeFrameOnce sync.Once
+
+	activityMu     sync.RWMutex
+	lastActivityAt time.Time
 }
 
 // NewClient cria um Client com canal de envio bufferizado.
@@ -76,6 +79,7 @@ func NewClient(hub *Hub, conn *websocket.Conn, userID string, statusMessage, typ
 		nickname:        nickname,
 		persistedStatus: persistedStatus,
 		send:            make(chan []byte, sendBufferSize),
+		lastActivityAt:  time.Now(),
 	}
 }
 
@@ -93,6 +97,18 @@ func Connect(hub *Hub, conn *websocket.Conn, userID string, statusMessage, typin
 // UserID retorna o ID do usuário autenticado da conexão.
 func (c *Client) UserID() string {
 	return c.userID
+}
+
+func (c *Client) markActivity() {
+	c.activityMu.Lock()
+	c.lastActivityAt = time.Now()
+	c.activityMu.Unlock()
+}
+
+func (c *Client) lastActivity() time.Time {
+	c.activityMu.RLock()
+	defer c.activityMu.RUnlock()
+	return c.lastActivityAt
 }
 
 // Send enfileira uma mensagem já serializada para envio ao cliente.
@@ -202,6 +218,8 @@ func (c *Client) handle(raw []byte) {
 	}
 
 	switch envelope.Type {
+	case EventTypePresenceActivity:
+		c.hub.MarkActivity(c)
 	case EventTypeHeartbeat:
 		c.sendEvent(HeartbeatAckOutbound{Type: EventTypeHeartbeatAck})
 	case EventTypeTyping:
