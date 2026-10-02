@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	// maxSDPSize é o teto de tamanho de uma SDP no WS (64 KB; o teto físico
+	// maxSDPSize é o teto de tamanho de uma SDP no WS (96 KB; o teto físico
 	// do WS é 128 KB — websocket/client.go).
-	maxSDPSize = 64 * 1024
+	maxSDPSize = 96 * 1024
 	// maxCandidateSize é o teto de tamanho de um candidate trickle (~1 KB).
 	maxCandidateSize = 1024
 )
