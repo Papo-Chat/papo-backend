@@ -301,7 +301,7 @@ func UpdateUser(ctx context.Context, userID, nickname, status, description strin
 		return ErrUserNotFound
 	}
 	nicknameLen := utf8.RuneCountInString(nickname)
-	if nicknameLen < minNicknameLength || nicknameLen > maxNicknameLength ||
+	if (nicknameLen > 0 && nicknameLen < minNicknameLength) || nicknameLen > maxNicknameLength ||
 		utf8.RuneCountInString(status) > maxStatusLength ||
 		utf8.RuneCountInString(description) > maxDescriptionLength ||
 		(typing != nil && utf8.RuneCountInString(*typing) > maxTypingLength) {
@@ -619,6 +619,9 @@ func ResetUserPasswordTo(ctx context.Context, actorID, targetID, password string
 			return ErrUserNotFound
 		}
 		return fmt.Errorf("falha ao redefinir a senha do usuário: %w", err)
+	}
+	if _, err := storage.RevokeAllUserConnections(ctx, targetID); err != nil {
+		return fmt.Errorf("senha redefinida, mas falha ao revogar sessões do usuário: %w", err)
 	}
 
 	RecordAudit(ctx, AuditEntry{
