@@ -269,7 +269,8 @@ func twitterStatusID(u *url.URL) (string, bool) {
 	case "twitter.com", "www.twitter.com", "mobile.twitter.com",
 		"x.com", "www.x.com",
 		"fxtwitter.com", "www.fxtwitter.com",
-		"fixupx.com", "www.fixupx.com":
+		"fixupx.com", "www.fixupx.com", "girlcockx.com",
+		"www.girlcockx.com":
 	default:
 		return "", false
 	}
@@ -299,8 +300,8 @@ type fxTwitterStatusResponse struct {
 }
 
 type fxTwitterStatus struct {
-	Text   string        `json:"text"`
-	Author fxTwitterUser `json:"author"`
+	Text   string         `json:"text"`
+	Author fxTwitterUser  `json:"author"`
 	Media  fxTwitterMedia `json:"media"`
 	Card   *fxTwitterCard `json:"card"`
 }
@@ -445,7 +446,8 @@ func previewRobotsAllowed(ctx context.Context, u *url.URL) bool {
 	switch strings.ToLower(u.Hostname()) {
 	case "fxtwitter.com", "www.fxtwitter.com", "api.fxtwitter.com",
 		"fixupx.com", "www.fixupx.com",
-		"pbs.twimg.com", "video.twimg.com":
+		"pbs.twimg.com", "video.twimg.com", "girlcockx.com",
+		"www.girlcockx.com":
 		return true
 	default:
 		return RobotsAllowed(ctx, u)
