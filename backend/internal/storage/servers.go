@@ -213,3 +213,47 @@ func UpdateServer(ctx context.Context, id string, server models.Server, password
 
 	return updated, nil
 }
+
+
+// UpdateServerAndRevokeAllConnections atualiza o servidor e revoga, na mesma
+// transação, todas as conexões de sessão ativas. É usado quando a senha do
+// servidor muda, garantindo que não exista uma janela em que a nova senha já
+// esteja persistida mas sessões antigas continuem válidas.
+func UpdateServerAndRevokeAllConnections(ctx context.Context, id string, server models.Server, passwordHash *string) (models.Server, int, error) {
+	tx, err := GetDB().BeginTx(ctx, nil)
+	if err != nil {
+		return models.Server{}, 0, fmt.Errorf("falha ao iniciar atualização do servidor: %w", err)
+	}
+	defer tx.Rollback()
+
+	row := tx.QueryRowContext(ctx,
+		`UPDATE servers
+		 SET name = $2, icon_media = $3, public_server = $4, password_hash = $5
+		 WHERE id = $1
+		 RETURNING `+serverPublicColumns,
+		id, server.Name, server.IconMedia, server.PublicServer, passwordHash,
+	)
+
+	updated, err := scanServerPublic(row)
+	if err != nil {
+		return models.Server{}, 0, mapStorageError(err)
+	}
+
+	result, err := tx.ExecContext(ctx,
+		"UPDATE user_connections SET replaced_at = now() WHERE replaced_at IS NULL",
+	)
+	if err != nil {
+		return models.Server{}, 0, fmt.Errorf("falha ao revogar as conexões dos usuários: %w", err)
+	}
+
+	revoked, err := result.RowsAffected()
+	if err != nil {
+		return models.Server{}, 0, fmt.Errorf("falha ao contar as conexões revogadas: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return models.Server{}, 0, fmt.Errorf("falha ao concluir atualização do servidor: %w", err)
+	}
+
+	return updated, int(revoked), nil
+}
