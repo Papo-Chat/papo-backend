@@ -2088,33 +2088,73 @@ func TestBanUserNonexistentUser(t *testing.T) {
 
 // --- ResetUserPassword ---
 
-func TestResetUserPassword(t *testing.T) {
+func TestPasswordResetLinkSingleUse(t *testing.T) {
+	actor, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar ator: %v", err)
+	}
+	oldPassword := newRandomPassword()
+	user, err := Register(testCtx(), newRandomUsername(), oldPassword, newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	link, err := CreatePasswordResetLink(testCtx(), actor.ID, user.ID)
+	if err != nil {
+		t.Fatalf("CreatePasswordResetLink retornou erro: %v", err)
+	}
+	token := strings.TrimPrefix(link.URL, passwordResetFrontendBaseURL)
+	if token == "" || token == link.URL {
+		t.Fatalf("link de reset inválido: %q", link.URL)
+	}
+
+	newPassword := newRandomPassword()
+	gotUserID, err := ConsumePasswordResetLink(testCtx(), token, newPassword)
+	if err != nil {
+		t.Fatalf("ConsumePasswordResetLink retornou erro: %v", err)
+	}
+	if gotUserID != user.ID {
+		t.Fatalf("esperava user id %s, obtive %s", user.ID, gotUserID)
+	}
+
+	stored, err := storage.GetUserByUsername(testCtx(), user.Username)
+	if err != nil {
+		t.Fatalf("GetUserByUsername retornou erro: %v", err)
+	}
+	if err := utils.CheckPassword(newPassword, stored.PasswordHash); err != nil {
+		t.Fatalf("nova senha não foi persistida: %v", err)
+	}
+	if _, err := ConsumePasswordResetLink(testCtx(), token, newRandomPassword()); !errors.Is(err, ErrPasswordResetTokenInvalid) {
+		t.Fatalf("token reutilizado deveria ser inválido, obtive %v", err)
+	}
+}
+
+func TestPasswordResetLinkSupersedesPrevious(t *testing.T) {
+	actor, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar ator: %v", err)
+	}
 	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	if err := ResetUserPassword(testCtx(), testActorID(), user.ID); err != nil {
-		t.Fatalf("ResetUserPassword retornou erro: %v", err)
-	}
-	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	first, err := CreatePasswordResetLink(testCtx(), actor.ID, user.ID)
 	if err != nil {
-		t.Fatalf("GetUserByID retornou erro: %v", err)
+		t.Fatalf("primeiro link falhou: %v", err)
 	}
-	if !stored.ResetPassword {
-		t.Error("esperava reset_password = true")
+	second, err := CreatePasswordResetLink(testCtx(), actor.ID, user.ID)
+	if err != nil {
+		t.Fatalf("segundo link falhou: %v", err)
 	}
-}
+	firstToken := strings.TrimPrefix(first.URL, passwordResetFrontendBaseURL)
+	secondToken := strings.TrimPrefix(second.URL, passwordResetFrontendBaseURL)
 
-func TestResetUserPasswordEmptyUserID(t *testing.T) {
-	if err := ResetUserPassword(testCtx(), testActorID(), ""); !errors.Is(err, ErrUserNotFound) {
-		t.Errorf("esperava ErrUserNotFound para id vazio, obtive %v", err)
+	if _, err := ConsumePasswordResetLink(testCtx(), firstToken, newRandomPassword()); !errors.Is(err, ErrPasswordResetTokenInvalid) {
+		t.Fatalf("link anterior deveria estar invalidado, obtive %v", err)
 	}
-}
-
-func TestResetUserPasswordNonexistentUser(t *testing.T) {
-	if err := ResetUserPassword(testCtx(), testActorID(), randUUID()); !errors.Is(err, ErrUserNotFound) {
-		t.Errorf("esperava ErrUserNotFound para id inexistente, obtive %v", err)
+	if _, err := ConsumePasswordResetLink(testCtx(), secondToken, newRandomPassword()); err != nil {
+		t.Fatalf("link mais recente deveria funcionar: %v", err)
 	}
 }
 
@@ -2188,10 +2228,6 @@ func TestChangePassword(t *testing.T) {
 	user, err := Register(testCtx(), newRandomUsername(), password, newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
-	}
-
-	if err := ResetUserPassword(testCtx(), testActorID(), user.ID); err != nil {
-		t.Fatalf("ResetUserPassword retornou erro: %v", err)
 	}
 
 	newPassword := newRandomPassword()
