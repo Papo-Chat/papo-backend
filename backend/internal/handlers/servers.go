@@ -125,33 +125,69 @@ func CreateServerHandler(baseURL string, c echo.Context) error {
 	})
 }
 
-type updateServerRequest struct {
-	Name       string  `json:"name"`
-	IconBlob   string  `json:"icon_blob"`
-	IconFormat string  `json:"icon_format"`
+type replaceServerRequest struct {
+	Name       *string `json:"name"`
+	IconBlob   *string `json:"icon_blob"`
+	IconFormat *string `json:"icon_format"`
 	Password   *string `json:"password"`
 	Public     *bool   `json:"public"`
 }
 
-// UpdateServerHandler implementa PUT /server.
-// Permissão: dono do servidor ou role `manage_server`
-// (middleware RequireManageServer).
-func UpdateServerHandler(baseURL string, c echo.Context) error {
+type patchServerRequest struct {
+	Name       *string `json:"name"`
+	IconBlob   *string `json:"icon_blob"`
+	IconFormat *string `json:"icon_format"`
+	Password   *string `json:"password"`
+	Public     *bool   `json:"public"`
+}
+
+// ReplaceServerHandler implementa PUT /server como substituição completa dos
+// campos mutáveis. Todos os campos do request são obrigatórios.
+func ReplaceServerHandler(baseURL string, c echo.Context) error {
 	userID, ok := c.Get(middleware.UserIDContextKey).(string)
-	if !ok {
+	if !ok || userID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
 			"unauthorized", "Token inválido ou expirado",
 			"token de autenticação ausente, inválido ou expirado")
 	}
 
-	var req updateServerRequest
+	var req replaceServerRequest
+	if err := c.Bind(&req); err != nil {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
+	}
+	if req.Name == nil || req.IconBlob == nil || req.IconFormat == nil || req.Password == nil || req.Public == nil {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido",
+			"campos 'name', 'icon_blob', 'icon_format', 'password' e 'public' são obrigatórios")
+	}
+
+	err := services.ReplaceServer(c.Request().Context(), userID, *req.Name, *req.IconBlob, *req.IconFormat, *req.Password, *req.Public)
+	return serverUpdateResponse(baseURL, c, err)
+}
+
+// PatchServerHandler implementa PATCH /server como atualização parcial.
+// Campos ausentes preservam os valores atuais.
+func PatchServerHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	var req patchServerRequest
 	if err := c.Bind(&req); err != nil {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
+	err := services.PatchServer(c.Request().Context(), userID, req.Name, req.IconBlob, req.IconFormat, req.Public, req.Password)
+	return serverUpdateResponse(baseURL, c, err)
+}
+
+func serverUpdateResponse(baseURL string, c echo.Context, err error) error {
 	cfg := config.LoadConfig()
-	err := services.UpdateServer(c.Request().Context(), userID, req.Name, req.IconBlob, req.IconFormat, req.Public, req.Password)
 	if resp, ok := passwordPolicyResponse(c, baseURL, err, cfg.MinPasswordLength); ok {
 		return resp
 	}
@@ -162,7 +198,7 @@ func UpdateServerHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
-			"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG/JPG, PNG ou WEBP de até 2MB servidor privado (public=false) exige password")
+			"name, quando informado, deve ter entre 1 e 32 caracteres; icon_blob/icon_format devem representar GIF, JPEG/JPG, PNG ou WEBP de até 2MB; servidor privado exige senha válida")
 	case err != nil:
 		utils.Errorf("request_id=%s falha ao atualizar o servidor: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)

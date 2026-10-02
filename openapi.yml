@@ -1102,14 +1102,45 @@ paths:
           $ref: '#/components/responses/InternalError'
     put:
       tags: [Servers]
-      summary: Altera o servidor (nome, ícone, senha e visibilidade)
-      description: "Permission Check: dono do servidor ou `manage_server`"
+      summary: Substitui os campos mutáveis do servidor
+      description: "Permission Check: dono do servidor ou `manage_server`. Todos os campos mutáveis são obrigatórios."
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateServerRequest'
+              $ref: '#/components/schemas/ReplaceServerRequest'
+      responses:
+        '200':
+          description: Servidor atualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Server'
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      tags: [Servers]
+      summary: Atualiza parcialmente o servidor
+      description: "Permission Check: dono do servidor ou `manage_server`. Campos ausentes preservam os valores atuais."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchServerRequest'
       responses:
         '200':
           description: Servidor atualizado
@@ -2927,26 +2958,50 @@ components:
           type: boolean
           description: true para banir, false para desbanir
 
-    UpdateServerRequest:
+    ReplaceServerRequest:
       type: object
-      required: [name]
+      required: [name, icon_blob, icon_format, password, public]
       properties:
         name:
           type: string
+          minLength: 1
+          maxLength: 32
         icon_blob:
           type: string
           format: byte
-          description: Ícone em base64 (GIF/JPEG/JPG/PNG/WEBP, máx. 2MB, 512px); vazio remove o ícone
+          description: Ícone em base64; string vazia remove o ícone
         icon_format:
           type: string
-          enum: [GIF, JPEG, JPG, PNG, WEBP]
+          enum: ['', GIF, JPEG, JPG, PNG, WEBP]
+          description: Formato do ícone; use string vazia quando icon_blob estiver vazio
         password:
           type: string
-          description: Senha do servidor precisa ter no mínimo 8 caracteres, 1 letra maíscula + 1 caractere especial; obrigatória quando o servidor ficar privado (public=false)
+          description: Campo obrigatório; para servidor público pode ser vazio, para privado deve respeitar a política de senha
         public:
           type: boolean
-          description: Servidor público; ausente mantém a visibilidade atual
 
+    PatchServerRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: Ausente mantém o nome atual
+        icon_blob:
+          type: string
+          format: byte
+          description: Ausente mantém o ícone atual; vazio remove o ícone
+        icon_format:
+          type: string
+          enum: ['', GIF, JPEG, JPG, PNG, WEBP]
+          description: Obrigatório quando icon_blob contém uma nova imagem; pode ser omitido ou vazio quando icon_blob remove o ícone
+        password:
+          type: string
+          description: Ausente mantém a senha atual de um servidor já privado; obrigatório ao tornar um servidor público em privado
+        public:
+          type: boolean
+          description: Ausente mantém a visibilidade atual
     CreateServerRequest:
       type: object
       required: [name]
