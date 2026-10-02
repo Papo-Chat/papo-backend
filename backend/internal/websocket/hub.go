@@ -412,7 +412,16 @@ func (h *Hub) presenceOnline(c *Client) {
 			Nickname:      h.presence.Nickname(c.userID),
 		}, c)
 	} else if previousStatus != currentStatus {
-		h.broadcastPresence(c.userID)
+		// Existing connections need the transition; the new connection receives
+		// the authoritative state immediately below in presence_sync.
+		h.broadcastExcept(PresenceUpdateOutbound{
+			Type:          EventTypePresenceUpdate,
+			UserID:        c.userID,
+			Status:        currentStatus,
+			StatusMessage: h.presence.StatusMessage(c.userID),
+			Typing:        h.presence.Typing(c.userID),
+			Nickname:      h.presence.Nickname(c.userID),
+		}, c)
 	}
 
 	members := h.presence.OnlineMembers()
