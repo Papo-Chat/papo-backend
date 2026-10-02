@@ -432,8 +432,8 @@ func TestTwitterPreviewFetchURL(t *testing.T) {
 		wantHost string
 		mirror  bool
 	}{
-		{"https://x.com/user/status/123", "api.fxtwitter.com", true},
-		{"https://twitter.com/user/status/123", "api.fxtwitter.com", true},
+		{"https://x.com/user/status/123", "fxtwitter.com", true},
+		{"https://twitter.com/user/status/123", "fxtwitter.com", true},
 		{"https://fixupx.com/user/status/123", "fixupx.com", true},
 		{"https://example.com/status/123", "example.com", false},
 	}
