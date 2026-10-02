@@ -3628,6 +3628,13 @@ components:
             YouTube, formato https://www.youtube.com/embed/<id>). O frontend
             deve renderizar iframe somente se casar exatamente com esse
             padrão.
+        video_url:
+          type: string
+          format: uri
+          nullable: true
+          description: >
+            URL HTTPS direta de mídia de vídeo validada pelo backend.
+            Para X/Twitter, somente hosts de vídeo do twimg são aceitos.
         image_mime_type:
           type: string
           nullable: true
