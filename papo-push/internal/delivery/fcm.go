@@ -24,7 +24,7 @@ func NewFCM(cfg *config.Config) (*FCMDelivery, error) {
 	app, err := firebase.NewApp(
 		ctx,
 		nil,
-		option.WithServiceAccountFile(cfg.GoogleApplicationCreds),
+		option.WithAuthCredentialsFile(option.ServiceAccount, cfg.GoogleApplicationCreds),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao inicializar o Admin SDK do Firebase: %w", err)
