@@ -21,6 +21,7 @@ const (
 	EventTypeAvatarUpdate      EventType = "avatar_update"
 	EventTypePresenceUpdate    EventType = "presence_update"
 	EventTypePresenceSync      EventType = "presence_sync"
+	EventTypePresenceActivity  EventType = "presence_activity"
 	EventTypeHeartbeat         EventType = "heartbeat"
 	EventTypeHeartbeatAck      EventType = "heartbeat_ack"
 	EventTypeError             EventType = "error"
@@ -58,7 +59,7 @@ const (
 // servidor, conforme o contrato da API.
 func (t EventType) IsInbound() bool {
 	switch t {
-	case EventTypeTyping, EventTypeHeartbeat,
+	case EventTypeTyping, EventTypePresenceActivity, EventTypeHeartbeat,
 		EventTypeVoiceJoin, EventTypeVoiceLeave, EventTypeVoiceOffer,
 		EventTypeVoiceAnswer, EventTypeVoiceICECandidate,
 		EventTypeTrackSubscribe, EventTypeTrackUnsubscribe,
@@ -76,6 +77,13 @@ func (t EventType) IsInbound() bool {
 type TypingInbound struct {
 	Type      EventType `json:"type"`
 	ChannelID string    `json:"channel_id"`
+}
+
+// PresenceActivityInbound informa atividade real do usuário nessa conexão.
+// Não é keepalive: o backend usa o intervalo entre esses eventos para o
+// away automático efêmero.
+type PresenceActivityInbound struct {
+	Type EventType `json:"type"`
 }
 
 // HeartbeatInbound é o evento de keepalive enviado pelo cliente.
@@ -314,7 +322,7 @@ type AvatarUpdateOutbound struct {
 }
 
 // PresenceUpdateOutbound é o evento de presença/status distribuído aos clientes.
-// Status: online/offline (efêmero) ou away/busy (persistido pelo usuário).
+// Status: online/offline/away automático (efêmeros) ou away/busy manual persistido.
 type PresenceUpdateOutbound struct {
 	Type          EventType `json:"type"`
 	UserID        string    `json:"user_id"`
