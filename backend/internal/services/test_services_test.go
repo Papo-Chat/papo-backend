@@ -478,6 +478,29 @@ func TestFxTwitterImageURL(t *testing.T) {
 	}
 }
 
+
+func TestFxTwitterVideoURL(t *testing.T) {
+	status := &fxTwitterStatus{Media: fxTwitterMedia{
+		Videos: []fxTwitterVideo{{
+			URL:          "https://video.twimg.com/ext_tw_video/123/pu/vid/720x1280/test.mp4",
+			ThumbnailURL: "https://pbs.twimg.com/ext_tw_video_thumb/test.jpg",
+		}},
+	}}
+	if got := fxTwitterVideoURL(status); got != status.Media.Videos[0].URL {
+		t.Fatalf("video URL inesperada: %q", got)
+	}
+
+	status.Media.Videos[0].URL = "https://evil.example/video.mp4"
+	if got := fxTwitterVideoURL(status); got != "" {
+		t.Fatalf("host de vídeo não confiável deveria ser rejeitado, obtive %q", got)
+	}
+
+	status.Media.Videos[0].URL = "http://video.twimg.com/video.mp4"
+	if got := fxTwitterVideoURL(status); got != "" {
+		t.Fatalf("vídeo sem HTTPS deveria ser rejeitado, obtive %q", got)
+	}
+}
+
 func TestRegisterRejectsShortUsername(t *testing.T) {
 	_, err := Register(testCtx(), "ab", newRandomPassword(), newRandomIP())
 	if !errors.Is(err, ErrInvalidInput) {
