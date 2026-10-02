@@ -35,7 +35,7 @@ func Register(ctx context.Context, username, password, ip string) (models.User, 
 	MaxPasswordLength := cfg.MaxPasswordLength
 	MaxUsernameLength := cfg.MaxUsernameLength
 
-	if username == "" || password == "" ||
+	if utf8.RuneCountInString(username) < 3 || password == "" ||
 		utf8.RuneCountInString(username) > MaxUsernameLength || utf8.RuneCountInString(password) > MaxPasswordLength {
 		return models.User{}, ErrInvalidInput
 	}
