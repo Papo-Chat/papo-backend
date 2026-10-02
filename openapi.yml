@@ -157,6 +157,39 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /auth/password_reset:
+    post:
+      tags: [Auth]
+      summary: Consome um link administrativo de troca de senha
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConsumeRequest'
+      responses:
+        '200':
+          description: Senha alterada; o token fica invalidado e sessões existentes são revogadas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericResponse'
+        '400':
+          description: Token/senha ausente ou senha fora da política
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Link inválido, expirado ou já utilizado
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /auth/whoami:
     get:
       tags: [Auth]
@@ -797,17 +830,17 @@ paths:
   /users/{user_id}/reset:
     post:
       tags: [Users]
-      summary: Marca o usuário para redefinir a senha
-      description: "Permission Check: dono de um servidor ou o próprio usuário"
+      summary: Gera link administrativo de troca de senha
+      description: "Permission Check: dono do servidor ou role com manage_server. Gera um token aleatório de uso único; somente o SHA-256 é persistido. Um novo link invalida links anteriores do usuário."
       parameters:
         - $ref: '#/components/parameters/UserId'
       responses:
         '200':
-          description: Flag de reset de senha definida
+          description: Link de reset gerado
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GenericResponse'
+                $ref: '#/components/schemas/PasswordResetLinkResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2843,6 +2876,29 @@ components:
           nullable: true
           enum: [away, busy]
           description: Status persistido (away/busy); null remove o status
+
+    PasswordResetConsumeRequest:
+      type: object
+      required: [token, password]
+      properties:
+        token:
+          type: string
+          description: Token presente no link /passwordchange/{token}
+        password:
+          type: string
+          description: Nova senha; mesma política do cadastro
+
+    PasswordResetLinkResponse:
+      type: object
+      required: [reset_url, expires_at]
+      properties:
+        reset_url:
+          type: string
+          format: uri
+          example: https://papo.cyberasilo.online/passwordchange/abc123
+        expires_at:
+          type: string
+          format: date-time
 
     ChangePasswordRequest:
       type: object
