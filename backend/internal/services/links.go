@@ -369,13 +369,9 @@ func fetchFxTwitterJSON(ctx context.Context, endpoint string, out any) error {
 }
 
 func fetchFxTwitterStatus(ctx context.Context, ref twitterStatusRef) (*fxTwitterStatus, error) {
-	var v2 fxTwitterStatusResponse
-	v2URL := "https://api.fxtwitter.com/2/status/" + url.PathEscape(ref.ID)
-	v2Err := fetchFxTwitterJSON(ctx, v2URL, &v2)
-	if v2Err == nil && v2.Code == http.StatusOK && v2.Status != nil {
-		return v2.Status, nil
-	}
-
+	// O endpoint legado continua sendo mantido pelo FxEmbed e passa pelo
+	// pipeline usado pelos embeds. Para preview de um único post ele é a rota
+	// mais direta e, diferente do realm HTML, já devolve JSON.
 	legacyPath := "/status/" + url.PathEscape(ref.ID)
 	if ref.Handle != "" {
 		legacyPath = "/" + url.PathEscape(ref.Handle) + "/status/" + url.PathEscape(ref.ID)
@@ -386,12 +382,21 @@ func fetchFxTwitterStatus(ctx context.Context, ref twitterStatusRef) (*fxTwitter
 		return legacy.Tweet, nil
 	}
 
-	if v2Err != nil && legacyErr != nil {
-		return nil, fmt.Errorf("FxTwitter v2 falhou: %v; fallback v1 falhou: %v", v2Err, legacyErr)
+	// API v2 fica como fallback para manter compatibilidade futura caso o
+	// endpoint legado deixe de responder.
+	var v2 fxTwitterStatusResponse
+	v2URL := "https://api.fxtwitter.com/2/status/" + url.PathEscape(ref.ID)
+	v2Err := fetchFxTwitterJSON(ctx, v2URL, &v2)
+	if v2Err == nil && v2.Code == http.StatusOK && v2.Status != nil {
+		return v2.Status, nil
+	}
+
+	if legacyErr != nil && v2Err != nil {
+		return nil, fmt.Errorf("FxTwitter v1 falhou: %v; fallback v2 falhou: %v", legacyErr, v2Err)
 	}
 	return nil, fmt.Errorf(
-		"FxTwitter: post indisponível (v2 code=%d, v1 code=%d, v2err=%v, v1err=%v)",
-		v2.Code, legacy.Code, v2Err, legacyErr,
+		"FxTwitter: post indisponível (v1 code=%d, v2 code=%d, v1err=%v, v2err=%v)",
+		legacy.Code, v2.Code, legacyErr, v2Err,
 	)
 }
 
