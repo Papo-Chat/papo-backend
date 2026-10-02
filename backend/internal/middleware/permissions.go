@@ -117,6 +117,32 @@ func RequireServerOwnerOrManageServer() echo.MiddlewareFunc {
 	}
 }
 
+// RequireSelfOrServerOwnerOrManageServer autoriza o próprio usuário ou,
+// para outro usuário, dono do servidor/role com manage_server.
+func RequireSelfOrServerOwnerOrManageServer() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		admin := RequireServerOwnerOrManageServer()(next)
+		return func(c echo.Context) error {
+			cfg := config.LoadConfig()
+			userID, ok := c.Get(UserIDContextKey).(string)
+			if !ok || userID == "" {
+				return utils.SendProblem(c, cfg.BaseURL, http.StatusUnauthorized,
+					"unauthorized", "Token inválido ou expirado",
+					"token de autenticação ausente, inválido ou expirado")
+			}
+			targetID := c.Param("user_id")
+			if targetID == "" {
+				return utils.SendProblem(c, cfg.BaseURL, http.StatusBadRequest,
+					"invalid-param", "Parâmetro inválido", "user_id ausente")
+			}
+			if targetID == userID {
+				return next(c)
+			}
+			return admin(c)
+		}
+	}
+}
+
 // RequireSelfOrServerOwner autoriza operações sobre um usuário alvo em que o
 // usuário autenticado pode agir sobre si mesmo ou, sendo dono do servidor,
 // sobre qualquer usuário (README: POST /users/:user_id/reset).
