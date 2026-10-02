@@ -167,16 +167,14 @@ func newSharedAPI(cfg *config.Config, m *Manager) (*webrtcAPI, error) {
 	}, nil
 }
 
-// iceServers monta os ICE servers do pion para as PeerConnections do
-// servidor: STUN + TURN apenas como URLs (a credencial efêmera do usuário é
-// do cliente, via GET /voice/ice-servers — D14).
+// iceServers monta os ICE servers do pion para as PeerConnections do SFU.
+// TURN fica somente no cliente, via GET /voice/ice-servers, onde recebe as
+// credenciais efêmeras por usuário. Adicionar TURN aqui sem Username/Credential
+// faz o pion rejeitar a configuração ao criar a PeerConnection.
 func (m *Manager) iceServers() []webrtc.ICEServer {
-	servers := make([]webrtc.ICEServer, 0, 2)
+	servers := make([]webrtc.ICEServer, 0, 1)
 	if len(m.cfg.STUNURLs) > 0 {
 		servers = append(servers, webrtc.ICEServer{URLs: m.cfg.STUNURLs})
-	}
-	if len(m.cfg.TURNURLs) > 0 {
-		servers = append(servers, webrtc.ICEServer{URLs: m.cfg.TURNURLs})
 	}
 	return servers
 }
