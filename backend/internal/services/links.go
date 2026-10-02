@@ -232,14 +232,19 @@ func stripTrailingPunctuation(s string) string {
 //
 // O ctx deve carregar o budget total da fase de previews (compartilhado
 // entre as URLs da mensagem, §6.1).
-func twitterStatusID(u *url.URL) (string, bool) {
+type twitterStatusRef struct {
+	ID     string
+	Handle string
+}
+
+func twitterStatusParts(u *url.URL) (twitterStatusRef, bool) {
 	switch strings.ToLower(u.Hostname()) {
 	case "twitter.com", "www.twitter.com", "mobile.twitter.com",
 		"x.com", "www.x.com",
 		"fxtwitter.com", "www.fxtwitter.com",
 		"fixupx.com", "www.fixupx.com":
 	default:
-		return "", false
+		return twitterStatusRef{}, false
 	}
 
 	parts := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
@@ -249,21 +254,50 @@ func twitterStatusID(u *url.URL) (string, bool) {
 		}
 		id, err := url.PathUnescape(parts[i+1])
 		if err != nil || id == "" {
-			return "", false
+			return twitterStatusRef{}, false
 		}
 		for _, r := range id {
 			if r < '0' || r > '9' {
-				return "", false
+				return twitterStatusRef{}, false
 			}
 		}
-		return id, true
+
+		handle := ""
+		if i > 0 {
+			candidate, err := url.PathUnescape(parts[i-1])
+			if err == nil && !strings.EqualFold(candidate, "i") {
+				valid := candidate != ""
+				for _, r := range candidate {
+					if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+						(r >= '0' && r <= '9') || r == '_') {
+						valid = false
+						break
+					}
+				}
+				if valid {
+					handle = candidate
+				}
+			}
+		}
+		return twitterStatusRef{ID: id, Handle: handle}, true
 	}
-	return "", false
+	return twitterStatusRef{}, false
+}
+
+func twitterStatusID(u *url.URL) (string, bool) {
+	ref, ok := twitterStatusParts(u)
+	return ref.ID, ok
 }
 
 type fxTwitterStatusResponse struct {
 	Code   int              `json:"code"`
 	Status *fxTwitterStatus `json:"status"`
+}
+
+type fxTwitterLegacyResponse struct {
+	Code    int              `json:"code"`
+	Message string           `json:"message"`
+	Tweet   *fxTwitterStatus `json:"tweet"`
 }
 
 type fxTwitterStatus struct {
@@ -319,34 +353,60 @@ func fxTwitterImageURL(status *fxTwitterStatus) string {
 	return ""
 }
 
-func fetchFxTwitterPreview(ctx context.Context, cfg *config.Config, original *url.URL, statusID string) (models.LinkPreview, error) {
-	if statusID == "" {
+func fetchFxTwitterJSON(ctx context.Context, endpoint string, out any) error {
+	if !acquireOutboundSlot() {
+		return errors.New("semáforo outbound cheio")
+	}
+	body, _, err := utils.SafeFetch(ctx, outboundHTTPClient(), 2<<20, endpoint)
+	releaseOutboundSlot()
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("FxTwitter: JSON inválido: %w", err)
+	}
+	return nil
+}
+
+func fetchFxTwitterStatus(ctx context.Context, ref twitterStatusRef) (*fxTwitterStatus, error) {
+	var v2 fxTwitterStatusResponse
+	v2URL := "https://api.fxtwitter.com/2/status/" + url.PathEscape(ref.ID)
+	v2Err := fetchFxTwitterJSON(ctx, v2URL, &v2)
+	if v2Err == nil && v2.Code == http.StatusOK && v2.Status != nil {
+		return v2.Status, nil
+	}
+
+	legacyPath := "/status/" + url.PathEscape(ref.ID)
+	if ref.Handle != "" {
+		legacyPath = "/" + url.PathEscape(ref.Handle) + "/status/" + url.PathEscape(ref.ID)
+	}
+	var legacy fxTwitterLegacyResponse
+	legacyErr := fetchFxTwitterJSON(ctx, "https://api.fxtwitter.com"+legacyPath, &legacy)
+	if legacyErr == nil && legacy.Code == http.StatusOK && legacy.Tweet != nil {
+		return legacy.Tweet, nil
+	}
+
+	if v2Err != nil && legacyErr != nil {
+		return nil, fmt.Errorf("FxTwitter v2 falhou: %v; fallback v1 falhou: %v", v2Err, legacyErr)
+	}
+	return nil, fmt.Errorf(
+		"FxTwitter: post indisponível (v2 code=%d, v1 code=%d, v2err=%v, v1err=%v)",
+		v2.Code, legacy.Code, v2Err, legacyErr,
+	)
+}
+
+func fetchFxTwitterPreview(ctx context.Context, cfg *config.Config, original *url.URL, ref twitterStatusRef) (models.LinkPreview, error) {
+	if ref.ID == "" {
 		return models.LinkPreview{}, errors.New("tweet id ausente")
 	}
-	if !acquireOutboundSlot() {
-		return models.LinkPreview{}, errors.New("semáforo outbound cheio")
-	}
-	body, _, err := utils.SafeFetch(
-		ctx,
-		outboundHTTPClient(),
-		2<<20,
-		"https://api.fxtwitter.com/2/status/"+url.PathEscape(statusID),
-	)
-	releaseOutboundSlot()
+
+	status, err := fetchFxTwitterStatus(ctx, ref)
 	if err != nil {
 		return models.LinkPreview{}, err
 	}
 
-	var payload fxTwitterStatusResponse
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return models.LinkPreview{}, fmt.Errorf("FxTwitter: JSON inválido: %w", err)
-	}
-	if payload.Code != http.StatusOK || payload.Status == nil {
-		return models.LinkPreview{}, fmt.Errorf("FxTwitter: status indisponível (code=%d)", payload.Code)
-	}
-
-	title := strings.TrimSpace(payload.Status.Author.Name)
-	if handle := strings.TrimSpace(payload.Status.Author.ScreenName); handle != "" {
+	title := strings.TrimSpace(status.Author.Name)
+	if handle := strings.TrimSpace(status.Author.ScreenName); handle != "" {
 		if title != "" {
 			title += " (@" + handle + ")"
 		} else {
@@ -359,11 +419,11 @@ func fetchFxTwitterPreview(ctx context.Context, cfg *config.Config, original *ur
 		URL:          original.String(),
 		Kind:         "og",
 		Title:        nullableText(truncateRune(title, cfg.PreviewTitleMax)),
-		Description:  nullableText(truncateRune(strings.TrimSpace(payload.Status.Text), cfg.PreviewDescriptionMax)),
+		Description:  nullableText(truncateRune(strings.TrimSpace(status.Text), cfg.PreviewDescriptionMax)),
 		ProviderName: &provider,
 	}
 
-	if imageURL := fxTwitterImageURL(payload.Status); imageURL != "" {
+	if imageURL := fxTwitterImageURL(status); imageURL != "" {
 		if imgMedia, err := downloadPreviewImage(ctx, cfg, imageURL); err == nil {
 			preview.ImageMedia = &imgMedia
 		}
@@ -412,8 +472,8 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 	// realm fxtwitter/fixupx. Esses hosts alteram a resposta por User-Agent e
 	// podem redirecionar clientes humanos, enquanto api.fxtwitter.com/2 é a
 	// superfície estável documentada pelo próprio projeto.
-	if statusID, ok := twitterStatusID(u); ok {
-		preview, err := fetchFxTwitterPreview(ctx, cfg, u, statusID)
+	if statusRef, ok := twitterStatusParts(u); ok {
+		preview, err := fetchFxTwitterPreview(ctx, cfg, u, statusRef)
 		return preview, err == nil, err
 	}
 
