@@ -41,6 +41,10 @@ var (
 	outboundClientOnce sync.Once
 	outboundClient     *http.Client
 	outboundSem        chan struct{}
+
+	previewVideoClientOnce sync.Once
+	previewVideoClient     *http.Client
+	previewVideoSem        chan struct{}
 )
 
 func initOutbound() {
@@ -77,6 +81,34 @@ func acquireOutboundSlot() bool {
 
 func releaseOutboundSlot() {
 	<-outboundSem
+}
+
+func initPreviewVideoProxy() {
+	previewVideoClientOnce.Do(func() {
+		cfg := config.LoadConfig()
+		// Vídeo é servido por Range e pode ficar aberto por mais tempo que o
+		// fetch curto de metadata/thumbnail.
+		previewVideoClient = utils.SafeHTTPClient(utils.SafeClientOpts{Timeout: 5 * time.Minute})
+		cap := cfg.OutboundMaxConc
+		if cap <= 0 {
+			cap = 4
+		}
+		previewVideoSem = make(chan struct{}, cap)
+	})
+}
+
+func acquirePreviewVideoSlot() bool {
+	initPreviewVideoProxy()
+	select {
+	case previewVideoSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func releasePreviewVideoSlot() {
+	<-previewVideoSem
 }
 
 // tokenBucket é um bucket de tokens com refill contínuo (rate por minuto).
@@ -301,32 +333,37 @@ type fxTwitterCard struct {
 	} `json:"image"`
 }
 
+func normalizeTwitterVideoURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("URL de vídeo vazia")
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" {
+		return "", errors.New("URL de vídeo inválida")
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "video.twimg.com" && !strings.HasSuffix(host, ".video.twimg.com") {
+		return "", errors.New("host de vídeo não permitido")
+	}
+
+	// O CDN do X pode rejeitar variantes com o parâmetro transitório ?tag=.
+	q := u.Query()
+	q.Del("tag")
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
 func fxTwitterVideoURL(status *fxTwitterStatus) string {
 	if status == nil || len(status.Media.Videos) == 0 {
 		return ""
 	}
-
-	raw := strings.TrimSpace(status.Media.Videos[0].URL)
-	if raw == "" {
+	normalized, err := normalizeTwitterVideoURL(status.Media.Videos[0].URL)
+	if err != nil {
 		return ""
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" {
-		return ""
-	}
-	host := strings.ToLower(u.Hostname())
-	if host != "video.twimg.com" && !strings.HasSuffix(host, ".video.twimg.com") {
-		return ""
-	}
-
-	// O CDN do X passou a retornar 403 para algumas variantes MP4 quando o
-	// parâmetro transitório ?tag= está presente. Ele não é necessário para
-	// identificar o arquivo e removê-lo mantém a URL estável para playback.
-	q := u.Query()
-	q.Del("tag")
-	u.RawQuery = q.Encode()
-
-	return u.String()
+	return normalized
 }
 
 func fxTwitterImageURL(status *fxTwitterStatus) string {
@@ -724,6 +761,59 @@ func nullableText(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// OpenLinkPreviewVideo abre o vídeo remoto associado ao preview depois do
+// mesmo check de read_channel usado por GetLinkPreview. O navegador nunca
+// acessa video.twimg.com diretamente; isso evita o 403 de hotlink/referrer.
+// O caller deve fechar resp.Body e chamar release.
+func OpenLinkPreviewVideo(
+	ctx context.Context,
+	previewID, userID, rangeHeader string,
+) (resp *http.Response, release func(), err error) {
+	preview, err := GetLinkPreview(ctx, previewID, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if preview.VideoURL == nil {
+		return nil, nil, ErrPreviewNotFound
+	}
+
+	videoURL, err := normalizeTwitterVideoURL(*preview.VideoURL)
+	if err != nil {
+		return nil, nil, ErrPreviewNotFound
+	}
+	if !acquirePreviewVideoSlot() {
+		return nil, nil, errors.New("semáforo de vídeo cheio")
+	}
+	release = releasePreviewVideoSlot
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, videoURL, nil)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	req.Header.Set("User-Agent", utils.SafeClientUserAgent)
+	req.Header.Set("Accept", "video/*,*/*;q=0.8")
+	if rangeHeader != "" {
+		req.Header.Set("Range", rangeHeader)
+	}
+	// Não enviar Referer: video.twimg.com pode bloquear hotlink externo.
+
+	initPreviewVideoProxy()
+	resp, err = previewVideoClient.Do(req)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	if resp.StatusCode != http.StatusOK &&
+		resp.StatusCode != http.StatusPartialContent &&
+		resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		resp.Body.Close()
+		release()
+		return nil, nil, &utils.HTTPStatusError{Status: resp.StatusCode}
+	}
+	return resp, release, nil
 }
 
 // GetLinkPreview resolve um preview com o MESMO check de acesso da mensagem à
