@@ -1110,8 +1110,17 @@ func TestResetRouteSelfResetsSelf(t *testing.T) {
 	userID, token := registerAndLogin(t, e)
 
 	rec := do(t, e, http.MethodPost, "/users/"+userID+"/reset", nil, authCookie(token))
-	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
-		"usuário não possui a permissão necessária para esta operação")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	user, err := storage.GetUserByID(testCtx(), userID)
+	if err != nil {
+		t.Fatalf("falha ao buscar usuário: %v", err)
+	}
+	if !user.ResetPassword {
+		t.Fatal("esperava reset_password=true para reset do próprio usuário")
+	}
 }
 
 // TestResetRouteForbiddenWithoutPermission garante que um usuário sem
