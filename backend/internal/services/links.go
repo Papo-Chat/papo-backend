@@ -232,8 +232,6 @@ func stripTrailingPunctuation(s string) string {
 //
 // O ctx deve carregar o budget total da fase de previews (compartilhado
 // entre as URLs da mensagem, §6.1).
-var twitterStatusPathRe = regexp.MustCompile(`(?i)/(?:i/)?status/(\d+)(?:/|$)`)
-
 func twitterStatusID(u *url.URL) (string, bool) {
 	switch strings.ToLower(u.Hostname()) {
 	case "twitter.com", "www.twitter.com", "mobile.twitter.com",
@@ -244,11 +242,23 @@ func twitterStatusID(u *url.URL) (string, bool) {
 		return "", false
 	}
 
-	match := twitterStatusPathRe.FindStringSubmatch(u.Path)
-	if len(match) != 2 {
-		return "", false
+	parts := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if !strings.EqualFold(parts[i], "status") {
+			continue
+		}
+		id, err := url.PathUnescape(parts[i+1])
+		if err != nil || id == "" {
+			return "", false
+		}
+		for _, r := range id {
+			if r < '0' || r > '9' {
+				return "", false
+			}
+		}
+		return id, true
 	}
-	return match[1], true
+	return "", false
 }
 
 type fxTwitterStatusResponse struct {
