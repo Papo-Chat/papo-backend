@@ -1297,6 +1297,28 @@ func TestHubPresenceUpdateWithNickname(t *testing.T) {
 	})
 }
 
+func TestHubDisconnectAllClosesConnectionsAndKeepsHubRunning(t *testing.T) {
+	hub := newWSHub(t)
+	env := newWSTestServer(t, hub, nil)
+
+	conn := env.dial(t, "user_a")
+	readEvent(t, conn)
+
+	if got := hub.DisconnectAll(); got != 1 {
+		t.Fatalf("DisconnectAll deveria fechar 1 conexão, fechou %d", got)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("a conexão deveria ter sido encerrada pelo DisconnectAll")
+	}
+
+	reconnected := env.dial(t, "user_b")
+	if event := readEvent(t, reconnected); event.Type != string(EventTypePresenceSync) {
+		t.Fatalf("o Hub deveria continuar aceitando conexões, obtive evento %q", event.Type)
+	}
+}
+
 func TestHubShutdownClosesConnections(t *testing.T) {
 	hub := newWSHub(t)
 	env := newWSTestServer(t, hub, nil)
