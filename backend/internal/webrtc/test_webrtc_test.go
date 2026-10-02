@@ -514,6 +514,34 @@ func TestValidateSDP(t *testing.T) {
 	}
 }
 
+func TestValidateSDPSizeBudget(t *testing.T) {
+	cfg := testManager(t, nil).cfg
+
+	buildPadded := func(target int) string {
+		var sb strings.Builder
+		sb.WriteString(sdpAudioOnly)
+		for sb.Len() < target {
+			sb.WriteString("\na=x-padding:0123456789abcdef0123456789abcdef")
+		}
+		return sb.String()
+	}
+
+	// Chrome offers with the configured receive slots can exceed the old
+	// 64 KiB guard while still fitting comfortably inside the 128 KiB WS frame.
+	withinBudget := buildPadded(80 * 1024)
+	if len(withinBudget) <= 64*1024 || len(withinBudget) > maxSDPSize {
+		t.Fatalf("fixture size = %d, expected between 64 KiB and maxSDPSize", len(withinBudget))
+	}
+	if err := validateSDP(withinBudget, cfg, false); err != nil {
+		t.Fatalf("SDP de ~80 KiB deveria ser aceita, obtive %v", err)
+	}
+
+	overBudget := buildPadded(maxSDPSize + 1024)
+	if err := validateSDP(overBudget, cfg, false); !errors.Is(err, ErrVoiceInvalidSDP) {
+		t.Fatalf("SDP acima de maxSDPSize: esperado ErrVoiceInvalidSDP, obtive %v", err)
+	}
+}
+
 func TestValidateSDPTooManyMlines(t *testing.T) {
 	cfg := &config.Config{VoiceVideoCodec: "vp8", VoiceVideoSlots: 1, VoiceAudioSlots: 1}
 	// teto = 3 + 1 + 1 = 5 m-lines; 6 m-lines excede
