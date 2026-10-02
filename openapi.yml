@@ -830,17 +830,24 @@ paths:
   /users/{user_id}/reset:
     post:
       tags: [Users]
-      summary: Gera link administrativo de troca de senha
-      description: "Permission Check: dono do servidor ou role com manage_server. Gera um token aleatório de uso único; somente o SHA-256 é persistido. Um novo link invalida links anteriores do usuário."
+      summary: Prepara troca de senha ou gera link administrativo
+      description: |
+        Para o próprio usuário, marca `reset_password=true` para permitir a
+        troca autenticada em `PUT /users/{user_id}/password`.
+        Para outro usuário, exige dono do servidor ou role `manage_server`
+        e gera um token aleatório de uso único; somente o SHA-256 é persistido.
+        Um novo link administrativo invalida links anteriores do usuário.
       parameters:
         - $ref: '#/components/parameters/UserId'
       responses:
         '200':
-          description: Link de reset gerado
+          description: Flag de reset preparada (self) ou link administrativo gerado
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PasswordResetLinkResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/GenericResponse'
+                  - $ref: '#/components/schemas/PasswordResetLinkResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
