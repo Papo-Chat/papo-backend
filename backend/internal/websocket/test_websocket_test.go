@@ -185,6 +185,12 @@ func (s *wsTestServer) clientAt(t *testing.T, index int) *Client {
 	return s.clients[index]
 }
 
+func setClientLastActivity(c *Client, at time.Time) {
+	c.activityMu.Lock()
+	c.lastActivityAt = at
+	c.activityMu.Unlock()
+}
+
 // wsEvent é a visão genérica dos eventos outbound usada pelas asserções.
 type wsEvent struct {
 	Type          string          `json:"type"`
@@ -960,6 +966,110 @@ func TestHubMultipleConnectionsSameUser(t *testing.T) {
 	event = readEvent(t, connB)
 	if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_a" || event.Status != StatusOffline {
 		t.Errorf("esperava presence_update offline do user_a, obtive %+v", event)
+	}
+}
+
+
+func TestHubAutomaticAwayIsEphemeralAndActivityRestoresOnline(t *testing.T) {
+	hub := newWSHub(t)
+	env := newWSTestServer(t, hub, nil)
+
+	observer := env.dial(t, "user_b")
+	readEvent(t, observer) // presence_sync
+
+	connA := env.dial(t, "user_a")
+	readEvent(t, connA)   // presence_sync
+	readEvent(t, observer) // user_a online
+
+	clientA := env.clientAt(t, 1)
+	now := time.Now()
+	setClientLastActivity(clientA, now.Add(-autoAwayAfter-time.Second))
+
+	hub.updateAutoAwayUsers(now)
+	for name, conn := range map[string]*ws.Conn{"observer": observer, "self": connA} {
+		event := readEvent(t, conn)
+		if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_a" || event.Status != StatusAway {
+			t.Fatalf("%s: esperava away automático, obtive %+v", name, event)
+		}
+	}
+	if !hub.presence.IsAutoAway("user_a") {
+		t.Fatal("away automático deve ficar apenas no presence store")
+	}
+
+	sendRaw(t, connA, `{"type":"presence_activity"}`)
+	for name, conn := range map[string]*ws.Conn{"observer": observer, "self": connA} {
+		event := readEvent(t, conn)
+		if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_a" || event.Status != StatusOnline {
+			t.Fatalf("%s: atividade deveria restaurar online, obtive %+v", name, event)
+		}
+	}
+	if hub.presence.IsAutoAway("user_a") {
+		t.Fatal("atividade deve limpar o away automático")
+	}
+}
+
+func TestHubAutomaticAwayUsesMostRecentConnectionActivity(t *testing.T) {
+	hub := newWSHub(t)
+	env := newWSTestServer(t, hub, nil)
+
+	observer := env.dial(t, "observer")
+	readEvent(t, observer)
+
+	connA1 := env.dial(t, "user_a")
+	readEvent(t, connA1)
+	readEvent(t, observer) // primeira conexão torna user_a online
+
+	connA2 := env.dial(t, "user_a")
+	readEvent(t, connA2) // somente presence_sync
+
+	now := time.Now()
+	clientA1 := env.clientAt(t, 1)
+	clientA2 := env.clientAt(t, 2)
+	setClientLastActivity(clientA1, now.Add(-autoAwayAfter-time.Minute))
+	setClientLastActivity(clientA2, now)
+
+	hub.updateAutoAwayUsers(now)
+	if got := hub.presence.EffectiveStatus("user_a"); got != StatusOnline {
+		t.Fatalf("uma aba ativa deve manter o usuário online, obtive %q", got)
+	}
+
+	setClientLastActivity(clientA2, now.Add(-autoAwayAfter-time.Second))
+	hub.updateAutoAwayUsers(now)
+	if got := hub.presence.EffectiveStatus("user_a"); got != StatusAway {
+		t.Fatalf("todas as conexões inativas devem resultar em away, obtive %q", got)
+	}
+	event := readEvent(t, observer)
+	if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_a" || event.Status != StatusAway {
+		t.Fatalf("esperava broadcast away do user_a, obtive %+v", event)
+	}
+}
+
+func TestHubNewConnectionClearsAutomaticAway(t *testing.T) {
+	hub := newWSHub(t)
+	env := newWSTestServer(t, hub, nil)
+
+	observer := env.dial(t, "observer")
+	readEvent(t, observer)
+
+	connA1 := env.dial(t, "user_a")
+	readEvent(t, connA1)
+	readEvent(t, observer)
+
+	clientA1 := env.clientAt(t, 1)
+	now := time.Now()
+	setClientLastActivity(clientA1, now.Add(-autoAwayAfter-time.Second))
+	hub.updateAutoAwayUsers(now)
+	readEvent(t, connA1)
+	readEvent(t, observer)
+
+	connA2 := env.dial(t, "user_a")
+	readEvent(t, connA2) // presence_sync já deve refletir online
+	if got := hub.presence.EffectiveStatus("user_a"); got != StatusOnline {
+		t.Fatalf("nova conexão deve limpar auto-away, obtive %q", got)
+	}
+	event := readEvent(t, observer)
+	if event.Type != string(EventTypePresenceUpdate) || event.UserID != "user_a" || event.Status != StatusOnline {
+		t.Fatalf("esperava broadcast online ao reconectar, obtive %+v", event)
 	}
 }
 
