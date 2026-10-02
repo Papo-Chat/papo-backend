@@ -1085,48 +1085,33 @@ func TestResetRouteOwnerResetsUser(t *testing.T) {
 	targetID, _ := registerAndLogin(t, e)
 
 	rec := do(t, e, http.MethodPost, "/users/"+targetID+"/reset", nil, authCookie(ownerToken))
-
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
+
 	var resp struct {
-		Response string `json:"response"`
+		ResetURL  string    `json:"reset_url"`
+		ExpiresAt time.Time `json:"expires_at"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if resp.Response != "User password is set to reset" {
-		t.Errorf("esperava response %q, obtive %q", "User password is set to reset", resp.Response)
+	if !strings.HasPrefix(resp.ResetURL, "https://papo.cyberasilo.online/passwordchange/") {
+		t.Fatalf("link de reset inesperado: %q", resp.ResetURL)
 	}
-
-	stored, err := storage.GetUserByID(context.Background(), targetID)
-	if err != nil {
-		t.Fatalf("GetUserByID retornou erro: %v", err)
-	}
-	if !stored.ResetPassword {
-		t.Error("esperava reset_password = true persistido")
+	if resp.ExpiresAt.IsZero() || !resp.ExpiresAt.After(time.Now()) {
+		t.Fatalf("expires_at inválido: %v", resp.ExpiresAt)
 	}
 }
 
-// TestResetRouteSelfResetsSelf garante que o usuário pode marcar a si mesmo
-// para reset, mesmo sem ser dono de nenhum servidor.
+// O reset administrativo não substitui o fluxo autenticado das Settings.
 func TestResetRouteSelfResetsSelf(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 
 	rec := do(t, e, http.MethodPost, "/users/"+userID+"/reset", nil, authCookie(token))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
-	}
-
-	stored, err := storage.GetUserByID(context.Background(), userID)
-	if err != nil {
-		t.Fatalf("GetUserByID retornou erro: %v", err)
-	}
-	if !stored.ResetPassword {
-		t.Error("esperava reset_password = true persistido")
-	}
+	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
+		"usuário não possui a permissão necessária para esta operação")
 }
 
 // TestResetRouteForbiddenWithoutPermission garante que um usuário sem
@@ -5974,13 +5959,17 @@ func TestUpdateSettingsHandlerMissingUserID(t *testing.T) {
 // --- ResetUserHandler ---
 
 func TestResetUserHandlerSuccess(t *testing.T) {
+	actor, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar ator: %v", err)
+	}
 	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
 	c := newContext(t, http.MethodPost, "/users/"+user.ID+"/reset", nil, "")
-	c.Set(middleware.UserIDContextKey, user.ID)
+	c.Set(middleware.UserIDContextKey, actor.ID)
 	c.SetParamNames("user_id")
 	c.SetParamValues(user.ID)
 	rec := recorder(c)
@@ -5993,21 +5982,17 @@ func TestResetUserHandlerSuccess(t *testing.T) {
 	}
 
 	var resp struct {
-		Response string `json:"response"`
+		ResetURL  string    `json:"reset_url"`
+		ExpiresAt time.Time `json:"expires_at"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if resp.Response != "User password is set to reset" {
-		t.Errorf("esperava response %q, obtive %q", "User password is set to reset", resp.Response)
+	if !strings.HasPrefix(resp.ResetURL, "https://papo.cyberasilo.online/passwordchange/") {
+		t.Fatalf("link de reset inesperado: %q", resp.ResetURL)
 	}
-
-	stored, err := storage.GetUserByID(testCtx(), user.ID)
-	if err != nil {
-		t.Fatalf("GetUserByID retornou erro: %v", err)
-	}
-	if !stored.ResetPassword {
-		t.Error("esperava reset_password = true persistido")
+	if resp.ExpiresAt.IsZero() {
+		t.Fatal("expires_at não foi retornado")
 	}
 }
 
