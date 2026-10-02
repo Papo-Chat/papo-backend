@@ -21,13 +21,14 @@
 # Variáveis de ambiente (opcionais):
 #   PAPO_PREFIX  diretório de instalação (padrão: /opt/papo)
 #   PAPO_REPO    repositório git (padrão: https://github.com/Papo-Chat/papo-backend.git)
-#   PAPO_BRANCH  branch para compilar (padrão: main)
+#   PAPO_BRANCH  branch para compilar somente fora de um checkout Git (padrão: main)
 
 set -euo pipefail
 
 PREFIX="${PAPO_PREFIX:-/opt/papo}"
 REPO_URL="${PAPO_REPO:-https://github.com/Papo-Chat/papo-backend.git}"
-BRANCH="${PAPO_BRANCH:-main}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+BRANCH=""
 INSTALL_SYSTEMD=true
 
 # Versão mínima do Go exigida pelo backend/go.mod.
@@ -49,6 +50,21 @@ done
 
 require_root() {
     [[ $EUID -eq 0 ]] || die "esta etapa requer root (execute o script como root)"
+}
+
+resolve_deploy_branch() {
+    # Quando o script pertence a um checkout Git, o próprio checkout é a
+    # fonte de verdade. PAPO_BRANCH só existe para uso standalone (script
+    # copiado/baixado fora de um repositório).
+    if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        BRANCH="$(git -C "$SCRIPT_DIR" symbolic-ref --quiet --short HEAD || true)"
+        [[ -n "$BRANCH" ]] || die "checkout Git está com HEAD destacado; faça checkout de um branch antes do deploy"
+        echo "    Branch detectado do checkout: $BRANCH"
+        return
+    fi
+
+    BRANCH="${PAPO_BRANCH:-main}"
+    echo "    Fora de um checkout Git; branch selecionado: $BRANCH"
 }
 
 # ---------------------------------------------------------------------------
@@ -417,6 +433,7 @@ main() {
     trap 'rm -rf "${SRC_DIR:-}"' EXIT
 
     install_base_packages
+    resolve_deploy_branch
     install_go
     install_goose
     install_docker
