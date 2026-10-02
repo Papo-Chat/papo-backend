@@ -106,15 +106,28 @@ func AddReaction(ctx context.Context, messageID, userID string, emojiID, unicode
 		return models.MessageReaction{}, false, 0, mapStorageError(err)
 	}
 
-	var distinct int
+	var typeExists bool
 	if err := tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM (SELECT DISTINCT COALESCE(emoji_id, '"+zeroUUID+"'::uuid), COALESCE(unicode, '') FROM message_reactions WHERE message_id = $1) tipos",
-		messageID,
-	).Scan(&distinct); err != nil {
-		return models.MessageReaction{}, false, 0, fmt.Errorf("falha ao reagir: %w", err)
+		"SELECT EXISTS (SELECT 1 FROM message_reactions WHERE message_id = $1 AND emoji_id IS NOT DISTINCT FROM $2 AND unicode IS NOT DISTINCT FROM $3)",
+		messageID, emojiID, unicode,
+	).Scan(&typeExists); err != nil {
+		return models.MessageReaction{}, false, 0, fmt.Errorf("falha ao verificar tipo de reação: %w", err)
 	}
-	if distinct >= maxReactionTypesPerMessage {
-		return models.MessageReaction{}, false, 0, ErrReactionLimitReached
+
+	// O teto limita tipos distintos, não usuários por tipo. Quando o emoji já
+	// existe na mensagem, outros usuários ainda podem aderir a ele mesmo com os
+	// 20 tipos ocupados.
+	if !typeExists {
+		var distinct int
+		if err := tx.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM (SELECT DISTINCT COALESCE(emoji_id, '"+zeroUUID+"'::uuid), COALESCE(unicode, '') FROM message_reactions WHERE message_id = $1) tipos",
+			messageID,
+		).Scan(&distinct); err != nil {
+			return models.MessageReaction{}, false, 0, fmt.Errorf("falha ao reagir: %w", err)
+		}
+		if distinct >= maxReactionTypesPerMessage {
+			return models.MessageReaction{}, false, 0, ErrReactionLimitReached
+		}
 	}
 
 	reaction, err := scanReaction(tx.QueryRowContext(ctx,
