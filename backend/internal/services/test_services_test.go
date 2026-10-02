@@ -426,24 +426,54 @@ func passwordPolicyCases() []struct {
 	}
 }
 
-func TestTwitterPreviewFetchURL(t *testing.T) {
+func TestTwitterStatusID(t *testing.T) {
 	cases := []struct {
-		raw     string
-		wantHost string
-		mirror  bool
+		raw  string
+		want string
+		ok   bool
 	}{
-		{"https://x.com/user/status/123", "fxtwitter.com", true},
-		{"https://twitter.com/user/status/123", "fxtwitter.com", true},
-		{"https://fixupx.com/user/status/123", "fixupx.com", true},
-		{"https://example.com/status/123", "example.com", false},
+		{"https://x.com/user/status/123", "123", true},
+		{"https://twitter.com/user/status/456?s=20", "456", true},
+		{"https://fixupx.com/user/status/789", "789", true},
+		{"https://fxtwitter.com/user/status/321/photo/1", "321", true},
+		{"https://x.com/i/status/654", "654", true},
+		{"https://x.com/user", "", false},
+		{"https://example.com/user/status/123", "", false},
 	}
 	for _, tc := range cases {
 		u, err := url.Parse(tc.raw)
-		if err != nil { t.Fatal(err) }
-		got, mirror := twitterPreviewFetchURL(u)
-		if got.Hostname() != tc.wantHost || mirror != tc.mirror {
-			t.Fatalf("%s: got host=%s mirror=%v", tc.raw, got.Hostname(), mirror)
+		if err != nil {
+			t.Fatal(err)
 		}
+		got, ok := twitterStatusID(u)
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("%s: got id=%q ok=%v; want id=%q ok=%v", tc.raw, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestFxTwitterImageURL(t *testing.T) {
+	photo := &fxTwitterStatus{Media: fxTwitterMedia{
+		Photos: []fxTwitterPhoto{{URL: "https://pbs.twimg.com/photo.jpg"}},
+		Videos: []fxTwitterVideo{{ThumbnailURL: "https://pbs.twimg.com/video.jpg"}},
+	}}
+	if got := fxTwitterImageURL(photo); got != "https://pbs.twimg.com/photo.jpg" {
+		t.Fatalf("foto deveria ter prioridade, obtive %q", got)
+	}
+
+	video := &fxTwitterStatus{Media: fxTwitterMedia{
+		Videos: []fxTwitterVideo{{ThumbnailURL: "https://pbs.twimg.com/video.jpg"}},
+	}}
+	if got := fxTwitterImageURL(video); got != "https://pbs.twimg.com/video.jpg" {
+		t.Fatalf("thumbnail de vídeo inesperada: %q", got)
+	}
+
+	card := &fxTwitterStatus{Card: &fxTwitterCard{}}
+	card.Card.Image = &struct {
+		URL string `json:"url"`
+	}{URL: "https://pbs.twimg.com/card.jpg"}
+	if got := fxTwitterImageURL(card); got != "https://pbs.twimg.com/card.jpg" {
+		t.Fatalf("imagem do card inesperada: %q", got)
 	}
 }
 
