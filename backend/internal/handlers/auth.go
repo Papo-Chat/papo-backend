@@ -99,6 +99,10 @@ func RegisterHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
+	if req.Username == "" {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "campo 'username' é obrigatório")
+	}
 	if utf8.RuneCountInString(req.Username) < 3 {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "campo 'username' deve ter no mínimo 3 caracteres")
