@@ -498,6 +498,9 @@ func (h *Hub) UpdatePersistedStatus(userID string, status *string) bool {
 	if !h.presence.SetPersistedStatus(userID, status) {
 		return false
 	}
+	// Alterar status manualmente é atividade explícita; não carregue um
+	// auto-away anterior quando o usuário remover busy/away.
+	h.presence.SetAutoAway(userID, false)
 
 	h.Broadcast(PresenceUpdateOutbound{
 		Type:          EventTypePresenceUpdate,
