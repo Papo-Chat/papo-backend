@@ -1,3 +1,7 @@
+-- Go Migration File
+-- GOOS=linux GOARCH=amd64 go run github.com/pressly/goose/v3/cmd/goose
+
+-- +goose Up
 -- Automatic away used to be persisted in users.status by older frontends.
 -- There is no source marker to distinguish those rows from a manually chosen
 -- away, so clear legacy away once. From this migration onward automatic away
@@ -6,3 +10,7 @@
 UPDATE users
 SET status = NULL
 WHERE status = 'away';
+
+-- +goose Down
+-- Irreversible data cleanup: the previous away values cannot be reconstructed.
+SELECT 1;
