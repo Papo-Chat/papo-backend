@@ -138,9 +138,8 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 		}
 	}
 
-	conds = append(
-		conds,
-		"( "+
+	if p.ChannelID == "" {
+		conds = append(conds, "(c.type <> 'dm' AND ("+
 			"EXISTS (SELECT 1 FROM servers s WHERE s.owner_id = "+userID+") "+
 			"OR c.permissions IS NULL "+
 			"OR c.permissions = '{}'::jsonb "+
@@ -149,9 +148,33 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 			"JOIN roles r ON r.id = ur.role_id "+
 			"WHERE ur.user_id = "+userID+
 			" AND (c.permissions -> r.id::text ->> 'read_channel') = 'true'"+
-			") "+
-			")",
-	)
+			")"+
+			"))")
+	} else {
+		conds = append(conds,
+			"("+"(c.type <> 'dm' AND ("+
+			"EXISTS (SELECT 1 FROM servers s WHERE s.owner_id = "+userID+") "+
+			"OR c.permissions IS NULL "+
+			"OR c.permissions = '{}'::jsonb "+
+			"OR EXISTS ("+
+			"SELECT 1 FROM user_roles ur "+
+			"JOIN roles r ON r.id = ur.role_id "+
+			"WHERE ur.user_id = "+userID+
+			" AND (c.permissions -> r.id::text ->> 'read_channel') = 'true'"+
+			")"+
+			"))"+
+			" OR (c.type = 'dm' AND EXISTS ("+
+				"SELECT 1 FROM direct_conversations dc "+
+				"WHERE dc.channel_id = c.id "+
+				"AND (dc.user_low_id = "+userID+" OR dc.user_high_id = "+userID+") "+
+				"AND NOT EXISTS ("+
+					"SELECT 1 FROM user_blocks b "+
+					"WHERE (b.user_id = dc.user_low_id AND b.blocked_user_id = dc.user_high_id) "+
+					"OR (b.user_id = dc.user_high_id AND b.blocked_user_id = dc.user_low_id)"+
+				")"+
+			")))",
+		)
+	}
 
 	order := "DESC"
 	if p.OrderAsc {

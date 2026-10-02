@@ -224,8 +224,20 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 	if err != nil {
 		return models.MessageWithAttachment{}, err
 	}
-	if channel.Type != "text" && channel.Type != "voice" {
+	if channel.Type != "text" && channel.Type != "voice" && channel.Type != "dm" {
 		return models.MessageWithAttachment{}, ErrPermissionDenied
+	}
+	if channel.Type == "dm" {
+		member, blocked, err := storage.DirectConversationAccess(ctx, channel.ID, authorID)
+		if errors.Is(err, storage.ErrNotFound) || !member {
+			return models.MessageWithAttachment{}, ErrPermissionDenied
+		}
+		if err != nil {
+			return models.MessageWithAttachment{}, err
+		}
+		if blocked {
+			return models.MessageWithAttachment{}, ErrDirectMessageBlocked
+		}
 	}
 
 	allowed, err := userHasChannelPermission(ctx, channel, authorID, true, func(p models.ChannelPermission) bool {
@@ -238,7 +250,7 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 		return models.MessageWithAttachment{}, ErrPermissionDenied
 	}
 
-	if len(attachments) > 0 {
+	if len(attachments) > 0 && channel.Type != "dm" {
 		allowed, err := userHasRolePermission(ctx, authorID, func(p models.RolePermissions) bool {
 			return p.SendAttachment
 		})
@@ -279,6 +291,13 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 	message, err := storage.CreateMessage(ctx, channelID, authorID, content, replyTo, attachmentIDs)
 	if err != nil {
 		return models.MessageWithAttachment{}, err
+	}
+	if channel.Type == "dm" {
+		if err := storage.ShowDirectConversationForMembers(ctx, channelID); err != nil {
+			// A mensagem já foi persistida. Não transforme uma falha auxiliar de
+			// visibilidade da rail em 500, pois o cliente poderia repetir o envio.
+			utils.Errorf("falha ao reabrir DM %s após mensagem %s: %v", channelID, message.ID, err)
+		}
 	}
 
 	messageAttachments := toMessageAttachments(createdAttachments)
@@ -479,6 +498,23 @@ func EditMessage(ctx context.Context, messageID, authorID, content string) (mode
 	if message.AuthorID == nil || *message.AuthorID != authorID {
 		return models.MessageWithAttachment{}, ErrPermissionDenied
 	}
+	if channel, err := storage.GetChannelByID(ctx, message.ChannelID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return models.MessageWithAttachment{}, ErrChannelNotFound
+		}
+		return models.MessageWithAttachment{}, err
+	} else if channel.Type == "dm" {
+		member, blocked, err := storage.DirectConversationAccess(ctx, channel.ID, authorID)
+		if err != nil {
+			return models.MessageWithAttachment{}, err
+		}
+		if !member {
+			return models.MessageWithAttachment{}, ErrPermissionDenied
+		}
+		if blocked {
+			return models.MessageWithAttachment{}, ErrDirectMessageBlocked
+		}
+	}
 
 	// content vazio vira NULL (limpa o texto da mensagem)
 	var contentPtr *string
@@ -658,9 +694,21 @@ func PinMessage(ctx context.Context, channelID, messageID, userID string) (model
 		return models.PinnedMessage{}, false, ErrMessageNotFound
 	}
 
-	allowed, err := userHasRolePermission(ctx, userID, func(p models.RolePermissions) bool {
-		return p.PinMessage
-	})
+	channel, err := storage.GetChannelByID(ctx, channelID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return models.PinnedMessage{}, false, ErrChannelNotFound
+	}
+	if err != nil {
+		return models.PinnedMessage{}, false, err
+	}
+	allowed := false
+	if channel.Type == "dm" {
+		allowed, err = userHasChannelPermission(ctx, channel, userID, true, func(models.ChannelPermission) bool { return true })
+	} else {
+		allowed, err = userHasRolePermission(ctx, userID, func(p models.RolePermissions) bool {
+			return p.PinMessage
+		})
+	}
 	if err != nil {
 		return models.PinnedMessage{}, false, err
 	}
@@ -735,14 +783,16 @@ func UnpinMessage(ctx context.Context, channelID, messageID, userID string) (boo
 		return false, ErrPermissionDenied
 	}
 
-	allowed, err = userHasRolePermission(ctx, userID, func(p models.RolePermissions) bool {
-		return p.PinMessage
-	})
-	if err != nil {
-		return false, err
-	}
-	if !allowed {
-		return false, ErrPermissionDenied
+	if channel.Type != "dm" {
+		allowed, err = userHasRolePermission(ctx, userID, func(p models.RolePermissions) bool {
+			return p.PinMessage
+		})
+		if err != nil {
+			return false, err
+		}
+		if !allowed {
+			return false, ErrPermissionDenied
+		}
 	}
 
 	removed, err := storage.UnpinMessage(ctx, channelID, messageID)
@@ -846,6 +896,20 @@ func ListPinnedMessages(ctx context.Context, channelID, userID string) (models.P
 // (usado para delete_messages). Nos demais casos, o usuário precisa da
 // permissão em ao menos uma das roles atribuídas a ele.
 func userHasChannelPermission(ctx context.Context, channel models.Channel, userID string, freeIfOpen bool, hasPermission func(models.ChannelPermission) bool) (bool, error) {
+	if channel.Type == "dm" {
+		if !freeIfOpen {
+			return false, nil
+		}
+		member, blocked, err := storage.DirectConversationAccess(ctx, channel.ID, userID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return member && !blocked, nil
+	}
+
 	server, err := storage.GetServer(ctx)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return false, err

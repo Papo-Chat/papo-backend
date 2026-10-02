@@ -100,7 +100,7 @@ func CreateChannel(ctx context.Context, name, channelType, topic string) (models
 func CountChannels(ctx context.Context) (int, error) {
 	var count int
 	err := GetDB().QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM channels",
+		"SELECT COUNT(*) FROM channels WHERE type <> 'dm'",
 	).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("falha ao contar canais: %w", err)
@@ -128,7 +128,7 @@ func GetChannelByID(ctx context.Context, id string) (models.Channel, error) {
 // created_at e id como desempate.
 func ListChannels(ctx context.Context) ([]models.Channel, error) {
 	rows, err := GetDB().QueryContext(ctx,
-		"SELECT "+channelColumns+" FROM channels ORDER BY position, created_at, id LIMIT 500",
+		"SELECT "+channelColumns+" FROM channels WHERE type <> 'dm' ORDER BY position, created_at, id LIMIT 500",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao listar canais: %w", err)
@@ -251,7 +251,7 @@ func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, n
 
 	var count int
 	if err := tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM channels",
+		"SELECT COUNT(*) FROM channels WHERE type <> 'dm'",
 	).Scan(&count); err != nil {
 		return models.Channel{}, fmt.Errorf("falha ao mudar posição do canal: %w", err)
 	}
@@ -263,14 +263,14 @@ func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, n
 	// abrir (ou fechar) espaço para o canal movido.
 	if newPosition > oldPosition {
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE channels SET position = position - 1 WHERE position > $1 AND position <= $2",
+			"UPDATE channels SET position = position - 1 WHERE type <> 'dm' AND position > $1 AND position <= $2",
 			oldPosition, newPosition,
 		); err != nil {
 			return models.Channel{}, fmt.Errorf("falha ao mudar posição do canal: %w", err)
 		}
 	} else if newPosition < oldPosition {
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE channels SET position = position + 1 WHERE position >= $1 AND position < $2",
+			"UPDATE channels SET position = position + 1 WHERE type <> 'dm' AND position >= $1 AND position < $2",
 			newPosition, oldPosition,
 		); err != nil {
 			return models.Channel{}, fmt.Errorf("falha ao mudar posição do canal: %w", err)
@@ -462,7 +462,7 @@ func listRoleNames(ctx context.Context) (map[string]string, error) {
 func ListChannelSummaries(ctx context.Context, userID string) ([]models.ChannelSummary, error) {
 	query := "SELECT " + channelSummaryBaseColumns + channelSummaryLastReadColumns + channelSummaryNotificationColumns + " " +
 		channelSummaryBaseJoins + channelSummaryLastReadJoin + channelSummaryNotificationJoin +
-		" ORDER BY c.position, c.created_at, c.id LIMIT 500"
+		" WHERE c.type <> 'dm' ORDER BY c.position, c.created_at, c.id LIMIT 500"
 
 	rows, err := GetDB().QueryContext(ctx, query, userID)
 	if err != nil {

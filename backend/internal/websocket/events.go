@@ -32,6 +32,7 @@ const (
 	EventTypeNewNotification   EventType = "new_notification"
 	EventTypeRoleAdd           EventType = "role_add"
 	EventTypeRoleRemove        EventType = "role_remove"
+	EventTypeDMUpdate          EventType = "dm_update"
 	// Eventos de voz (canais type "voice" + SFU). Inbound: client → server.
 	// Outbound: voice_joined, voice_answer, voice_ice_candidate,
 	// voice_state_update, voice_leave, active_speaker_update, voice_audio_routes.
@@ -344,6 +345,13 @@ type RoleRemoveOutbound struct {
 	Type   EventType `json:"type"`
 	UserID string    `json:"user_id"`
 	RoleID string    `json:"role_id"`
+}
+
+// DMUpdateOutbound atualiza a representação de uma conversa direta para o
+// usuário alvo. É enviado em unicast porque last_read/unread são por usuário.
+type DMUpdateOutbound struct {
+	Type EventType                 `json:"type"`
+	DM   models.DirectConversation `json:"dm"`
 }
 
 // PresenceSyncOutbound é a lista de membros online enviada ao cliente no

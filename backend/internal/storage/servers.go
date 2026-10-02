@@ -154,7 +154,7 @@ func ListServers(ctx context.Context) ([]models.Server, error) {
 // canais, membros (total da tabela users) e roles.
 const serverSummaryColumns = `s.id, s.owner_id, u.username AS owner_username, s.name, s.icon_media,
 	s.public_server, s.created_at,
-	(SELECT COUNT(*) FROM channels) AS channel_count,
+	(SELECT COUNT(*) FROM channels WHERE type <> 'dm') AS channel_count,
 	(SELECT COUNT(*) FROM users) AS member_count,
 	(SELECT COUNT(*) FROM roles) AS role_count`
 

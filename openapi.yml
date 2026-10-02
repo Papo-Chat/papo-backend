@@ -16,6 +16,7 @@ tags:
   - name: Health
   - name: Auth
   - name: Users
+  - name: DirectMessages
   - name: Servers
   - name: Channels
   - name: Messages
@@ -334,6 +335,108 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /dms:
+    get:
+      tags: [DirectMessages]
+      summary: Lista DMs visíveis do usuário autenticado
+      description: DMs fechadas na rail e DMs com bloqueio ativo não são retornadas.
+      responses:
+        '200':
+          description: Lista de mensagens diretas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DirectConversationList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [DirectMessages]
+      summary: Abre ou cria uma DM com outro usuário
+      description: Idempotente por par de usuários. Reabre a DM para o solicitante quando ela já existe.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenDirectMessageRequest'
+      responses:
+        '200':
+          description: DM existente reaberta
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DirectConversation'
+        '201':
+          description: DM criada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DirectConversation'
+        '400':
+          description: user_id inválido ou igual ao usuário autenticado
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Existe bloqueio entre os usuários (type dm-blocked)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /dms/{dm_id}:
+    parameters:
+      - name: dm_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [DirectMessages]
+      summary: Obtém uma DM do usuário autenticado
+      responses:
+        '200':
+          description: Mensagem direta
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DirectConversation'
+        '403':
+          description: Existe bloqueio entre os participantes (type dm-blocked)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [DirectMessages]
+      summary: Fecha uma DM na rail do usuário
+      description: Não apaga histórico. Uma nova mensagem válida faz a conversa reaparecer.
+      responses:
+        '204':
+          description: DM fechada
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /users:
     get:
       tags: [Users]
@@ -376,6 +479,68 @@ paths:
                   has_more:
                     type: boolean
                     description: Indica se há mais itens na direção solicitada por order
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/blocks:
+    get:
+      tags: [Users]
+      summary: Lista usuários bloqueados pelo usuário autenticado
+      responses:
+        '200':
+          description: Usuários bloqueados
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{user_id}/block:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Users]
+      summary: Bloqueia um usuário para mensagens diretas
+      description: Idempotente. O bloqueio vale nas duas direções para DM e não afeta mensagens em canais públicos.
+      responses:
+        '204':
+          description: Usuário bloqueado
+        '400':
+          description: Não é permitido bloquear a si mesmo
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Users]
+      summary: Desbloqueia um usuário
+      description: Idempotente. Desbloquear não reabre automaticamente uma DM fechada.
+      responses:
+        '204':
+          description: Usuário desbloqueado
+        '400':
+          description: user_id inválido ou igual ao usuário autenticado
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -2096,6 +2261,7 @@ paths:
         | `user_join`      | outbound  | `{ type: "user_join", user_id }`                                                        |
         | `role_add`       | outbound  | `{ type: "role_add", user_id, role_id }` (role atribuída ao usuário)                     |
         | `role_remove`    | outbound  | `{ type: "role_remove", user_id, role_id }` (role removida do usuário)                   |
+        | `dm_update`      | unicast   | `{ type: "dm_update", dm: DirectConversation }` (estado por usuário; usado para inserir/atualizar a DM na rail) |
         | `presence_update`| outbound  | `{ type: "presence_update", user_id, status, status_message, typing, nickname }` (status: online/offline/away/busy) |
         | `presence_sync`  | unicast   | `{ type: "presence_sync", members: (user_id, status, status_message, user_voice: channel_id[])[] }` (status: online/offline/away/busy; user_voice lista os canais de voz atuais; enviado na conexão; sem nickname) |
         | `heartbeat`      | inbound   | `{ type: "heartbeat" }`                                                                 |
@@ -2305,6 +2471,52 @@ components:
         provider:
           type: string
           default: fcm
+
+    OpenDirectMessageRequest:
+      type: object
+      required: [user_id]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+
+    DirectConversation:
+      type: object
+      required: [id, user, created_at, unread_count]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: ID da conversa; também é o channel_id usado pelos endpoints de mensagens.
+        user:
+          $ref: '#/components/schemas/UserSummary'
+        created_at:
+          type: string
+          format: date-time
+        last_message:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ChannelLastMessage'
+        last_read_message:
+          type: string
+          format: uuid
+          nullable: true
+        last_read_at:
+          type: string
+          format: date-time
+          nullable: true
+        unread_count:
+          type: integer
+          minimum: 0
+
+    DirectConversationList:
+      type: object
+      required: [dms]
+      properties:
+        dms:
+          type: array
+          items:
+            $ref: '#/components/schemas/DirectConversation'
 
     UserSummary:
       type: object

@@ -124,6 +124,9 @@ func UpdateChannel(ctx context.Context, actorID, id, name string, topic *string)
 	if err != nil {
 		return models.ChannelSummary{}, err
 	}
+	if channel.Type == "dm" {
+		return models.ChannelSummary{}, ErrChannelNotFound
+	}
 
 	if topic != nil {
 		if utf8.RuneCountInString(*topic) > maxChannelTopicLength {
@@ -174,6 +177,13 @@ func ChangeChannelPosition(ctx context.Context, actorID, channelID string, oldPo
 	if oldPosition < 1 || newPosition < 1 {
 		return models.ChannelSummary{}, ErrInvalidInput
 	}
+	current, err := storage.GetChannelByID(ctx, channelID)
+	if errors.Is(err, storage.ErrNotFound) || (err == nil && current.Type == "dm") {
+		return models.ChannelSummary{}, ErrChannelNotFound
+	}
+	if err != nil {
+		return models.ChannelSummary{}, err
+	}
 
 	channel, err := storage.ChangeChannelPosition(ctx, channelID, oldPosition, newPosition)
 	switch {
@@ -212,11 +222,15 @@ func DeleteChannel(ctx context.Context, actorID, id string) error {
 		return ErrChannelNotFound
 	}
 
-	if _, err := storage.GetChannelByID(ctx, id); err != nil {
+	channel, err := storage.GetChannelByID(ctx, id)
+	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return ErrChannelNotFound
 		}
 		return err
+	}
+	if channel.Type == "dm" {
+		return ErrChannelNotFound
 	}
 
 	if err := storage.DeleteChannel(ctx, id); err != nil {
@@ -249,6 +263,13 @@ func GetChannelPermissions(ctx context.Context, channelID string) ([]models.Chan
 		return nil, ErrChannelNotFound
 	}
 
+	channel, err := storage.GetChannelByID(ctx, channelID)
+	if errors.Is(err, storage.ErrNotFound) || (err == nil && channel.Type == "dm") {
+		return nil, ErrChannelNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
 	summary, err := storage.GetChannelSummary(ctx, channelID)
 	if errors.Is(err, storage.ErrNotFound) {
 		return nil, ErrChannelNotFound
@@ -314,6 +335,10 @@ func ChannelReaders(ctx context.Context, channelID string, userIDs []string) (ma
 		return allowed, err
 	}
 
+	if channel.Type == "dm" {
+		return storage.DirectConversationReaders(ctx, channelID, userIDs)
+	}
+
 	// Canal aberto (sem roles definidas): leitura livre para todos.
 	if len(channel.Permissions) == 0 {
 		for _, userID := range userIDs {
@@ -368,11 +393,15 @@ func UpdateChannelPermissions(ctx context.Context, actorID, channelID, roleID st
 		return models.ChannelPermission{}, ErrRoleNotFound
 	}
 
-	if _, err := storage.GetChannelByID(ctx, channelID); err != nil {
+	channel, err := storage.GetChannelByID(ctx, channelID)
+	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return models.ChannelPermission{}, ErrChannelNotFound
 		}
 		return models.ChannelPermission{}, err
+	}
+	if channel.Type == "dm" {
+		return models.ChannelPermission{}, ErrChannelNotFound
 	}
 
 	if _, err := storage.GetRoleByID(ctx, roleID); err != nil {
@@ -404,10 +433,12 @@ func DeleteChannelRolePermission(ctx context.Context, actorID, channelID, roleID
 	if channelID == "" { return ErrChannelNotFound }
 	if roleID == "" { return ErrRoleNotFound }
 
-	if _, err := storage.GetChannelByID(ctx, channelID); err != nil {
+	channel, err := storage.GetChannelByID(ctx, channelID)
+	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) { return ErrChannelNotFound }
 		return err
 	}
+	if channel.Type == "dm" { return ErrChannelNotFound }
 	if _, err := storage.GetRoleByID(ctx, roleID); err != nil {
 		if errors.Is(err, storage.ErrNotFound) { return ErrRoleNotFound }
 		return err
