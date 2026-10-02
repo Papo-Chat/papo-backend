@@ -426,6 +426,27 @@ func passwordPolicyCases() []struct {
 	}
 }
 
+func TestTwitterPreviewFetchURL(t *testing.T) {
+	cases := []struct {
+		raw     string
+		wantHost string
+		mirror  bool
+	}{
+		{"https://x.com/user/status/123", "api.fxtwitter.com", true},
+		{"https://twitter.com/user/status/123", "api.fxtwitter.com", true},
+		{"https://fixupx.com/user/status/123", "fixupx.com", true},
+		{"https://example.com/status/123", "example.com", false},
+	}
+	for _, tc := range cases {
+		u, err := url.Parse(tc.raw)
+		if err != nil { t.Fatal(err) }
+		got, mirror := twitterPreviewFetchURL(u)
+		if got.Hostname() != tc.wantHost || mirror != tc.mirror {
+			t.Fatalf("%s: got host=%s mirror=%v", tc.raw, got.Hostname(), mirror)
+		}
+	}
+}
+
 func TestRegisterRejectsShortUsername(t *testing.T) {
 	_, err := Register(testCtx(), "ab", newRandomPassword(), newRandomIP())
 	if !errors.Is(err, ErrInvalidInput) {
