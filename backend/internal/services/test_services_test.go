@@ -433,6 +433,7 @@ func TestTwitterStatusID(t *testing.T) {
 		ok   bool
 	}{
 		{"https://x.com/user/status/123", "123", true},
+		{"https://x.com/Tia_Marocas/status/2105933063385670045", "2105933063385670045", true},
 		{"https://twitter.com/user/status/456?s=20", "456", true},
 		{"https://fixupx.com/user/status/789", "789", true},
 		{"https://fxtwitter.com/user/status/321/photo/1", "321", true},
