@@ -482,11 +482,11 @@ func TestFxTwitterImageURL(t *testing.T) {
 func TestFxTwitterVideoURL(t *testing.T) {
 	status := &fxTwitterStatus{Media: fxTwitterMedia{
 		Videos: []fxTwitterVideo{{
-			URL:          "https://video.twimg.com/ext_tw_video/123/pu/vid/720x1280/test.mp4",
+			URL:          "https://video.twimg.com/ext_tw_video/123/pu/vid/720x1280/test.mp4?tag=14&v=abc",
 			ThumbnailURL: "https://pbs.twimg.com/ext_tw_video_thumb/test.jpg",
 		}},
 	}}
-	if got := fxTwitterVideoURL(status); got != status.Media.Videos[0].URL {
+	if got := fxTwitterVideoURL(status); got != "https://video.twimg.com/ext_tw_video/123/pu/vid/720x1280/test.mp4?v=abc" {
 		t.Fatalf("video URL inesperada: %q", got)
 	}
 
