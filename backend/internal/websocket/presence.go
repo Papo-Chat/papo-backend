@@ -156,6 +156,20 @@ func (p *PresenceStore) SetAutoAway(userID string, away bool) bool {
 	return true
 }
 
+func (p *PresenceStore) HasPersistedStatus(userID string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	entry, ok := p.users[userID]
+	return ok && entry.persisted != nil
+}
+
+func (p *PresenceStore) IsAutoAway(userID string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	entry, ok := p.users[userID]
+	return ok && entry.autoAway
+}
+
 // EffectiveStatus retorna o status efetivo do usuário: offline quando não
 // há conexão ativa; away/busy manual quando há status persistido; away
 // automático quando todas as conexões estão inativas; online nos demais casos.
