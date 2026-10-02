@@ -224,6 +224,9 @@ func RegisterLinkPreviewRoutes(e *echo.Echo, cfg *config.Config) {
 	e.GET("/link-previews/:preview_id", func(c echo.Context) error {
 		return GetLinkPreviewHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
+	e.GET("/link-previews/:preview_id/video", func(c echo.Context) error {
+		return GetLinkPreviewVideoHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
 }
 
 // RegisterEmojiRoutes registra as rotas de emojis.
