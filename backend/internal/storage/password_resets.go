@@ -18,6 +18,13 @@ func CreatePasswordResetToken(ctx context.Context, userID, createdBy, tokenHash 
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx,
+		"SELECT pg_advisory_xact_lock(hashtext($1))",
+		"papo:password-reset:"+userID,
+	); err != nil {
+		return fmt.Errorf("falha ao serializar reset de senha: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
 		"UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL",
 		userID,
 	); err != nil {
