@@ -231,6 +231,36 @@ func stripTrailingPunctuation(s string) string {
 //
 // O ctx deve carregar o budget total da fase de previews (compartilhado
 // entre as URLs da mensagem, §6.1).
+func twitterPreviewFetchURL(u *url.URL) (*url.URL, bool) {
+	host := strings.ToLower(u.Hostname())
+	switch host {
+	case "twitter.com", "www.twitter.com", "mobile.twitter.com", "x.com", "www.x.com":
+		if !strings.Contains(strings.ToLower(u.Path), "/status/") {
+			return u, false
+		}
+		clone := *u
+		clone.Host = "api.fxtwitter.com"
+		clone.Scheme = "https"
+		return &clone, true
+	case "fxtwitter.com", "www.fxtwitter.com", "api.fxtwitter.com",
+		"fixupx.com", "www.fixupx.com":
+		return u, true
+	default:
+		return u, false
+	}
+}
+
+func previewRobotsAllowed(ctx context.Context, u *url.URL) bool {
+	switch strings.ToLower(u.Hostname()) {
+	case "fxtwitter.com", "www.fxtwitter.com", "api.fxtwitter.com",
+		"fixupx.com", "www.fixupx.com",
+		"pbs.twimg.com", "video.twimg.com":
+		return true
+	default:
+		return RobotsAllowed(ctx, u)
+	}
+}
+
 func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.LinkPreview, bool, error) {
 	cfg := config.LoadConfig()
 
@@ -240,6 +270,7 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 		return models.LinkPreview{}, false, err
 	}
 	normalized := u.String()
+	fetchURL, twitterMirror := twitterPreviewFetchURL(u)
 
 	// 2. Cache (mesma URL normalizada, fetched_at dentro do TTL).
 	if cached, err := storage.GetPreviewByURL(ctx, normalized); err == nil {
@@ -263,8 +294,9 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 		}
 	}
 
-	// 5. robots.txt da origem.
-	if !RobotsAllowed(ctx, u) {
+	// 5. robots.txt da origem. Para mirrors conhecidos de Twitter/X,
+	// aceitamos o fetch de metadados mesmo quando o robots deles bloqueia crawlers.
+	if !twitterMirror && !previewRobotsAllowed(ctx, fetchURL) {
 		return models.LinkPreview{}, false, errors.New("origem não permitida pelo robots.txt")
 	}
 
@@ -272,7 +304,7 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 	if !acquireOutboundSlot() {
 		return models.LinkPreview{}, false, errors.New("semáforo outbound cheio")
 	}
-	body, finalURL, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxPreviewHTMLBytes, normalized)
+	body, finalURL, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxPreviewHTMLBytes, fetchURL.String())
 	releaseOutboundSlot()
 	if err != nil {
 		return models.LinkPreview{}, false, err
@@ -351,7 +383,7 @@ func downloadPreviewImage(ctx context.Context, cfg *config.Config, rawImageURL s
 	if err != nil {
 		return "", err
 	}
-	if !RobotsAllowed(ctx, u) {
+	if !previewRobotsAllowed(ctx, u) {
 		return "", errors.New("origem da imagem não permitida pelo robots.txt")
 	}
 	if !acquireOutboundSlot() {
