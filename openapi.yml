@@ -2264,6 +2264,7 @@ paths:
         | `dm_update`      | unicast   | `{ type: "dm_update", dm: DirectConversation }` (estado por usuário; usado para inserir/atualizar a DM na rail) |
         | `presence_update`| outbound  | `{ type: "presence_update", user_id, status, status_message, typing, nickname }` (status: online/offline/away/busy) |
         | `presence_sync`  | unicast   | `{ type: "presence_sync", members: (user_id, status, status_message, user_voice: channel_id[])[] }` (status: online/offline/away/busy; user_voice lista os canais de voz atuais; enviado na conexão; sem nickname) |
+        | `presence_activity` | inbound | `{ type: "presence_activity" }` (atividade real do usuário; alimenta o away automático efêmero e não persiste estado) |
         | `heartbeat`      | inbound   | `{ type: "heartbeat" }`                                                                 |
         | `heartbeat_ack`  | outbound  | `{ type: "heartbeat_ack" }`                                                             |
         | `error`          | outbound  | `{ type: "error", message, code? }`                                                     |

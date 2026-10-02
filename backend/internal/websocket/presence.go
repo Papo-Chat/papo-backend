@@ -5,9 +5,9 @@ import (
 	"sync"
 )
 
-// Statuses de presença. online/offline são efêmeros (conexão ativa);
-// away/busy são persistidos pelo usuário (users.status) e valem enquanto o
-// usuário está online.
+// Statuses de presença. online/offline e o away automático são efêmeros.
+// away/busy persistidos representam somente uma escolha manual do usuário e
+// têm prioridade sobre o away automático enquanto o usuário está online.
 const (
 	StatusOnline  = "online"
 	StatusOffline = "offline"
@@ -40,6 +40,7 @@ type presenceEntry struct {
 	typing        *string
 	nickname      *string
 	persisted     *string
+	autoAway      bool
 }
 
 // NewPresenceStore cria um PresenceStore vazio.
@@ -127,8 +128,8 @@ func (p *PresenceStore) SetNickname(userID string, nickname *string) bool {
 	return true
 }
 
-// SetPersistedStatus atualiza o status persistido (away/busy; nil remove) de
-// um usuário online. Retorna false quando o usuário está offline.
+// SetPersistedStatus atualiza o status manual persistido (away/busy; nil remove)
+// de um usuário online. Retorna false quando o usuário está offline.
 func (p *PresenceStore) SetPersistedStatus(userID string, persisted *string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -141,9 +142,37 @@ func (p *PresenceStore) SetPersistedStatus(userID string, persisted *string) boo
 	return true
 }
 
+// SetAutoAway atualiza apenas o estado efêmero de inatividade. Esse valor
+// nunca é persistido e desaparece junto com a presença/conexão do usuário.
+func (p *PresenceStore) SetAutoAway(userID string, away bool) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	entry, ok := p.users[userID]
+	if !ok {
+		return false
+	}
+	entry.autoAway = away
+	return true
+}
+
+func (p *PresenceStore) HasPersistedStatus(userID string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	entry, ok := p.users[userID]
+	return ok && entry.persisted != nil
+}
+
+func (p *PresenceStore) IsAutoAway(userID string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	entry, ok := p.users[userID]
+	return ok && entry.autoAway
+}
+
 // EffectiveStatus retorna o status efetivo do usuário: offline quando não
-// há conexão ativa; away/busy quando há status persistido; online nos demais
-// casos.
+// há conexão ativa; away/busy manual quando há status persistido; away
+// automático quando todas as conexões estão inativas; online nos demais casos.
 func (p *PresenceStore) EffectiveStatus(userID string) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -154,6 +183,9 @@ func (p *PresenceStore) EffectiveStatus(userID string) string {
 	}
 	if entry.persisted != nil {
 		return *entry.persisted
+	}
+	if entry.autoAway {
+		return StatusAway
 	}
 	return StatusOnline
 }
@@ -205,6 +237,8 @@ func (p *PresenceStore) OnlineMembers() []PresenceMember {
 		status := StatusOnline
 		if entry.persisted != nil {
 			status = *entry.persisted
+		} else if entry.autoAway {
+			status = StatusAway
 		}
 		members = append(members, PresenceMember{
 			UserID:        userID,
