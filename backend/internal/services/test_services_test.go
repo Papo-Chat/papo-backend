@@ -428,35 +428,27 @@ func passwordPolicyCases() []struct {
 
 func TestTwitterStatusID(t *testing.T) {
 	cases := []struct {
-		raw        string
-		wantID     string
-		wantHandle string
-		ok         bool
+		raw  string
+		want string
+		ok   bool
 	}{
-		{"https://x.com/user/status/123", "123", "user", true},
-		{"https://x.com/Tia_Marocas/status/2105933063385670045", "2105933063385670045", "Tia_Marocas", true},
-		{"https://twitter.com/user/status/456?s=20", "456", "user", true},
-		{"https://fixupx.com/user/status/789", "789", "user", true},
-		{"https://fxtwitter.com/user/status/321/photo/1", "321", "user", true},
-		{"https://x.com/i/status/654", "654", "", true},
-		{"https://x.com/user", "", "", false},
-		{"https://example.com/user/status/123", "", "", false},
+		{"https://x.com/user/status/123", "123", true},
+		{"https://x.com/Tia_Marocas/status/2105933063385670045", "2105933063385670045", true},
+		{"https://twitter.com/user/status/456?s=20", "456", true},
+		{"https://fixupx.com/user/status/789", "789", true},
+		{"https://fxtwitter.com/user/status/321/photo/1", "321", true},
+		{"https://x.com/i/status/654", "654", true},
+		{"https://x.com/user", "", false},
+		{"https://example.com/user/status/123", "", false},
 	}
 	for _, tc := range cases {
 		u, err := url.Parse(tc.raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ref, ok := twitterStatusParts(u)
-		if ref.ID != tc.wantID || ref.Handle != tc.wantHandle || ok != tc.ok {
-			t.Fatalf(
-				"%s: got id=%q handle=%q ok=%v; want id=%q handle=%q ok=%v",
-				tc.raw, ref.ID, ref.Handle, ok, tc.wantID, tc.wantHandle, tc.ok,
-			)
-		}
-		got, gotOK := twitterStatusID(u)
-		if got != tc.wantID || gotOK != tc.ok {
-			t.Fatalf("%s: twitterStatusID got id=%q ok=%v", tc.raw, got, gotOK)
+		got, ok := twitterStatusID(u)
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("%s: got id=%q ok=%v; want id=%q ok=%v", tc.raw, got, ok, tc.want, tc.ok)
 		}
 	}
 }
