@@ -531,16 +531,17 @@ func BanUserHandler(baseURL string, c echo.Context) error {
 	})
 }
 
-type resetUserRequest struct {
-	Password string `json:"password"`
+type resetUserResponse struct {
+	ResetURL  string    `json:"reset_url"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // ResetUserHandler implementa POST /users/:user_id/reset.
-// Sem password preserva o fluxo legado de marcar reset_password. Com password,
-// o owner/self define uma nova senha imediatamente e as sessões são revogadas.
+// O endpoint administrativo não altera a senha diretamente: gera um link de
+// uso único para ser entregue ao usuário.
 func ResetUserHandler(baseURL string, c echo.Context) error {
-	userID, ok := c.Get(middleware.UserIDContextKey).(string)
-	if !ok || userID == "" {
+	actorID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || actorID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
 			"unauthorized", "Token inválido ou expirado",
 			"token de autenticação ausente, inválido ou expirado")
@@ -552,49 +553,22 @@ func ResetUserHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "user_id ausente")
 	}
 
-	var req resetUserRequest
-	if c.Request().ContentLength > 0 {
-		if err := c.Bind(&req); err != nil {
-			return utils.SendProblem(c, baseURL, http.StatusBadRequest,
-				"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
-		}
-	}
-
-	if req.Password == "" {
-		switch err := services.ResetUserPassword(c.Request().Context(), userID, targetID); {
-		case errors.Is(err, services.ErrUserNotFound):
-			return utils.SendProblem(c, baseURL, http.StatusNotFound,
-				"not-found", "Recurso não encontrado", "usuário não encontrado")
-		case err != nil:
-			utils.Errorf("request_id=%s falha ao marcar o usuário para reset de senha: %v",
-				c.Request().Header.Get(echo.HeaderXRequestID), err)
-			return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
-				"internal", "Erro interno", "falha ao marcar o usuário para reset de senha")
-		}
-		return c.JSON(http.StatusOK, map[string]string{"response": "User password is set to reset"})
-	}
-
-	cfg := config.LoadConfig()
-	err := services.ResetUserPasswordTo(c.Request().Context(), userID, targetID, req.Password)
-	if resp, ok := passwordPolicyResponse(c, baseURL, err, cfg.MinPasswordLength); ok {
-		return resp
-	}
+	link, err := services.CreatePasswordResetLink(c.Request().Context(), actorID, targetID)
 	switch {
-	case errors.Is(err, services.ErrInvalidInput):
-		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
-			"invalid-param", "Parâmetro inválido", "campo 'password' é obrigatório")
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "usuário não encontrado")
 	case err != nil:
-		utils.Errorf("request_id=%s falha ao redefinir senha do usuário: %v",
+		utils.Errorf("request_id=%s falha ao criar link de reset de senha: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
-			"internal", "Erro interno", "falha ao redefinir a senha do usuário")
+			"internal", "Erro interno", "falha ao criar link de reset de senha")
 	}
 
-	websocket.GetHub().DisconnectUser(targetID)
-	return c.JSON(http.StatusOK, map[string]string{"response": "User password reset successfully"})
+	return c.JSON(http.StatusOK, resetUserResponse{
+		ResetURL:  link.URL,
+		ExpiresAt: link.ExpiresAt,
+	})
 }
 
 type changePasswordRequest struct {
