@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 
@@ -68,4 +69,56 @@ func GetLinkPreviewHandler(baseURL string, c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, resp)
+}
+
+
+// GetLinkPreviewVideoHandler faz relay autenticado do vídeo associado ao
+// preview. Suporta Range para seek/playback e evita hotlink direto no CDN do X.
+func GetLinkPreviewVideoHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	resp, release, err := services.OpenLinkPreviewVideo(
+		c.Request().Context(),
+		c.Param("preview_id"),
+		userID,
+		c.Request().Header.Get("Range"),
+	)
+	switch {
+	case errors.Is(err, services.ErrPreviewNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "vídeo de preview não encontrado")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao abrir vídeo do preview: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusBadGateway,
+			"upstream", "Mídia indisponível", "falha ao carregar vídeo do preview")
+	}
+	defer release()
+	defer resp.Body.Close()
+
+	out := c.Response().Header()
+	for _, name := range []string{
+		"Content-Type",
+		"Content-Length",
+		"Content-Range",
+		"Accept-Ranges",
+		"ETag",
+		"Last-Modified",
+		"Cache-Control",
+	} {
+		if value := resp.Header.Get(name); value != "" {
+			out.Set(name, value)
+		}
+	}
+	out.Set("Content-Disposition", "inline")
+	out.Set("X-Content-Type-Options", "nosniff")
+
+	c.Response().WriteHeader(resp.StatusCode)
+	_, copyErr := io.Copy(c.Response().Writer, resp.Body)
+	return copyErr
 }

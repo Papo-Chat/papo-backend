@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -17,7 +18,20 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrUserNotReset = errors.New("flag reset_password ausente")
+var (
+	ErrUserNotReset = errors.New("flag reset_password ausente")
+	ErrPasswordResetTokenInvalid = errors.New("token de reset inválido, expirado ou já utilizado")
+)
+
+const (
+	passwordResetExpiration = 24 * time.Hour
+	passwordResetFrontendBaseURL = "https://papo.cyberasilo.online/passwordchange/"
+)
+
+type PasswordResetLink struct {
+	URL       string
+	ExpiresAt time.Time
+}
 
 // maxAvatarBytes é o tamanho máximo de um avatar decodificado (2MB, README).
 const maxAvatarBytes = 2 << 20
@@ -298,7 +312,8 @@ func UpdateUser(ctx context.Context, userID, nickname, status, description strin
 	if userID == "" {
 		return ErrUserNotFound
 	}
-	if utf8.RuneCountInString(nickname) > maxNicknameLength ||
+	nicknameLen := utf8.RuneCountInString(nickname)
+	if nicknameLen > maxNicknameLength ||
 		utf8.RuneCountInString(status) > maxStatusLength ||
 		utf8.RuneCountInString(description) > maxDescriptionLength ||
 		(typing != nil && utf8.RuneCountInString(*typing) > maxTypingLength) {
@@ -559,15 +574,12 @@ func BanUser(ctx context.Context, actorID, targetID string, banState bool) error
 	return nil
 }
 
-// ResetUserPassword marca o usuário alvo para redefinir a senha
-// (users.reset_password = TRUE). A autorização (usuário agindo sobre si mesmo
-// ou dono de um servidor) é feita no middleware RequireSelfOrServerOwner antes
-// de chegar aqui. Retorna ErrUserNotFound quando o usuário não existe.
+// ResetUserPassword marca o próprio usuário para a próxima troca de senha.
+// O endpoint administrativo usa CreatePasswordResetLink para outros usuários.
 func ResetUserPassword(ctx context.Context, actorID, targetID string) error {
 	if targetID == "" {
 		return ErrUserNotFound
 	}
-
 	if err := storage.SetUserResetPassword(ctx, targetID); err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return ErrUserNotFound
@@ -581,9 +593,86 @@ func ResetUserPassword(ctx context.Context, actorID, targetID string) error {
 		EntityType:   EntityUser,
 		EntityID:     &targetID,
 		TargetUserID: &targetID,
+		Metadata:     map[string]any{"method": "self_settings"},
+	})
+	return nil
+}
+
+// CreatePasswordResetLink cria um token aleatório de uso único para que um
+// administrador entregue o link ao usuário. Apenas o hash do token é salvo.
+func CreatePasswordResetLink(ctx context.Context, actorID, targetID string) (PasswordResetLink, error) {
+	if targetID == "" {
+		return PasswordResetLink{}, ErrUserNotFound
+	}
+	if _, err := storage.GetUserByID(ctx, targetID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return PasswordResetLink{}, ErrUserNotFound
+		}
+		return PasswordResetLink{}, err
+	}
+
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return PasswordResetLink{}, fmt.Errorf("falha ao gerar token de reset: %w", err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	expiresAt := time.Now().UTC().Add(passwordResetExpiration)
+
+	if err := storage.CreatePasswordResetToken(ctx, targetID, actorID, utils.HashToken(token), expiresAt); err != nil {
+		return PasswordResetLink{}, err
+	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:      actorID,
+		Action:       ActionUserResetPassword,
+		EntityType:   EntityUser,
+		EntityID:     &targetID,
+		TargetUserID: &targetID,
+		Metadata: map[string]any{
+			"method":     "one_time_link",
+			"expires_at": expiresAt,
+		},
 	})
 
-	return nil
+	return PasswordResetLink{
+		URL:       passwordResetFrontendBaseURL + token,
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+// ConsumePasswordResetLink valida o token público, aplica a mesma política de
+// senha do cadastro e troca a senha em uma transação de uso único.
+func ConsumePasswordResetLink(ctx context.Context, token, password string) (string, error) {
+	cfg := config.LoadConfig()
+	if token == "" || len(token) > 256 || password == "" || utf8.RuneCountInString(password) > cfg.MaxPasswordLength {
+		return "", ErrInvalidInput
+	}
+	if err := utils.ValidatePassword(password, cfg.MinPasswordLength); err != nil {
+		return "", err
+	}
+
+	passwordHash, err := utils.HashPassword(password)
+	if err != nil {
+		return "", fmt.Errorf("falha ao gerar hash da senha: %w", err)
+	}
+
+	userID, err := storage.ConsumePasswordResetToken(ctx, utils.HashToken(token), passwordHash)
+	if errors.Is(err, storage.ErrNotFound) {
+		return "", ErrPasswordResetTokenInvalid
+	}
+	if err != nil {
+		return "", err
+	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:      userID,
+		Action:       ActionUserChangePassword,
+		EntityType:   EntityUser,
+		EntityID:     &userID,
+		TargetUserID: &userID,
+		Metadata:     map[string]any{"method": "admin_reset_link"},
+	})
+	return userID, nil
 }
 
 // ChangePassword altera a senha do usuário e reinicia a flag de reset de
@@ -597,9 +686,11 @@ func ChangePassword(ctx context.Context, userID, password string) error {
 	}
 
 	user, err := storage.GetUserByID(ctx, userID)
-
-	if user.ID == "" {
+	if errors.Is(err, storage.ErrNotFound) {
 		return ErrUserNotFound
+	}
+	if err != nil {
+		return err
 	}
 	if !user.ResetPassword {
 		return ErrUserNotReset

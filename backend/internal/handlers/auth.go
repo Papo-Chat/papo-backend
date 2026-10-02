@@ -47,6 +47,44 @@ func passwordPolicyResponse(c echo.Context, baseURL string, err error, minLen in
 	return nil, false
 }
 
+type consumePasswordResetRequest struct {
+	Token    string `json:"token"`
+	Password string `json:"password"`
+}
+
+// ConsumePasswordResetHandler implementa POST /auth/password_reset.
+// É público e protegido pelo auth rate limit; o token é secreto, expirável e
+// de uso único.
+func ConsumePasswordResetHandler(baseURL string, c echo.Context) error {
+	var req consumePasswordResetRequest
+	if err := c.Bind(&req); err != nil {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
+	}
+
+	cfg := config.LoadConfig()
+	userID, err := services.ConsumePasswordResetLink(c.Request().Context(), req.Token, req.Password)
+	if resp, ok := passwordPolicyResponse(c, baseURL, err, cfg.MinPasswordLength); ok {
+		return resp
+	}
+	switch {
+	case errors.Is(err, services.ErrPasswordResetTokenInvalid):
+		return utils.SendProblem(c, baseURL, http.StatusGone,
+			"reset-link-invalid", "Link inválido", "link de troca de senha inválido, expirado ou já utilizado")
+	case errors.Is(err, services.ErrInvalidInput):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "token e password são obrigatórios")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao consumir link de reset: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao alterar senha")
+	}
+
+	websocket.GetHub().DisconnectUser(userID)
+	return c.JSON(http.StatusOK, map[string]string{"response": "Password updated successfully"})
+}
+
 // RegisterHandler implementa POST /auth/register.
 func RegisterHandler(baseURL string, c echo.Context) error {
 	//Lê a configuração do tamanho máximo dos campos
@@ -64,6 +102,10 @@ func RegisterHandler(baseURL string, c echo.Context) error {
 	if req.Username == "" {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "campo 'username' é obrigatório")
+	}
+	if utf8.RuneCountInString(req.Username) < 3 {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "campo 'username' deve ter no mínimo 3 caracteres")
 	}
 	if utf8.RuneCountInString(req.Username) > MaxUsernameLength {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,

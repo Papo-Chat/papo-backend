@@ -4378,6 +4378,12 @@ func TestAddReactionLimit(t *testing.T) {
 		t.Fatalf("reagir com tipo existente no limite falhou: created=%v count=%d err=%v", created, count, err)
 	}
 
+	// Outro usuário também pode aderir a um dos 20 tipos já existentes.
+	other := newTestUser(t)
+	if _, created, count, err := AddReaction(testCtx(), message.ID, other.ID, nil, &again); err != nil || !created || count != 2 {
+		t.Fatalf("outro usuário não conseguiu aderir ao tipo existente no limite: created=%v count=%d err=%v", created, count, err)
+	}
+
 	// Tipo novo no limite é rejeitado.
 	fresh := "🆕"
 	if _, _, _, err := AddReaction(testCtx(), message.ID, owner.ID, nil, &fresh); !errors.Is(err, ErrReactionLimitReached) {

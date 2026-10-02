@@ -531,12 +531,17 @@ func BanUserHandler(baseURL string, c echo.Context) error {
 	})
 }
 
+type resetUserResponse struct {
+	ResetURL  string    `json:"reset_url"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 // ResetUserHandler implementa POST /users/:user_id/reset.
-// Permissão: usuário agindo sobre si mesmo ou dono de um servidor
-// (middleware RequireSelfOrServerOwner). O id da URL é o autoritativo.
+// O endpoint administrativo não altera a senha diretamente: gera um link de
+// uso único para ser entregue ao usuário.
 func ResetUserHandler(baseURL string, c echo.Context) error {
-	userID, ok := c.Get(middleware.UserIDContextKey).(string)
-	if !ok {
+	actorID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || actorID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
 			"unauthorized", "Token inválido ou expirado",
 			"token de autenticação ausente, inválido ou expirado")
@@ -548,19 +553,34 @@ func ResetUserHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "user_id ausente")
 	}
 
-	switch err := services.ResetUserPassword(c.Request().Context(), userID, targetID); {
+	if actorID == targetID {
+		err := services.ResetUserPassword(c.Request().Context(), actorID, targetID)
+		switch {
+		case errors.Is(err, services.ErrUserNotFound):
+			return utils.SendProblem(c, baseURL, http.StatusNotFound,
+				"not-found", "Recurso não encontrado", "usuário não encontrado")
+		case err != nil:
+			return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+				"internal", "Erro interno", "falha ao preparar troca de senha")
+		}
+		return c.JSON(http.StatusOK, map[string]string{"response": "User password is set to reset"})
+	}
+
+	link, err := services.CreatePasswordResetLink(c.Request().Context(), actorID, targetID)
+	switch {
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "usuário não encontrado")
 	case err != nil:
-		utils.Errorf("request_id=%s falha ao marcar o usuário para reset de senha: %v",
+		utils.Errorf("request_id=%s falha ao criar link de reset de senha: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
-			"internal", "Erro interno", "falha ao marcar o usuário para reset de senha")
+			"internal", "Erro interno", "falha ao criar link de reset de senha")
 	}
 
-	return c.JSON(http.StatusOK, map[string]string{
-		"response": "User password is set to reset",
+	return c.JSON(http.StatusOK, resetUserResponse{
+		ResetURL:  link.URL,
+		ExpiresAt: link.ExpiresAt,
 	})
 }
 

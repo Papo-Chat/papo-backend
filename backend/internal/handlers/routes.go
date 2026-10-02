@@ -22,6 +22,9 @@ func RegisterAuthRoutes(e *echo.Echo, cfg *config.Config) {
 	e.POST("/auth/login_server", func(c echo.Context) error {
 		return LoginServerHandler(cfg.BaseURL, c)
 	}, authRateLimit)
+	e.POST("/auth/password_reset", func(c echo.Context) error {
+		return ConsumePasswordResetHandler(cfg.BaseURL, c)
+	}, authRateLimit)
 	e.GET("/auth/whoami", func(c echo.Context) error {
 		return WhoamiHandler(cfg.BaseURL, c)
 	}, authRateLimit, middleware.JWTMiddleware)
@@ -99,7 +102,7 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware, middleware.RequireServerOwnerOrManageServer())
 	e.POST("/users/:user_id/reset", func(c echo.Context) error {
 		return ResetUserHandler(cfg.BaseURL, c)
-	}, middleware.JWTMiddleware, middleware.RequireSelfOrServerOwner())
+	}, middleware.JWTMiddleware, middleware.RequireSelfOrServerOwnerOrManageServer())
 }
 
 // RegisterServerRoutes registra as rotas do servidor (1 backend = 1
@@ -220,6 +223,9 @@ func RegisterMediaRoutes(e *echo.Echo, cfg *config.Config) {
 func RegisterLinkPreviewRoutes(e *echo.Echo, cfg *config.Config) {
 	e.GET("/link-previews/:preview_id", func(c echo.Context) error {
 		return GetLinkPreviewHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.GET("/link-previews/:preview_id/video", func(c echo.Context) error {
+		return GetLinkPreviewVideoHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 }
 

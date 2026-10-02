@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -40,6 +41,10 @@ var (
 	outboundClientOnce sync.Once
 	outboundClient     *http.Client
 	outboundSem        chan struct{}
+
+	previewVideoClientOnce sync.Once
+	previewVideoClient     *http.Client
+	previewVideoSem        chan struct{}
 )
 
 func initOutbound() {
@@ -76,6 +81,34 @@ func acquireOutboundSlot() bool {
 
 func releaseOutboundSlot() {
 	<-outboundSem
+}
+
+func initPreviewVideoProxy() {
+	previewVideoClientOnce.Do(func() {
+		cfg := config.LoadConfig()
+		// Vídeo é servido por Range e pode ficar aberto por mais tempo que o
+		// fetch curto de metadata/thumbnail.
+		previewVideoClient = utils.SafeHTTPClient(utils.SafeClientOpts{Timeout: 5 * time.Minute})
+		cap := cfg.OutboundMaxConc
+		if cap <= 0 {
+			cap = 4
+		}
+		previewVideoSem = make(chan struct{}, cap)
+	})
+}
+
+func acquirePreviewVideoSlot() bool {
+	initPreviewVideoProxy()
+	select {
+	case previewVideoSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func releasePreviewVideoSlot() {
+	<-previewVideoSem
 }
 
 // tokenBucket é um bucket de tokens com refill contínuo (rate por minuto).
@@ -231,6 +264,194 @@ func stripTrailingPunctuation(s string) string {
 //
 // O ctx deve carregar o budget total da fase de previews (compartilhado
 // entre as URLs da mensagem, §6.1).
+func twitterStatusID(u *url.URL) (string, bool) {
+	switch strings.ToLower(u.Hostname()) {
+	case "twitter.com", "www.twitter.com", "mobile.twitter.com",
+		"x.com", "www.x.com",
+		"fxtwitter.com", "www.fxtwitter.com",
+		"fixupx.com", "www.fixupx.com":
+	default:
+		return "", false
+	}
+
+	parts := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if !strings.EqualFold(parts[i], "status") {
+			continue
+		}
+		id, err := url.PathUnescape(parts[i+1])
+		if err != nil || id == "" {
+			return "", false
+		}
+		for _, r := range id {
+			if r < '0' || r > '9' {
+				return "", false
+			}
+		}
+		return id, true
+	}
+	return "", false
+}
+
+type fxTwitterStatusResponse struct {
+	Code   int              `json:"code"`
+	Status *fxTwitterStatus `json:"status"`
+}
+
+type fxTwitterStatus struct {
+	Text   string        `json:"text"`
+	Author fxTwitterUser `json:"author"`
+	Media  fxTwitterMedia `json:"media"`
+	Card   *fxTwitterCard `json:"card"`
+}
+
+type fxTwitterUser struct {
+	Name       string `json:"name"`
+	ScreenName string `json:"screen_name"`
+}
+
+type fxTwitterMedia struct {
+	Photos   []fxTwitterPhoto `json:"photos"`
+	Videos   []fxTwitterVideo `json:"videos"`
+	External *struct {
+		ThumbnailURL string `json:"thumbnail_url"`
+	} `json:"external"`
+}
+
+type fxTwitterPhoto struct {
+	URL string `json:"url"`
+}
+
+type fxTwitterVideo struct {
+	URL          string `json:"url"`
+	ThumbnailURL string `json:"thumbnail_url"`
+}
+
+type fxTwitterCard struct {
+	Image *struct {
+		URL string `json:"url"`
+	} `json:"image"`
+}
+
+func normalizeTwitterVideoURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("URL de vídeo vazia")
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" {
+		return "", errors.New("URL de vídeo inválida")
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "video.twimg.com" && !strings.HasSuffix(host, ".video.twimg.com") {
+		return "", errors.New("host de vídeo não permitido")
+	}
+
+	// O CDN do X pode rejeitar variantes com o parâmetro transitório ?tag=.
+	q := u.Query()
+	q.Del("tag")
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+func fxTwitterVideoURL(status *fxTwitterStatus) string {
+	if status == nil || len(status.Media.Videos) == 0 {
+		return ""
+	}
+	normalized, err := normalizeTwitterVideoURL(status.Media.Videos[0].URL)
+	if err != nil {
+		return ""
+	}
+	return normalized
+}
+
+func fxTwitterImageURL(status *fxTwitterStatus) string {
+	if status == nil {
+		return ""
+	}
+	if len(status.Media.Photos) > 0 && status.Media.Photos[0].URL != "" {
+		return status.Media.Photos[0].URL
+	}
+	if len(status.Media.Videos) > 0 && status.Media.Videos[0].ThumbnailURL != "" {
+		return status.Media.Videos[0].ThumbnailURL
+	}
+	if status.Media.External != nil && status.Media.External.ThumbnailURL != "" {
+		return status.Media.External.ThumbnailURL
+	}
+	if status.Card != nil && status.Card.Image != nil {
+		return status.Card.Image.URL
+	}
+	return ""
+}
+
+func fetchFxTwitterPreview(ctx context.Context, cfg *config.Config, original *url.URL, statusID string) (models.LinkPreview, error) {
+	if statusID == "" {
+		return models.LinkPreview{}, errors.New("tweet id ausente")
+	}
+	if !acquireOutboundSlot() {
+		return models.LinkPreview{}, errors.New("semáforo outbound cheio")
+	}
+	body, _, err := utils.SafeFetch(
+		ctx,
+		outboundHTTPClient(),
+		2<<20,
+		"https://api.fxtwitter.com/2/status/"+url.PathEscape(statusID),
+	)
+	releaseOutboundSlot()
+	if err != nil {
+		return models.LinkPreview{}, err
+	}
+
+	var payload fxTwitterStatusResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return models.LinkPreview{}, fmt.Errorf("FxTwitter: JSON inválido: %w", err)
+	}
+	if payload.Code != http.StatusOK || payload.Status == nil {
+		return models.LinkPreview{}, fmt.Errorf("FxTwitter: status indisponível (code=%d)", payload.Code)
+	}
+
+	title := strings.TrimSpace(payload.Status.Author.Name)
+	if handle := strings.TrimSpace(payload.Status.Author.ScreenName); handle != "" {
+		if title != "" {
+			title += " (@" + handle + ")"
+		} else {
+			title = "@" + handle
+		}
+	}
+	provider := "X"
+
+	preview := models.LinkPreview{
+		URL:          original.String(),
+		Kind:         "og",
+		Title:        nullableText(truncateRune(title, cfg.PreviewTitleMax)),
+		Description:  nullableText(truncateRune(strings.TrimSpace(payload.Status.Text), cfg.PreviewDescriptionMax)),
+		ProviderName: &provider,
+	}
+
+	if videoURL := fxTwitterVideoURL(payload.Status); videoURL != "" {
+		preview.VideoURL = &videoURL
+	}
+	if imageURL := fxTwitterImageURL(payload.Status); imageURL != "" {
+		if imgMedia, err := downloadPreviewImage(ctx, cfg, imageURL); err == nil {
+			preview.ImageMedia = &imgMedia
+		}
+	}
+
+	return storage.UpsertPreview(ctx, preview)
+}
+
+func previewRobotsAllowed(ctx context.Context, u *url.URL) bool {
+	switch strings.ToLower(u.Hostname()) {
+	case "fxtwitter.com", "www.fxtwitter.com", "api.fxtwitter.com",
+		"fixupx.com", "www.fixupx.com",
+		"pbs.twimg.com", "video.twimg.com":
+		return true
+	default:
+		return RobotsAllowed(ctx, u)
+	}
+}
+
 func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.LinkPreview, bool, error) {
 	cfg := config.LoadConfig()
 
@@ -240,13 +461,22 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 		return models.LinkPreview{}, false, err
 	}
 	normalized := u.String()
+	statusID, isTwitterStatus := twitterStatusID(u)
 
 	// 2. Cache (mesma URL normalizada, fetched_at dentro do TTL).
 	if cached, err := storage.GetPreviewByURL(ctx, normalized); err == nil {
-		if time.Since(cached.FetchedAt) < cfg.LinkPreviewCacheTTL {
-			return cached, false, nil
+		age := time.Since(cached.FetchedAt)
+		if age < cfg.LinkPreviewCacheTTL {
+			// Previews antigos de X/Twitter podiam ter sido persistidos antes do
+			// fetch via FxEmbed, sem thumbnail/vídeo. Damos uma janela curta antes
+			// de tentar completar esse cache incompleto, sem transformar tweets
+			// realmente text-only em fetch a cada mensagem.
+			missingTwitterMedia := isTwitterStatus && cached.ImageMedia == nil && cached.VideoURL == nil
+			if !missingTwitterMedia || age < 5*time.Minute {
+				return cached, false, nil
+			}
 		}
-		// expirado → refetch (fall through; o upsert atualiza a row)
+		// expirado ou X/Twitter sem mídia → refetch (o upsert atualiza a row)
 	} else if !errors.Is(err, storage.ErrNotFound) {
 		return models.LinkPreview{}, false, err
 	}
@@ -256,23 +486,32 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 		return models.LinkPreview{}, false, errors.New("rate limit de preview estourado")
 	}
 
-	// 4. oEmbed first (host allowlistado) — falha → fallback para OG.
+	// 4. X/Twitter: use a API JSON oficial do FxEmbed em vez de scraping do
+	// realm fxtwitter/fixupx. Esses hosts alteram a resposta por User-Agent e
+	// podem redirecionar clientes humanos, enquanto api.fxtwitter.com/2 é a
+	// superfície estável documentada pelo próprio projeto.
+	if isTwitterStatus {
+		preview, err := fetchFxTwitterPreview(ctx, cfg, u, statusID)
+		return preview, err == nil, err
+	}
+
+	// 5. oEmbed first (host allowlistado) — falha → fallback para OG.
 	if oembedProviderHost(u.Hostname()) != "" {
 		if preview, err := fetchOEmbedPreview(ctx, cfg, u); err == nil {
 			return preview, true, nil
 		}
 	}
 
-	// 5. robots.txt da origem.
-	if !RobotsAllowed(ctx, u) {
+	// 6. robots.txt da origem.
+	if !previewRobotsAllowed(ctx, u) {
 		return models.LinkPreview{}, false, errors.New("origem não permitida pelo robots.txt")
 	}
 
-	// 6. Fetch HTML (teto 5MB pós-descompressão).
+	// 7. Fetch HTML (teto 5MB pós-descompressão).
 	if !acquireOutboundSlot() {
 		return models.LinkPreview{}, false, errors.New("semáforo outbound cheio")
 	}
-	body, finalURL, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxPreviewHTMLBytes, normalized)
+	body, finalURL, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxPreviewHTMLBytes, u.String())
 	releaseOutboundSlot()
 	if err != nil {
 		return models.LinkPreview{}, false, err
@@ -351,7 +590,7 @@ func downloadPreviewImage(ctx context.Context, cfg *config.Config, rawImageURL s
 	if err != nil {
 		return "", err
 	}
-	if !RobotsAllowed(ctx, u) {
+	if !previewRobotsAllowed(ctx, u) {
 		return "", errors.New("origem da imagem não permitida pelo robots.txt")
 	}
 	if !acquireOutboundSlot() {
@@ -522,6 +761,59 @@ func nullableText(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// OpenLinkPreviewVideo abre o vídeo remoto associado ao preview depois do
+// mesmo check de read_channel usado por GetLinkPreview. O navegador nunca
+// acessa video.twimg.com diretamente; isso evita o 403 de hotlink/referrer.
+// O caller deve fechar resp.Body e chamar release.
+func OpenLinkPreviewVideo(
+	ctx context.Context,
+	previewID, userID, rangeHeader string,
+) (resp *http.Response, release func(), err error) {
+	preview, err := GetLinkPreview(ctx, previewID, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if preview.VideoURL == nil {
+		return nil, nil, ErrPreviewNotFound
+	}
+
+	videoURL, err := normalizeTwitterVideoURL(*preview.VideoURL)
+	if err != nil {
+		return nil, nil, ErrPreviewNotFound
+	}
+	if !acquirePreviewVideoSlot() {
+		return nil, nil, errors.New("semáforo de vídeo cheio")
+	}
+	release = releasePreviewVideoSlot
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, videoURL, nil)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	req.Header.Set("User-Agent", utils.SafeClientUserAgent)
+	req.Header.Set("Accept", "video/*,*/*;q=0.8")
+	if rangeHeader != "" {
+		req.Header.Set("Range", rangeHeader)
+	}
+	// Não enviar Referer: video.twimg.com pode bloquear hotlink externo.
+
+	initPreviewVideoProxy()
+	resp, err = previewVideoClient.Do(req)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	if resp.StatusCode != http.StatusOK &&
+		resp.StatusCode != http.StatusPartialContent &&
+		resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		resp.Body.Close()
+		release()
+		return nil, nil, &utils.HTTPStatusError{Status: resp.StatusCode}
+	}
+	return resp, release, nil
 }
 
 // GetLinkPreview resolve um preview com o MESMO check de acesso da mensagem à
