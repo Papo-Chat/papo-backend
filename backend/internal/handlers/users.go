@@ -553,6 +553,19 @@ func ResetUserHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "user_id ausente")
 	}
 
+	if actorID == targetID {
+		err := services.ResetUserPassword(c.Request().Context(), actorID, targetID)
+		switch {
+		case errors.Is(err, services.ErrUserNotFound):
+			return utils.SendProblem(c, baseURL, http.StatusNotFound,
+				"not-found", "Recurso não encontrado", "usuário não encontrado")
+		case err != nil:
+			return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+				"internal", "Erro interno", "falha ao preparar troca de senha")
+		}
+		return c.JSON(http.StatusOK, map[string]string{"response": "User password is set to reset"})
+	}
+
 	link, err := services.CreatePasswordResetLink(c.Request().Context(), actorID, targetID)
 	switch {
 	case errors.Is(err, services.ErrUserNotFound):
@@ -611,6 +624,9 @@ func ChangePasswordHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "campo 'password' é obrigatório")
+	case errors.Is(err, services.ErrUserNotReset):
+		return utils.SendProblem(c, baseURL, http.StatusConflict,
+			"no-reset-password", "Ação proibida", "reset_password ausente")
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "usuário não encontrado")
