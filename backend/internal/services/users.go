@@ -43,8 +43,6 @@ const maxBannerBytes = 2 << 20
 // banner (2048px, README).
 const maxBannerDimension = 2048
 
-const minNicknameLength = 3
-
 // maxNicknameLength é o tamanho máximo do nickname de um usuário
 // (32 caracteres, README).
 const maxNicknameLength = 32
@@ -315,7 +313,7 @@ func UpdateUser(ctx context.Context, userID, nickname, status, description strin
 		return ErrUserNotFound
 	}
 	nicknameLen := utf8.RuneCountInString(nickname)
-	if (nicknameLen > 0 && nicknameLen < minNicknameLength) || nicknameLen > maxNicknameLength ||
+	if nicknameLen > maxNicknameLength ||
 		utf8.RuneCountInString(status) > maxStatusLength ||
 		utf8.RuneCountInString(description) > maxDescriptionLength ||
 		(typing != nil && utf8.RuneCountInString(*typing) > maxTypingLength) {
