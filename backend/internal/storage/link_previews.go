@@ -10,7 +10,7 @@ import (
 // linkPreviewColumns inclui image_mime_type e image_size_bytes da tabela
 // media (join): o preview só guarda a referência content-addressable da
 // thumbnail.
-const linkPreviewColumns = "lp.id, lp.url, lp.kind, lp.title, lp.description, lp.provider_name, lp.embed_url, lp.image_media, m.mime_type AS image_mime_type, m.size_bytes AS image_size_bytes, lp.fetched_at"
+const linkPreviewColumns = "lp.id, lp.url, lp.kind, lp.title, lp.description, lp.provider_name, lp.embed_url, lp.video_url, lp.image_media, m.mime_type AS image_mime_type, m.size_bytes AS image_size_bytes, lp.fetched_at"
 
 // linkPreviewMediaJoin faz o join com a tabela media (LEFT: preview sem
 // imagem é válido).
@@ -26,6 +26,7 @@ func scanLinkPreview(row rowScanner) (models.LinkPreview, error) {
 		&preview.Description,
 		&preview.ProviderName,
 		&preview.EmbedURL,
+		&preview.VideoURL,
 		&preview.ImageMedia,
 		&preview.ImageMimeType,
 		&preview.ImageSizeBytes,
@@ -63,23 +64,24 @@ func UpsertPreview(ctx context.Context, p models.LinkPreview) (models.LinkPrevie
 	// a linha inserida/atualizada ainda não seria visível na tabela.
 	row := GetDB().QueryRowContext(ctx,
 		`WITH upserted AS (
-		 INSERT INTO link_previews (url, kind, title, description, provider_name, embed_url, image_media)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 INSERT INTO link_previews (url, kind, title, description, provider_name, embed_url, video_url, image_media)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 ON CONFLICT (url) DO UPDATE SET
 		    kind = EXCLUDED.kind,
 		    title = EXCLUDED.title,
 		    description = EXCLUDED.description,
 		    provider_name = EXCLUDED.provider_name,
 		    embed_url = EXCLUDED.embed_url,
+		    video_url = EXCLUDED.video_url,
 		    image_media = EXCLUDED.image_media,
 		    fetched_at = NOW()
-		 RETURNING id, url, kind, title, description, provider_name, embed_url, image_media, fetched_at
+		 RETURNING id, url, kind, title, description, provider_name, embed_url, video_url, image_media, fetched_at
 		 )
-		 SELECT u.id, u.url, u.kind, u.title, u.description, u.provider_name, u.embed_url, u.image_media,
+		 SELECT u.id, u.url, u.kind, u.title, u.description, u.provider_name, u.embed_url, u.video_url, u.image_media,
 		        m.mime_type AS image_mime_type, m.size_bytes AS image_size_bytes, u.fetched_at
 		 FROM upserted u LEFT JOIN media m ON m.sha_hash = u.image_media`,
 		p.URL, p.Kind, p.Title, p.Description, p.ProviderName, p.EmbedURL,
-		p.ImageMedia,
+		p.VideoURL, p.ImageMedia,
 	)
 
 	preview, err := scanLinkPreview(row)
@@ -248,6 +250,7 @@ func ListPreviewsByMessageIDs(ctx context.Context, messageIDs []string) (map[str
 			&preview.Description,
 			&preview.ProviderName,
 			&preview.EmbedURL,
+			&preview.VideoURL,
 			&preview.ImageMedia,
 			&preview.ImageMimeType,
 			&preview.ImageSizeBytes,
