@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -231,23 +232,134 @@ func stripTrailingPunctuation(s string) string {
 //
 // O ctx deve carregar o budget total da fase de previews (compartilhado
 // entre as URLs da mensagem, §6.1).
-func twitterPreviewFetchURL(u *url.URL) (*url.URL, bool) {
-	host := strings.ToLower(u.Hostname())
-	switch host {
-	case "twitter.com", "www.twitter.com", "mobile.twitter.com", "x.com", "www.x.com":
-		if !strings.Contains(strings.ToLower(u.Path), "/status/") {
-			return u, false
-		}
-		clone := *u
-		clone.Host = "fxtwitter.com"
-		clone.Scheme = "https"
-		return &clone, true
-	case "fxtwitter.com", "www.fxtwitter.com", "api.fxtwitter.com",
+var twitterStatusPathRe = regexp.MustCompile(`(?i)/(?:i/)?status/(\d+)(?:/|$)`)
+
+func twitterStatusID(u *url.URL) (string, bool) {
+	switch strings.ToLower(u.Hostname()) {
+	case "twitter.com", "www.twitter.com", "mobile.twitter.com",
+		"x.com", "www.x.com",
+		"fxtwitter.com", "www.fxtwitter.com",
 		"fixupx.com", "www.fixupx.com":
-		return u, true
 	default:
-		return u, false
+		return "", false
 	}
+
+	match := twitterStatusPathRe.FindStringSubmatch(u.Path)
+	if len(match) != 2 {
+		return "", false
+	}
+	return match[1], true
+}
+
+type fxTwitterStatusResponse struct {
+	Code   int              `json:"code"`
+	Status *fxTwitterStatus `json:"status"`
+}
+
+type fxTwitterStatus struct {
+	Text   string        `json:"text"`
+	Author fxTwitterUser `json:"author"`
+	Media  fxTwitterMedia `json:"media"`
+	Card   *fxTwitterCard `json:"card"`
+}
+
+type fxTwitterUser struct {
+	Name       string `json:"name"`
+	ScreenName string `json:"screen_name"`
+}
+
+type fxTwitterMedia struct {
+	Photos   []fxTwitterPhoto `json:"photos"`
+	Videos   []fxTwitterVideo `json:"videos"`
+	External *struct {
+		ThumbnailURL string `json:"thumbnail_url"`
+	} `json:"external"`
+}
+
+type fxTwitterPhoto struct {
+	URL string `json:"url"`
+}
+
+type fxTwitterVideo struct {
+	ThumbnailURL string `json:"thumbnail_url"`
+}
+
+type fxTwitterCard struct {
+	Image *struct {
+		URL string `json:"url"`
+	} `json:"image"`
+}
+
+func fxTwitterImageURL(status *fxTwitterStatus) string {
+	if status == nil {
+		return ""
+	}
+	if len(status.Media.Photos) > 0 && status.Media.Photos[0].URL != "" {
+		return status.Media.Photos[0].URL
+	}
+	if len(status.Media.Videos) > 0 && status.Media.Videos[0].ThumbnailURL != "" {
+		return status.Media.Videos[0].ThumbnailURL
+	}
+	if status.Media.External != nil && status.Media.External.ThumbnailURL != "" {
+		return status.Media.External.ThumbnailURL
+	}
+	if status.Card != nil && status.Card.Image != nil {
+		return status.Card.Image.URL
+	}
+	return ""
+}
+
+func fetchFxTwitterPreview(ctx context.Context, cfg *config.Config, original *url.URL, statusID string) (models.LinkPreview, error) {
+	if statusID == "" {
+		return models.LinkPreview{}, errors.New("tweet id ausente")
+	}
+	if !acquireOutboundSlot() {
+		return models.LinkPreview{}, errors.New("semáforo outbound cheio")
+	}
+	body, _, err := utils.SafeFetch(
+		ctx,
+		outboundHTTPClient(),
+		2<<20,
+		"https://api.fxtwitter.com/2/status/"+url.PathEscape(statusID),
+	)
+	releaseOutboundSlot()
+	if err != nil {
+		return models.LinkPreview{}, err
+	}
+
+	var payload fxTwitterStatusResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return models.LinkPreview{}, fmt.Errorf("FxTwitter: JSON inválido: %w", err)
+	}
+	if payload.Code != http.StatusOK || payload.Status == nil {
+		return models.LinkPreview{}, fmt.Errorf("FxTwitter: status indisponível (code=%d)", payload.Code)
+	}
+
+	title := strings.TrimSpace(payload.Status.Author.Name)
+	if handle := strings.TrimSpace(payload.Status.Author.ScreenName); handle != "" {
+		if title != "" {
+			title += " (@" + handle + ")"
+		} else {
+			title = "@" + handle
+		}
+	}
+	provider := "X"
+
+	preview := models.LinkPreview{
+		URL:          original.String(),
+		Kind:         "og",
+		Title:        nullableText(truncateRune(title, cfg.PreviewTitleMax)),
+		Description:  nullableText(truncateRune(strings.TrimSpace(payload.Status.Text), cfg.PreviewDescriptionMax)),
+		ProviderName: &provider,
+	}
+
+	if imageURL := fxTwitterImageURL(payload.Status); imageURL != "" {
+		if imgMedia, err := downloadPreviewImage(ctx, cfg, imageURL); err == nil {
+			preview.ImageMedia = &imgMedia
+		}
+	}
+
+	return storage.UpsertPreview(ctx, preview)
 }
 
 func previewRobotsAllowed(ctx context.Context, u *url.URL) bool {
@@ -270,7 +382,6 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 		return models.LinkPreview{}, false, err
 	}
 	normalized := u.String()
-	fetchURL, twitterMirror := twitterPreviewFetchURL(u)
 
 	// 2. Cache (mesma URL normalizada, fetched_at dentro do TTL).
 	if cached, err := storage.GetPreviewByURL(ctx, normalized); err == nil {
@@ -287,24 +398,32 @@ func GetOrCreatePreview(ctx context.Context, userID, rawURL string) (models.Link
 		return models.LinkPreview{}, false, errors.New("rate limit de preview estourado")
 	}
 
-	// 4. oEmbed first (host allowlistado) — falha → fallback para OG.
+	// 4. X/Twitter: use a API JSON oficial do FxEmbed em vez de scraping do
+	// realm fxtwitter/fixupx. Esses hosts alteram a resposta por User-Agent e
+	// podem redirecionar clientes humanos, enquanto api.fxtwitter.com/2 é a
+	// superfície estável documentada pelo próprio projeto.
+	if statusID, ok := twitterStatusID(u); ok {
+		preview, err := fetchFxTwitterPreview(ctx, cfg, u, statusID)
+		return preview, err == nil, err
+	}
+
+	// 5. oEmbed first (host allowlistado) — falha → fallback para OG.
 	if oembedProviderHost(u.Hostname()) != "" {
 		if preview, err := fetchOEmbedPreview(ctx, cfg, u); err == nil {
 			return preview, true, nil
 		}
 	}
 
-	// 5. robots.txt da origem. Para mirrors conhecidos de Twitter/X,
-	// aceitamos o fetch de metadados mesmo quando o robots deles bloqueia crawlers.
-	if !twitterMirror && !previewRobotsAllowed(ctx, fetchURL) {
+	// 6. robots.txt da origem.
+	if !previewRobotsAllowed(ctx, u) {
 		return models.LinkPreview{}, false, errors.New("origem não permitida pelo robots.txt")
 	}
 
-	// 6. Fetch HTML (teto 5MB pós-descompressão).
+	// 7. Fetch HTML (teto 5MB pós-descompressão).
 	if !acquireOutboundSlot() {
 		return models.LinkPreview{}, false, errors.New("semáforo outbound cheio")
 	}
-	body, finalURL, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxPreviewHTMLBytes, fetchURL.String())
+	body, finalURL, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxPreviewHTMLBytes, u.String())
 	releaseOutboundSlot()
 	if err != nil {
 		return models.LinkPreview{}, false, err
