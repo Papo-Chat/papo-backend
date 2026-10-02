@@ -426,6 +426,13 @@ func passwordPolicyCases() []struct {
 	}
 }
 
+func TestRegisterRejectsShortUsername(t *testing.T) {
+	_, err := Register(testCtx(), "ab", newRandomPassword(), newRandomIP())
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("esperava ErrInvalidInput para username com menos de 3 caracteres, obtive %v", err)
+	}
+}
+
 func TestRegisterPasswordPolicy(t *testing.T) {
 	for _, tc := range passwordPolicyCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2260,16 +2267,23 @@ func TestChangePasswordInvalidInput(t *testing.T) {
 		t.Error("a senha original deveria continuar válida após tentativas inválidas")
 	}
 }
-func TestChangePasswordNoReset(t *testing.T) {
-
+func TestChangePasswordWithoutResetFlag(t *testing.T) {
 	password := newRandomPassword()
 	user, err := Register(testCtx(), newRandomUsername(), password, newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 
-	if err := ChangePassword(testCtx(), user.ID, newRandomPassword()); !errors.Is(err, ErrUserNotReset) {
-		t.Errorf("esperava ErrUserNotReset para não reset_password, obtive %v", err)
+	newPassword := newRandomPassword()
+	if err := ChangePassword(testCtx(), user.ID, newPassword); err != nil {
+		t.Fatalf("troca voluntária de senha não deveria exigir reset_password: %v", err)
+	}
+	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if err := utils.CheckPassword(newPassword, stored.PasswordHash); err != nil {
+		t.Fatalf("nova senha não foi persistida: %v", err)
 	}
 }
 
