@@ -378,6 +378,7 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		{http.MethodPost, "/users/" + userID + "/reset"},
 		{http.MethodPost, "/server"},
 		{http.MethodPut, "/server"},
+		{http.MethodPatch, "/server"},
 		{http.MethodGet, "/channels"},
 		{http.MethodPost, "/channels"},
 		{http.MethodPut, "/channels/00000000-0000-4000-8000-000000000000"},
@@ -1474,24 +1475,111 @@ func TestGetServerRouteNotFound(t *testing.T) {
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
 }
 
-// TestUpdateServerRouteWithAuth garante que PUT /server atualiza o servidor
+// TestReplaceServerRouteWithAuth garante que PUT /server substitui todos os
+// campos mutáveis quando o estado completo é enviado.
+func TestReplaceServerRouteWithAuth(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	server := createServerFor(t, userID)
+
+	newName := "srv_" + randHex(4)
+	body, _ := json.Marshal(map[string]any{
+		"name":        newName,
+		"icon_blob":   "",
+		"icon_format": "",
+		"password":    "",
+		"public":      true,
+	})
+	rec := do(t, e, http.MethodPut, "/server", body, authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		IconBlob   []byte `json:"icon_blob"`
+		IconFormat string `json:"icon_format"`
+		Public     bool   `json:"public"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if resp.ID != server.ID {
+		t.Errorf("id foi alterado: esperado %q, obtive %q", server.ID, resp.ID)
+	}
+	if resp.Name != newName || !resp.Public || len(resp.IconBlob) != 0 || resp.IconFormat != "" {
+		t.Errorf("estado completo não foi aplicado: %+v", resp)
+	}
+}
+
+func TestReplaceServerRouteRequiresEveryMutableField(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+
+	base := map[string]any{
+		"name":        "srv_" + randHex(4),
+		"icon_blob":   "",
+		"icon_format": "",
+		"password":    "",
+		"public":      true,
+	}
+	for _, field := range []string{"name", "icon_blob", "icon_format", "password", "public"} {
+		t.Run(field, func(t *testing.T) {
+			bodyMap := make(map[string]any, len(base)-1)
+			for key, value := range base {
+				if key != field {
+					bodyMap[key] = value
+				}
+			}
+			body, _ := json.Marshal(bodyMap)
+			rec := do(t, e, http.MethodPut, "/server", body, authCookie(token))
+			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+				"campos 'name', 'icon_blob', 'icon_format', 'password' e 'public' são obrigatórios")
+		})
+	}
+}
+
+// TestUpdateServerRouteWithAuth garante que PATCH /server atualiza o servidor
 // do usuário autenticado pelo cookie.
 func TestUpdateServerRouteWithAuth(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 
 	server := createServerFor(t, userID)
+	iconBytes := pngAvatarBytes(100, 100)
+	iconBody, _ := json.Marshal(map[string]string{
+		"icon_blob":   base64.StdEncoding.EncodeToString(iconBytes),
+		"icon_format": "PNG",
+	})
+	iconRec := do(t, e, http.MethodPatch, "/server", iconBody, authCookie(token))
+	if iconRec.Code != http.StatusOK {
+		t.Fatalf("falha ao definir ícone inicial: status %d (corpo: %s)", iconRec.Code, iconRec.Body.String())
+	}
+
+	withIcon, err := storage.GetServer(context.Background())
+	if err != nil {
+		t.Fatalf("GetServer retornou erro: %v", err)
+	}
+	if withIcon.IconMedia == nil {
+		t.Fatal("esperava icon_media definida antes de renomear")
+	}
+	iconMedia := *withIcon.IconMedia
 
 	newName := "srv_" + randHex(4)
 	body, _ := json.Marshal(map[string]string{"name": newName})
-	rec := do(t, e, http.MethodPut, "/server", body, authCookie(token))
+	rec := do(t, e, http.MethodPatch, "/server", body, authCookie(token))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		IconBlob   []byte `json:"icon_blob"`
+		IconFormat string `json:"icon_format"`
+		Public     bool   `json:"public"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
@@ -1502,6 +1590,15 @@ func TestUpdateServerRouteWithAuth(t *testing.T) {
 	if resp.Name != newName {
 		t.Errorf("esperava name %q, obtive %q", newName, resp.Name)
 	}
+	if !bytes.Equal(resp.IconBlob, iconBytes) {
+		t.Errorf("icon_blob foi perdido ao renomear: got %x want %x", resp.IconBlob, iconBytes)
+	}
+	if resp.IconFormat != "PNG" {
+		t.Errorf("esperava icon_format PNG, obtive %q", resp.IconFormat)
+	}
+	if !resp.Public {
+		t.Error("servidor público mudou de visibilidade ao renomear")
+	}
 
 	stored, err := storage.GetServer(context.Background())
 	if err != nil {
@@ -1509,6 +1606,9 @@ func TestUpdateServerRouteWithAuth(t *testing.T) {
 	}
 	if stored.Name != newName {
 		t.Errorf("esperava name %q persistido, obtive %q", newName, stored.Name)
+	}
+	if stored.IconMedia == nil || *stored.IconMedia != iconMedia {
+		t.Errorf("icon_media foi alterada ao renomear: antes=%q depois=%v", iconMedia, stored.IconMedia)
 	}
 }
 
@@ -1523,7 +1623,7 @@ func TestUpdateServerRouteOtherUserForbidden(t *testing.T) {
 	createServerFor(t, ownerID)
 
 	body, _ := json.Marshal(map[string]string{"name": "srv_" + randHex(4)})
-	rec := do(t, e, http.MethodPut, "/server", body, authCookie(token))
+	rec := do(t, e, http.MethodPatch, "/server", body, authCookie(token))
 
 	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado", "usuário não possui a permissão necessária para esta operação")
 }
@@ -6550,9 +6650,9 @@ func TestGetServerHandlerNotFound(t *testing.T) {
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
 }
 
-// --- UpdateServerHandler ---
+// --- PatchServerHandler ---
 
-func TestUpdateServerHandlerSuccess(t *testing.T) {
+func TestPatchServerHandlerSuccess(t *testing.T) {
 	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
@@ -6569,12 +6669,12 @@ func TestUpdateServerHandlerSuccess(t *testing.T) {
 		"icon_blob":   base64.StdEncoding.EncodeToString(pngAvatarBytes(100, 100)),
 		"icon_format": "png",
 	})
-	c := newContext(t, http.MethodPut, "/server", body, "")
+	c := newContext(t, http.MethodPatch, "/server", body, "")
 	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
-	if err := UpdateServerHandler(testBaseURL, c); err != nil {
-		t.Fatalf("UpdateServerHandler retornou erro: %v", err)
+	if err := PatchServerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("PatchServerHandler retornou erro: %v", err)
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
@@ -6650,24 +6750,24 @@ func TestUpdateServerHandlerSuccess(t *testing.T) {
 	}
 }
 
-func TestUpdateServerHandlerNotFound(t *testing.T) {
+func TestPatchServerHandlerNotFound(t *testing.T) {
 	cleanServers(testCtx())
 	user, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
 		t.Fatalf("falha ao criar usuário: %v", err)
 	}
 	body, _ := json.Marshal(map[string]string{"name": "srv_" + randHex(4)})
-	c := newContext(t, http.MethodPut, "/server", body, "")
+	c := newContext(t, http.MethodPatch, "/server", body, "")
 	c.Set(middleware.UserIDContextKey, user.ID)
 	rec := recorder(c)
 
-	if err := UpdateServerHandler(testBaseURL, c); err != nil {
-		t.Fatalf("UpdateServerHandler retornou erro: %v", err)
+	if err := PatchServerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("PatchServerHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "servidor não encontrado")
 }
 
-func TestUpdateServerHandlerInvalidJSON(t *testing.T) {
+func TestPatchServerHandlerInvalidJSON(t *testing.T) {
 	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
@@ -6675,17 +6775,17 @@ func TestUpdateServerHandlerInvalidJSON(t *testing.T) {
 	}
 	storage.CreateServer(testCtx(), "srv_"+randHex(4), &owner.ID)
 
-	c := newContext(t, http.MethodPut, "/server", []byte("{invalido"), "")
+	c := newContext(t, http.MethodPatch, "/server", []byte("{invalido"), "")
 	c.Set(middleware.UserIDContextKey, owner.ID)
 	rec := recorder(c)
 
-	if err := UpdateServerHandler(testBaseURL, c); err != nil {
-		t.Fatalf("UpdateServerHandler retornou erro: %v", err)
+	if err := PatchServerHandler(testBaseURL, c); err != nil {
+		t.Fatalf("PatchServerHandler retornou erro: %v", err)
 	}
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 }
 
-func TestUpdateServerHandlerInvalidInput(t *testing.T) {
+func TestPatchServerHandlerInvalidInput(t *testing.T) {
 	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
@@ -6702,7 +6802,7 @@ func TestUpdateServerHandlerInvalidInput(t *testing.T) {
 		name string
 		body map[string]string
 	}{
-		{"nome ausente", map[string]string{"icon_blob": validIcon, "icon_format": "PNG"}},
+		{"nome vazio", map[string]string{"name": "", "icon_blob": validIcon, "icon_format": "PNG"}},
 		{"ícone com base64 inválido", map[string]string{"name": "srv_" + randHex(4), "icon_blob": "!!!nao-e-base64!!!", "icon_format": "PNG"}},
 		{"ícone não corresponde ao formato", map[string]string{"name": "srv_" + randHex(4), "icon_blob": validIcon, "icon_format": "GIF"}},
 	}
@@ -6710,15 +6810,15 @@ func TestUpdateServerHandlerInvalidInput(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			body, _ := json.Marshal(tc.body)
-			c := newContext(t, http.MethodPut, "/server", body, "")
+			c := newContext(t, http.MethodPatch, "/server", body, "")
 			c.Set(middleware.UserIDContextKey, owner.ID)
 			rec := recorder(c)
 
-			if err := UpdateServerHandler(testBaseURL, c); err != nil {
-				t.Fatalf("UpdateServerHandler retornou erro: %v", err)
+			if err := PatchServerHandler(testBaseURL, c); err != nil {
+				t.Fatalf("PatchServerHandler retornou erro: %v", err)
 			}
 			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
-				"name é obrigatório e deve ter no máximo 32 caracteres; icon_blob deve ser base64 de um GIF, JPEG/JPG, PNG ou WEBP de até 2MB servidor privado (public=false) exige password")
+				"name, quando informado, deve ter entre 1 e 32 caracteres; icon_blob/icon_format devem representar GIF, JPEG/JPG, PNG ou WEBP de até 2MB; servidor privado exige senha válida")
 		})
 	}
 
@@ -6735,7 +6835,7 @@ func TestUpdateServerHandlerInvalidInput(t *testing.T) {
 	}
 }
 
-func TestUpdateServerHandlerPasswordPolicy(t *testing.T) {
+func TestPatchServerHandlerPasswordPolicy(t *testing.T) {
 	cleanServers(testCtx())
 	owner, _, err := storage.CreateUser(testCtx(), newRandomUsername(), "hash_"+randHex(8), newRandomIP())
 	if err != nil {
@@ -6766,11 +6866,11 @@ func TestUpdateServerHandlerPasswordPolicy(t *testing.T) {
 				"public":   false,
 				"password": tc.password,
 			})
-			c := newContext(t, http.MethodPut, "/server", body, "")
+			c := newContext(t, http.MethodPatch, "/server", body, "")
 			c.Set(middleware.UserIDContextKey, owner.ID)
 			rec := recorder(c)
-			if err := UpdateServerHandler(testBaseURL, c); err != nil {
-				t.Fatalf("UpdateServerHandler retornou erro: %v", err)
+			if err := PatchServerHandler(testBaseURL, c); err != nil {
+				t.Fatalf("PatchServerHandler retornou erro: %v", err)
 			}
 			assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", tc.wantDetail)
 		})

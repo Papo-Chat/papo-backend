@@ -112,7 +112,10 @@ func RegisterServerRoutes(e *echo.Echo, cfg *config.Config) {
 		return GetServerHandler(cfg.BaseURL, c)
 	})
 	e.PUT("/server", func(c echo.Context) error {
-		return UpdateServerHandler(cfg.BaseURL, c)
+		return ReplaceServerHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware, middleware.RequireServerOwnerOrManageServer())
+	e.PATCH("/server", func(c echo.Context) error {
+		return PatchServerHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware, middleware.RequireServerOwnerOrManageServer())
 }
 
