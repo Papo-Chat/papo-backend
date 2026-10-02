@@ -11,8 +11,8 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_active
-    ON password_reset_tokens (user_id, expires_at)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_password_reset_tokens_one_active_per_user
+    ON password_reset_tokens (user_id)
     WHERE used_at IS NULL;
 
 -- +goose Down
