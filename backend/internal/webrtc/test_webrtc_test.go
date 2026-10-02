@@ -41,6 +41,22 @@ func testManager(t *testing.T, cfg *config.Config) *Manager {
 	}
 }
 
+
+func TestSFUIceServersExcludeTURN(t *testing.T) {
+	m := testManager(t, &config.Config{
+		STUNURLs: []string{"stun:stun.l.google.com:19302"},
+		TURNURLs: []string{"turn:turn.example.com:3478?transport=udp"},
+	})
+
+	servers := m.iceServers()
+	if len(servers) != 1 {
+		t.Fatalf("iceServers retornou %d servidores, esperado 1", len(servers))
+	}
+	if len(servers[0].URLs) != 1 || servers[0].URLs[0] != "stun:stun.l.google.com:19302" {
+		t.Fatalf("iceServers do SFU = %#v, esperado apenas STUN", servers)
+	}
+}
+
 func TestVideoKeyframeDetection(t *testing.T) {
 	vp8Track := &webrtc.TrackRemote{}
 	// TrackRemote.Codec não é trivial de montar sem receiver; valida os
