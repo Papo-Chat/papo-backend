@@ -29,6 +29,8 @@ const maxBannerBytes = 2 << 20
 // banner (2048px, README).
 const maxBannerDimension = 2048
 
+const minNicknameLength = 3
+
 // maxNicknameLength é o tamanho máximo do nickname de um usuário
 // (32 caracteres, README).
 const maxNicknameLength = 32
@@ -298,7 +300,8 @@ func UpdateUser(ctx context.Context, userID, nickname, status, description strin
 	if userID == "" {
 		return ErrUserNotFound
 	}
-	if utf8.RuneCountInString(nickname) > maxNicknameLength ||
+	nicknameLen := utf8.RuneCountInString(nickname)
+	if nicknameLen < minNicknameLength || nicknameLen > maxNicknameLength ||
 		utf8.RuneCountInString(status) > maxStatusLength ||
 		utf8.RuneCountInString(description) > maxDescriptionLength ||
 		(typing != nil && utf8.RuneCountInString(*typing) > maxTypingLength) {
@@ -586,6 +589,48 @@ func ResetUserPassword(ctx context.Context, actorID, targetID string) error {
 	return nil
 }
 
+// ResetUserPasswordTo define uma nova senha para o usuário alvo. A autorização
+// de owner/self é feita no middleware; a troca revoga as sessões existentes.
+func ResetUserPasswordTo(ctx context.Context, actorID, targetID, password string) error {
+	if targetID == "" {
+		return ErrUserNotFound
+	}
+	if _, err := storage.GetUserByID(ctx, targetID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return ErrUserNotFound
+		}
+		return err
+	}
+
+	cfg := config.LoadConfig()
+	if password == "" || utf8.RuneCountInString(password) > cfg.MaxPasswordLength {
+		return ErrInvalidInput
+	}
+	if err := utils.ValidatePassword(password, cfg.MinPasswordLength); err != nil {
+		return err
+	}
+
+	passwordHash, err := utils.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("falha ao gerar hash da senha: %w", err)
+	}
+	if err := storage.UpdateUserPassword(ctx, targetID, passwordHash); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("falha ao redefinir a senha do usuário: %w", err)
+	}
+
+	RecordAudit(ctx, AuditEntry{
+		ActorID:      actorID,
+		Action:       ActionUserResetPassword,
+		EntityType:   EntityUser,
+		EntityID:     &targetID,
+		TargetUserID: &targetID,
+	})
+	return nil
+}
+
 // ChangePassword altera a senha do usuário e reinicia a flag de reset de
 // senha (users.reset_password = FALSE). O hash bcrypt é gerado aqui; a senha
 // em texto claro nunca chega ao storage.
@@ -596,13 +641,11 @@ func ChangePassword(ctx context.Context, userID, password string) error {
 		return ErrUserNotFound
 	}
 
-	user, err := storage.GetUserByID(ctx, userID)
-
-	if user.ID == "" {
-		return ErrUserNotFound
-	}
-	if !user.ResetPassword {
-		return ErrUserNotReset
+	if _, err := storage.GetUserByID(ctx, userID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return ErrUserNotFound
+		}
+		return err
 	}
 
 	cfg := config.LoadConfig()
