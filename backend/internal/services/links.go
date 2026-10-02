@@ -239,7 +239,7 @@ func twitterPreviewFetchURL(u *url.URL) (*url.URL, bool) {
 			return u, false
 		}
 		clone := *u
-		clone.Host = "api.fxtwitter.com"
+		clone.Host = "fxtwitter.com"
 		clone.Scheme = "https"
 		return &clone, true
 	case "fxtwitter.com", "www.fxtwitter.com", "api.fxtwitter.com",
