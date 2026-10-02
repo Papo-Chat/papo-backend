@@ -181,10 +181,22 @@ func serverPasswordHash(isPublic bool, password string) (*string, error) {
 	return &hash, nil
 }
 
+// ServerUpdateResult descreve efeitos de segurança da atualização do servidor.
+type ServerUpdateResult struct {
+	PasswordChanged bool
+}
+
 // ReplaceServer substitui todos os campos mutáveis do servidor. Todos os
 // argumentos fazem parte do estado completo: name, icon/iconFormat, public e
 // password. Ícone vazio remove o ícone; servidor privado exige senha válida.
 func ReplaceServer(ctx context.Context, actorID, name, icon, iconFormat, password string, public bool) error {
+	_, err := ReplaceServerWithResult(ctx, actorID, name, icon, iconFormat, password, public)
+	return err
+}
+
+// ReplaceServerWithResult tem a mesma semântica de ReplaceServer e também
+// informa se a credencial de acesso do servidor mudou.
+func ReplaceServerWithResult(ctx context.Context, actorID, name, icon, iconFormat, password string, public bool) (ServerUpdateResult, error) {
 	return updateServer(ctx, actorID, &name, &icon, &iconFormat, &public, &password, true)
 }
 
@@ -194,26 +206,43 @@ func ReplaceServer(ctx context.Context, actorID, name, icon, iconFormat, passwor
 // password nil mantém a senha quando o servidor já é privado. Ao tornar um
 // servidor público, o hash da senha é removido.
 func PatchServer(ctx context.Context, actorID string, name, icon, iconFormat *string, public *bool, password *string) error {
+	_, err := PatchServerWithResult(ctx, actorID, name, icon, iconFormat, public, password)
+	return err
+}
+
+// PatchServerWithResult tem a mesma semântica de PatchServer e também informa
+// se a credencial de acesso do servidor mudou.
+func PatchServerWithResult(ctx context.Context, actorID string, name, icon, iconFormat *string, public *bool, password *string) (ServerUpdateResult, error) {
 	return updateServer(ctx, actorID, name, icon, iconFormat, public, password, false)
 }
 
-func updateServer(ctx context.Context, actorID string, name, icon, iconFormat *string, public *bool, password *string, requireAll bool) error {
+func serverPasswordChanged(currentHash, nextHash *string, password *string) bool {
+	if currentHash == nil || nextHash == nil {
+		return (currentHash == nil) != (nextHash == nil)
+	}
+	if password == nil {
+		return false
+	}
+	return utils.CheckPassword(*password, *currentHash) != nil
+}
+
+func updateServer(ctx context.Context, actorID string, name, icon, iconFormat *string, public *bool, password *string, requireAll bool) (ServerUpdateResult, error) {
 	if requireAll && (name == nil || icon == nil || iconFormat == nil || public == nil || password == nil) {
-		return ErrInvalidInput
+		return ServerUpdateResult{}, ErrInvalidInput
 	}
 
 	current, err := storage.GetServerWithPasswordHash(ctx)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return ErrServerNotFound
+			return ServerUpdateResult{}, ErrServerNotFound
 		}
-		return err
+		return ServerUpdateResult{}, err
 	}
 
 	finalName := current.Name
 	if name != nil {
 		if *name == "" || utf8.RuneCountInString(*name) > maxServerNameLength {
-			return ErrInvalidInput
+			return ServerUpdateResult{}, ErrInvalidInput
 		}
 		finalName = *name
 	}
@@ -223,36 +252,36 @@ func updateServer(ctx context.Context, actorID string, name, icon, iconFormat *s
 	case icon == nil && iconFormat == nil:
 		// PATCH sem campos de ícone preserva o ícone atual.
 	case icon == nil:
-		return ErrInvalidInput
+		return ServerUpdateResult{}, ErrInvalidInput
 	case *icon == "":
 		if iconFormat != nil && *iconFormat != "" {
-			return ErrInvalidInput
+			return ServerUpdateResult{}, ErrInvalidInput
 		}
 		iconMedia = nil
 	default:
 		if iconFormat == nil || *iconFormat == "" {
-			return ErrInvalidInput
+			return ServerUpdateResult{}, ErrInvalidInput
 		}
 
 		decoded, err := base64.StdEncoding.DecodeString(*icon)
 		if err != nil {
-			return ErrInvalidInput
+			return ServerUpdateResult{}, ErrInvalidInput
 		}
 
 		format := normalizeImageFormat(*iconFormat)
 		if !avatarContentMatchesFormat(decoded, format) {
-			return ErrInvalidInput
+			return ServerUpdateResult{}, ErrInvalidInput
 		}
 		if len(decoded) > maxIconBytes {
-			return ErrInvalidInput
+			return ServerUpdateResult{}, ErrInvalidInput
 		}
 		if err := utils.ValidateImage(decoded, utils.MaxImageDimension); err != nil {
-			return ErrInvalidInput
+			return ServerUpdateResult{}, ErrInvalidInput
 		}
 
 		sha, _, err := StoreMediaFromBytes(ctx, decoded, formatToMime(format))
 		if err != nil {
-			return fmt.Errorf("falha ao gravar o ícone do servidor: %w", err)
+			return ServerUpdateResult{}, fmt.Errorf("falha ao gravar o ícone do servidor: %w", err)
 		}
 		iconMedia = &sha
 	}
@@ -268,18 +297,25 @@ func updateServer(ctx context.Context, actorID string, name, icon, iconFormat *s
 	} else if password != nil {
 		passwordHash, err = serverPasswordHash(false, *password)
 		if err != nil {
-			return err
+			return ServerUpdateResult{}, err
 		}
 	} else if passwordHash == nil {
-		return ErrInvalidInput
+		return ServerUpdateResult{}, ErrInvalidInput
 	}
 
-	if _, err := storage.UpdateServer(ctx, current.ID, models.Server{
+	passwordChanged := serverPasswordChanged(current.PasswordHash, passwordHash, password)
+	next := models.Server{
 		Name:         finalName,
 		IconMedia:    iconMedia,
 		PublicServer: isPublic,
-	}, passwordHash); err != nil {
-		return fmt.Errorf("falha ao atualizar o servidor: %w", err)
+	}
+
+	if passwordChanged {
+		if _, _, err := storage.UpdateServerAndRevokeAllConnections(ctx, current.ID, next, passwordHash); err != nil {
+			return ServerUpdateResult{}, fmt.Errorf("falha ao atualizar o servidor: %w", err)
+		}
+	} else if _, err := storage.UpdateServer(ctx, current.ID, next, passwordHash); err != nil {
+		return ServerUpdateResult{}, fmt.Errorf("falha ao atualizar o servidor: %w", err)
 	}
 
 	RecordAudit(ctx, AuditEntry{
@@ -293,5 +329,5 @@ func updateServer(ctx context.Context, actorID string, name, icon, iconFormat *s
 		},
 	})
 
-	return nil
+	return ServerUpdateResult{PasswordChanged: passwordChanged}, nil
 }
