@@ -1235,6 +1235,36 @@ func TestUpdateUser(t *testing.T) {
 	}
 }
 
+func TestUpdateUserAllowsShortNickname(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	if err := UpdateUser(testCtx(), user.ID, "a", "", "", nil); err != nil {
+		t.Fatalf("nickname curto deveria ser aceito: %v", err)
+	}
+
+	stored, err := storage.GetUserByID(testCtx(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID retornou erro: %v", err)
+	}
+	if stored.Nickname == nil || *stored.Nickname != "a" {
+		t.Fatalf("esperava nickname %q, obtive %v", "a", stored.Nickname)
+	}
+}
+
+func TestUpdateUserRejectsNicknameAboveMaximum(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("falha ao criar usuário: %v", err)
+	}
+
+	if err := UpdateUser(testCtx(), user.ID, strings.Repeat("a", maxNicknameLength+1), "", "", nil); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("nickname acima do máximo deveria retornar ErrInvalidInput, obtive %v", err)
+	}
+}
+
 func TestUpdateUserEmptyUserID(t *testing.T) {
 	err := UpdateUser(testCtx(), "", "nick", "status", "desc", nil)
 	if !errors.Is(err, ErrUserNotFound) {
