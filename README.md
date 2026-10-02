@@ -297,6 +297,7 @@ Autenticação via o mesmo cookie `Auth` da API REST, validado no handshake.
 | `typing` | inbound / outbound |
 | `presence_sync` | unicast (snapshot no connect) |
 | `presence_update` | outbound (delta) |
+| `presence_activity` | inbound (atividade real do usuário para auto-away efêmero) |
 | `user_join` | outbound |
 | `avatar_update` | outbound |
 | `role_add`, `role_remove` | outbound |
@@ -304,7 +305,7 @@ Autenticação via o mesmo cookie `Auth` da API REST, validado no handshake.
 | `heartbeat` / `heartbeat_ack` | inbound / outbound |
 | `error` | outbound |
 
-Presença e digitação são estado efêmero, mantido só em memória — nunca persistido no Postgres.
+Presença online/offline e o away automático são efêmeros e mantidos só em memória. Away/busy escolhidos manualmente continuam persistidos no Postgres.
 
 ## Segurança
 
