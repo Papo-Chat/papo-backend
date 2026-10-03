@@ -335,7 +335,9 @@ func ReactionCountsByMessages(ctx context.Context, messageIDs []string) (map[str
 	rows, err := GetDB().QueryContext(ctx,
 		`SELECT message_id, emoji_id, unicode, COUNT(*)
 		 FROM message_reactions WHERE message_id = ANY($1)
-		 GROUP BY message_id, emoji_id, unicode`,
+		 GROUP BY message_id, emoji_id, unicode
+		 ORDER BY message_id, MIN(created_at) ASC,
+		          COALESCE(emoji_id::text, ''), COALESCE(unicode, '')`,
 		messageIDs,
 	)
 	if err != nil {
