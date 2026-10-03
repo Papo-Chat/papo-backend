@@ -4732,6 +4732,56 @@ func TestReactionCountsByMessages(t *testing.T) {
 	}
 }
 
+func TestReactionCountsByMessagesKeepsInsertionOrder(t *testing.T) {
+	owner := newTestUser(t)
+	_ = newTestServer(t, strPtr(owner.ID))
+	channel := newTestChannel(t)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "ordered reactions", "", nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	thumb := "👍"
+	fire := "🔥"
+	heart := "❤️"
+	for _, unicode := range []*string{&thumb, &fire, &heart} {
+		if _, _, _, err := AddReaction(testCtx(), message.ID, owner.ID, nil, unicode); err != nil {
+			t.Fatalf("AddReaction (%s) retornou erro: %v", *unicode, err)
+		}
+	}
+
+	// Use fixed timestamps so the assertion does not depend on clock precision
+	// or insertion timing in the test environment.
+	if _, err := GetDB().ExecContext(testCtx(), `
+		UPDATE message_reactions
+		SET created_at = CASE unicode
+			WHEN '👍' THEN TIMESTAMPTZ '2024-01-01 00:00:01+00'
+			WHEN '🔥' THEN TIMESTAMPTZ '2024-01-01 00:00:02+00'
+			WHEN '❤️' THEN TIMESTAMPTZ '2024-01-01 00:00:03+00'
+			ELSE created_at
+		END
+		WHERE message_id = $1
+	`, message.ID); err != nil {
+		t.Fatalf("falha ao fixar created_at das reações: %v", err)
+	}
+
+	counts, err := ReactionCountsByMessages(testCtx(), []string{message.ID})
+	if err != nil {
+		t.Fatalf("ReactionCountsByMessages retornou erro: %v", err)
+	}
+	got := counts[message.ID]
+	if len(got) != 3 {
+		t.Fatalf("esperava 3 grupos, obtive %+v", got)
+	}
+
+	want := []string{thumb, fire, heart}
+	for i, expected := range want {
+		if got[i].Unicode == nil || *got[i].Unicode != expected {
+			t.Fatalf("ordem inesperada no índice %d: queria %s, obtive %+v", i, expected, got)
+		}
+	}
+}
+
 func TestAddReactionUniqueIndexUnicode(t *testing.T) {
 	owner := newTestUser(t)
 	_ = newTestServer(t, strPtr(owner.ID))
