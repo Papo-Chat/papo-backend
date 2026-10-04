@@ -201,6 +201,69 @@ func TestDirectChainRealIPIgnoresForwardedHeaders(t *testing.T) {
 }
 
 
+func TestTrustedProxyIPExtractorUsesXForwardedForFromTrustedPeer(t *testing.T) {
+	extractor, err := TrustedProxyIPExtractor([]string{"127.0.0.1/32"})
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+
+	if got := extractor(req); got != "203.0.113.9" {
+		t.Errorf("esperava 203.0.113.9, obtive %q", got)
+	}
+}
+
+func TestTrustedProxyIPExtractorWalksTrustedForwardedChain(t *testing.T) {
+	extractor, err := TrustedProxyIPExtractor([]string{"127.0.0.1/32", "10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9, 10.20.30.40")
+
+	if got := extractor(req); got != "203.0.113.9" {
+		t.Errorf("esperava primeiro hop não confiável 203.0.113.9, obtive %q", got)
+	}
+}
+
+func TestTrustedProxyRateLimitSeparatesForwardedClients(t *testing.T) {
+	extractor, err := TrustedProxyIPExtractor([]string{"127.0.0.1/32"})
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+
+	e := echo.New()
+	e.IPExtractor = extractor
+	e.Use(RateLimit(1, 1))
+	e.GET("/", func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+
+	doRequest := func(clientIP string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("X-Forwarded-For", clientIP)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := doRequest("203.0.113.9"); rec.Code != http.StatusOK {
+		t.Fatalf("primeiro cliente deveria passar, obtive %d", rec.Code)
+	}
+	if rec := doRequest("198.51.100.7"); rec.Code != http.StatusOK {
+		t.Fatalf("segundo cliente atrás do mesmo proxy deveria ter bucket próprio, obtive %d", rec.Code)
+	}
+	if rec := doRequest("203.0.113.9"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("segunda requisição imediata do mesmo cliente deveria receber 429, obtive %d", rec.Code)
+	}
+}
+
 func TestTrustedProxyIPExtractorUsesXRealIPFromTrustedPeer(t *testing.T) {
 	extractor, err := TrustedProxyIPExtractor([]string{"127.0.0.1/32", "::1/128"})
 	if err != nil {
@@ -225,6 +288,7 @@ func TestTrustedProxyIPExtractorIgnoresHeaderFromUntrustedPeer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = testNonCloudflareIP + ":12345"
 	req.Header.Set("X-Real-IP", "203.0.113.9")
+	req.Header.Set("X-Forwarded-For", "192.0.2.44")
 
 	if got := extractor(req); got != testNonCloudflareIP {
 		t.Errorf("esperava o peer direto %s, obtive %q", testNonCloudflareIP, got)

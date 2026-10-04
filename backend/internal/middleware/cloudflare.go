@@ -79,12 +79,13 @@ func CloudflareIPExtractor(ips *utils.CloudflareIPs) func(r *http.Request) strin
 	}
 }
 
-// TrustedProxyIPExtractor confia em X-Real-IP somente quando a conexão direta
-// vem de uma das redes explicitamente configuradas em TRUSTED_PROXY_CIDRS.
-// Isso permite um reverse proxy local (por exemplo, nginx em 127.0.0.1) sem
-// voltar a confiar em headers enviados diretamente por clientes externos.
-// X-Forwarded-For é deliberadamente ignorado: o proxy deve normalizar o IP
-// validado para um único X-Real-IP.
+// TrustedProxyIPExtractor só confia em headers de forwarding quando a conexão
+// direta vem de uma das redes explicitamente configuradas em
+// TRUSTED_PROXY_CIDRS. X-Forwarded-For é preferido porque é o header padrão de
+// nginx/Caddy/HAProxy; a cadeia é percorrida da direita para a esquerda,
+// descartando apenas hops que também pertencem às redes confiáveis. Isso evita
+// que um valor X-Forwarded-For forjado pelo cliente vire a chave do rate limit.
+// X-Real-IP permanece como fallback para proxies configurados dessa forma.
 func TrustedProxyIPExtractor(cidrs []string) (func(*http.Request) string, error) {
 	trusted := make([]*net.IPNet, 0, len(cidrs))
 	for _, cidr := range cidrs {
@@ -95,28 +96,50 @@ func TrustedProxyIPExtractor(cidrs []string) (func(*http.Request) string, error)
 		trusted = append(trusted, network)
 	}
 
+	isTrusted := func(ip net.IP) bool {
+		for _, network := range trusted {
+			if network.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+
+	forwardedClientIP := func(header string) (net.IP, bool) {
+		parts := strings.Split(header, ",")
+		var leftmost net.IP
+		for i := len(parts) - 1; i >= 0; i-- {
+			ip := net.ParseIP(strings.TrimSpace(parts[i]))
+			if ip == nil {
+				return nil, false
+			}
+			leftmost = ip
+			if !isTrusted(ip) {
+				return ip, true
+			}
+		}
+		return leftmost, leftmost != nil
+	}
+
 	return func(r *http.Request) string {
 		peer, ok := peerIP(r)
 		if !ok {
 			return ""
 		}
+		if !isTrusted(peer) {
+			return peer.String()
+		}
 
-		isTrusted := false
-		for _, network := range trusted {
-			if network.Contains(peer) {
-				isTrusted = true
-				break
+		if forwarded := strings.TrimSpace(strings.Join(r.Header.Values("X-Forwarded-For"), ",")); forwarded != "" {
+			if clientIP, ok := forwardedClientIP(forwarded); ok {
+				return clientIP.String()
 			}
 		}
-		if !isTrusted {
-			return peer.String()
-		}
 
-		clientIP := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP")))
-		if clientIP == nil {
-			return peer.String()
+		if clientIP := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); clientIP != nil {
+			return clientIP.String()
 		}
-		return clientIP.String()
+		return peer.String()
 	}, nil
 }
 
