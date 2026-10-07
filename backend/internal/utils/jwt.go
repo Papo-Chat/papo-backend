@@ -17,12 +17,70 @@ const JWTExpiration = 24 * time.Hour
 // (30min, igual ao Max-Age do cookie Auth emitido por /auth/login_server).
 const TempTokenExpiration = 30 * time.Minute
 
+const SessionCookieMaxAge = 30 * 24 * time.Hour
+
 // tempTokenClaims estende os claims registrados com a marca "temp" que
 // identifica o token como autorização temporária de acesso ao servidor (não
 // é um token de sessão de usuário).
 type tempTokenClaims struct {
 	jwt.RegisteredClaims
 	Temp bool `json:"temp"`
+}
+
+type RefreshClaims struct {
+	jwt.RegisteredClaims
+}
+
+func ValidateRefreshToken(tokenString, secret string) (string, string, time.Time, error) {
+	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
+
+	token, err := parser.ParseWithClaims(
+		tokenString,
+		&RefreshClaims{},
+		func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf(
+					"método de assinatura inesperado: %v",
+					token.Header["alg"],
+				)
+			}
+			return []byte(secret), nil
+		},
+	)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+
+	if !token.Valid {
+		return "", "", time.Time{}, fmt.Errorf("token inválido")
+	}
+
+	claims, ok := token.Claims.(*RefreshClaims)
+	if !ok {
+		return "", "", time.Time{}, fmt.Errorf("claims de refresh inválidos")
+	}
+
+	userID := claims.Subject
+	connID := claims.ID
+	issuedAt := time.Time{}
+
+	if claims.IssuedAt != nil {
+		issuedAt = claims.IssuedAt.Time
+	}
+
+	if userID == "" {
+		return "", "", time.Time{}, fmt.Errorf("subject ausente")
+	}
+
+	if connID == "" {
+		return "", "", time.Time{}, fmt.Errorf("jti ausente")
+	}
+
+	if claims.ExpiresAt == nil {
+		return "", "", time.Time{}, fmt.Errorf("exp ausente")
+	}
+
+	return userID, connID, issuedAt, nil
 }
 
 // GenerateSessionToken gera o JWT de sessão (HS256) do usuário de forma

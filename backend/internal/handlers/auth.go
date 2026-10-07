@@ -12,6 +12,7 @@ import (
 	"papo/internal/middleware"
 	"papo/internal/models"
 	"papo/internal/services"
+	"papo/internal/storage"
 	"papo/internal/utils"
 	"papo/internal/websocket"
 
@@ -246,20 +247,7 @@ func LoginHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao registrar a sessão")
 	}
 
-	sameSite := http.SameSiteStrictMode
-	if !cfg.SameSite {
-		sameSite = http.SameSiteNoneMode
-	}
-
-	c.SetCookie(&http.Cookie{
-		Name:     "Auth",
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: sameSite,
-		MaxAge:   int(utils.JWTExpiration.Seconds()),
-	})
+	setAuthCookie(c, cfg, token)
 
 	// O token não é retornado no corpo: a sessão é entregue exclusivamente
 	// pelo cookie Auth (HttpOnly), evitando que o cliente o persista em
@@ -455,7 +443,7 @@ func setAuthCookie(c echo.Context, cfg *config.Config, token string) {
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: sameSite,
-		MaxAge:   int(utils.JWTExpiration.Seconds()),
+		MaxAge:   int(utils.SessionCookieMaxAge.Seconds()),
 	})
 }
 
@@ -473,6 +461,7 @@ func clearAuthCookie(c echo.Context, cfg *config.Config) {
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: sameSite,
+		MaxAge:   -1,
 		Expires:  time.Unix(0, 0),
 	})
 }
@@ -523,34 +512,176 @@ func RefreshHandler(baseURL string, c echo.Context) error {
 	ctx := c.Request().Context()
 	requestID := c.Request().Header.Get(echo.HeaderXRequestID)
 
-	userID, ok := c.Get(middleware.UserIDContextKey).(string)
-	if !ok || userID == "" {
-		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
-			"unauthorized", "Token inválido ou expirado",
-			"token de autenticação ausente, inválido ou expirado")
-	}
-
 	token := authCookieValue(c)
 	if token == "" {
-		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
-			"unauthorized", "Token inválido ou expirado",
-			"token de autenticação ausente, inválido ou expirado")
+		return utils.SendProblem(
+			c,
+			baseURL,
+			http.StatusUnauthorized,
+			"unauthorized",
+			"Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado",
+		)
 	}
 
-	newToken, conn, err := services.RefreshConnection(ctx, userID, token)
+	userID, connID, issuedAt, err := utils.ValidateRefreshToken(
+		token,
+		cfg.JWTSecret,
+	)
+	if err != nil {
+		clearAuthCookie(c, cfg)
+
+		return utils.SendProblem(
+			c,
+			baseURL,
+			http.StatusUnauthorized,
+			"unauthorized",
+			"Token inválido ou expirado",
+			"token de autenticação inválido",
+		)
+	}
+
+	// Evita que refresh revalide uma sessão de usuário banido.
+	banned, err := storage.IsUserBanned(ctx, userID)
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		clearAuthCookie(c, cfg)
+
+		return utils.SendProblem(
+			c,
+			baseURL,
+			http.StatusUnauthorized,
+			"unauthorized",
+			"Token inválido ou expirado",
+			"usuário não encontrado",
+		)
+
+	case err != nil:
+		utils.Errorf(
+			"request_id=%s falha ao verificar banimento no refresh: %v",
+			requestID,
+			err,
+		)
+
+		return utils.SendProblem(
+			c,
+			baseURL,
+			http.StatusInternalServerError,
+			"internal",
+			"Erro interno",
+			"falha ao validar a sessão",
+		)
+
+	case banned:
+		storage.RevokeAllUserConnections(ctx, userID)
+		clearAuthCookie(c, cfg)
+
+		return utils.SendProblem(
+			c,
+			baseURL,
+			http.StatusForbidden,
+			"banned",
+			"Usuário banido",
+			"usuário banido; autenticação revogada",
+		)
+	}
+
+	// Garante que os claims usados pelo refresh pertencem à conexão esperada.
+	conn, err := storage.GetUserConnectionByHash(
+		ctx,
+		userID,
+		utils.HashToken(token),
+	)
+	if errors.Is(err, storage.ErrNotFound) {
+		clearAuthCookie(c, cfg)
+
+		return utils.SendProblem(
+			c,
+			baseURL,
+			http.StatusUnauthorized,
+			"unauthorized",
+			"Token inválido ou expirado",
+			"sessão não encontrada",
+		)
+	}
+	if err != nil {
+		return utils.SendProblem(
+			c,
+			baseURL,
+			http.StatusInternalServerError,
+			"internal",
+			"Erro interno",
+			"falha ao consultar a sessão",
+		)
+	}
+
+	if conn.ID != connID {
+		clearAuthCookie(c, cfg)
+
+		return utils.SendProblem(
+			c,
+			baseURL,
+			http.StatusUnauthorized,
+			"unauthorized",
+			"Token inválido ou expirado",
+			"sessão inválida",
+		)
+	}
+
+	if !issuedAt.IsZero() && !conn.TokenIssuedAt.Equal(issuedAt) {
+		clearAuthCookie(c, cfg)
+
+		return utils.SendProblem(
+			c,
+			baseURL,
+			http.StatusUnauthorized,
+			"unauthorized",
+			"Token inválido ou expirado",
+			"sessão inválida",
+		)
+	}
+
+	newToken, refreshedConn, err := services.RefreshConnection(
+		ctx,
+		userID,
+		token,
+	)
+
 	switch {
 	case errors.Is(err, services.ErrConnectionNotFound):
-		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
-			"unauthorized", "Token inválido ou expirado",
-			"token de autenticação ausente, inválido ou expirado")
+		clearAuthCookie(c, cfg)
+
+		return utils.SendProblem(
+			c,
+			baseURL,
+			http.StatusUnauthorized,
+			"unauthorized",
+			"Token inválido ou expirado",
+			"sessão inválida, revogada ou encerrada",
+		)
+
 	case err != nil:
-		utils.Errorf("request_id=%s falha ao rotacionar o token de sessão: %v", requestID, err)
-		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
-			"internal", "Erro interno", "falha ao rotacionar o token de sessão")
+		utils.Errorf(
+			"request_id=%s falha ao rotacionar o token de sessão: %v",
+			requestID,
+			err,
+		)
+
+		return utils.SendProblem(
+			c,
+			baseURL,
+			http.StatusInternalServerError,
+			"internal",
+			"Erro interno",
+			"falha ao rotacionar o token de sessão",
+		)
 	}
 
 	setAuthCookie(c, cfg, newToken)
-	return c.JSON(http.StatusOK, refreshResponse{Connection: conn})
+
+	return c.JSON(http.StatusOK, refreshResponse{
+		Connection: refreshedConn,
+	})
 }
 
 type connectedDevicesResponse struct {

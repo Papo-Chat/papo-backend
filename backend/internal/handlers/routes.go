@@ -33,7 +33,7 @@ func RegisterAuthRoutes(e *echo.Echo, cfg *config.Config) {
 	}, authRateLimit)
 	e.POST("/auth/refresh", func(c echo.Context) error {
 		return RefreshHandler(cfg.BaseURL, c)
-	}, authRateLimit, middleware.JWTMiddleware)
+	}, authRateLimit)
 	e.GET("/auth/connected_devices", func(c echo.Context) error {
 		return ConnectedDevicesHandler(cfg.BaseURL, c)
 	}, authRateLimit, middleware.JWTMiddleware)
