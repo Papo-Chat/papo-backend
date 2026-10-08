@@ -628,7 +628,8 @@ func RefreshHandler(baseURL string, c echo.Context) error {
 		)
 	}
 
-	if !issuedAt.IsZero() && !conn.TokenIssuedAt.Equal(issuedAt) {
+	if !issuedAt.IsZero() &&
+		!conn.TokenIssuedAt.Truncate(time.Second).Equal(issuedAt.Truncate(time.Second)) {
 		clearAuthCookie(c, cfg)
 
 		return utils.SendProblem(
