@@ -219,6 +219,7 @@ paths:
     post:
       tags: [Auth]
       summary: Rotaciona o token de sessão (novo JWT + Set-Cookie) e retorna a conexão atual
+      description: Uma JWT expirada (24h), ainda pode ser refreshed em até 30 dias, gerando uma sessão contínua indefinidamente.
       responses:
         '200':
           description: "Sessão rotacionada (Set-Cookie: Auth=novo_jwt)"
