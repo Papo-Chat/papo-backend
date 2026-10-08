@@ -9295,9 +9295,9 @@ func TestLoginHandlerWithTempToken(t *testing.T) {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 
-	// o login consolida o cookie Auth com o token de sessão (24h)
+	// o login consolida o cookie Auth com o token de sessão (30d)
 	token := authCookieFromResponse(t, rec)
-	assertAuthCookie(t, rec, token, strconv.Itoa(int(utils.JWTExpiration.Seconds())))
+	assertAuthCookie(t, rec, token, strconv.Itoa(int(utils.SessionCookieMaxAge.Seconds())))
 }
 
 // --- handlers de mensagens (tarefa 7.2) ---
@@ -11924,7 +11924,7 @@ func TestRefreshHandlerSuccess(t *testing.T) {
 	}
 
 	// o cookie Auth deve ser atualizado com o novo token
-	assertAuthCookie(t, rec, newToken, strconv.Itoa(int(utils.JWTExpiration.Seconds())))
+	assertAuthCookie(t, rec, newToken, strconv.Itoa(int(utils.SessionCookieMaxAge.Seconds())))
 
 	// a conexão antiga foi substituída (dentro da janela de graça)
 	if err := storage.CheckUserConnection(testCtx(), userID, utils.HashToken(token)); err != nil {
@@ -11936,16 +11936,29 @@ func TestRefreshHandlerSuccess(t *testing.T) {
 	}
 }
 
-func TestRefreshHandlerMissingUserID(t *testing.T) {
-	_, token, _ := newSessionUser(t)
-	c := newContextWithCookie(t, http.MethodPost, "/auth/refresh", nil, "", token)
+func TestRefreshHandlerMissingToken(t *testing.T) {
+	c := newContextWithCookie(
+		t,
+		http.MethodPost,
+		"/auth/refresh",
+		nil,
+		"",
+		"",
+	)
 	rec := recorder(c)
 
 	if err := RefreshHandler(testBaseURL, c); err != nil {
 		t.Fatalf("RefreshHandler retornou erro: %v", err)
 	}
-	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
-		"token de autenticação ausente, inválido ou expirado")
+
+	assertProblem(
+		t,
+		rec,
+		http.StatusUnauthorized,
+		"unauthorized",
+		"Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado",
+	)
 }
 
 func TestRefreshHandlerMissingCookie(t *testing.T) {
@@ -11961,23 +11974,43 @@ func TestRefreshHandlerMissingCookie(t *testing.T) {
 		"token de autenticação ausente, inválido ou expirado")
 }
 
-func TestRefreshHandlerUnknownToken(t *testing.T) {
+func TestRefreshHandlerUnknownExpiredToken(t *testing.T) {
 	userID, _, _ := newSessionUser(t)
-	// token válido (assinatura ok, mesmo usuário) mas sem conexão registrada no banco
-	other, err := utils.GenerateSessionToken(userID, uuid.NewString(), time.Now().Add(123*time.Second), config.LoadConfig().JWTSecret)
+
+	// JWT válido e assinado corretamente, porém expirado e sem conexão
+	// correspondente registrada no banco.
+	other, err := utils.GenerateSessionToken(
+		userID,
+		uuid.NewString(),
+		time.Now().Add(-48*time.Hour),
+		config.LoadConfig().JWTSecret,
+	)
 	if err != nil {
 		t.Fatalf("falha ao gerar token: %v", err)
 	}
 
-	c := newContextWithCookie(t, http.MethodPost, "/auth/refresh", nil, "", other)
-	c.Set(middleware.UserIDContextKey, userID)
+	c := newContextWithCookie(
+		t,
+		http.MethodPost,
+		"/auth/refresh",
+		nil,
+		"",
+		other,
+	)
 	rec := recorder(c)
 
 	if err := RefreshHandler(testBaseURL, c); err != nil {
 		t.Fatalf("RefreshHandler retornou erro: %v", err)
 	}
-	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
-		"token de autenticação ausente, inválido ou expirado")
+
+	assertProblem(
+		t,
+		rec,
+		http.StatusUnauthorized,
+		"unauthorized",
+		"Token inválido ou expirado",
+		"sessão não encontrada",
+	)
 }
 
 // --- ConnectedDevicesHandler ---
