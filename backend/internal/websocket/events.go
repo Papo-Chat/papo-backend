@@ -10,30 +10,28 @@ import (
 type EventType string
 
 const (
-	EventTypeMessage           EventType = "message"
-	EventTypeMessageEdit       EventType = "message_edit"
-	EventTypeMessageDelete     EventType = "message_delete"
-	EventTypeMessagePin        EventType = "message_pin"
-	EventTypeChannelCreate     EventType = "channel_create"
-	EventTypeChannelUpdate     EventType = "channel_update"
-	EventTypeChannelDelete     EventType = "channel_delete"
-	EventTypeTyping            EventType = "typing"
-	EventTypeAvatarUpdate      EventType = "avatar_update"
-	EventTypePresenceUpdate    EventType = "presence_update"
-	EventTypePresenceSync      EventType = "presence_sync"
-	EventTypePresenceActivity  EventType = "presence_activity"
-	EventTypeHeartbeat         EventType = "heartbeat"
-	EventTypeHeartbeatAck      EventType = "heartbeat_ack"
-	EventTypeError             EventType = "error"
-	EventTypeNewPreview        EventType = "new_preview"
-	EventTypeRemovePreview     EventType = "remove_preview"
-	EventTypeLinkPreviewUpdate EventType = "link_preview_update"
-	EventTypeUserJoin          EventType = "user_join"
-	EventTypeReactUpdate       EventType = "react_update"
-	EventTypeNewNotification   EventType = "new_notification"
-	EventTypeRoleAdd           EventType = "role_add"
-	EventTypeRoleRemove        EventType = "role_remove"
-	EventTypeDMUpdate          EventType = "dm_update"
+	EventTypeMessage             EventType = "message"
+	EventTypeMessageEdit         EventType = "message_edit"
+	EventTypeMessageDelete       EventType = "message_delete"
+	EventTypeMessagePin          EventType = "message_pin"
+	EventTypeChannelCreate       EventType = "channel_create"
+	EventTypeChannelUpdate       EventType = "channel_update"
+	EventTypeChannelDelete       EventType = "channel_delete"
+	EventTypeTyping              EventType = "typing"
+	EventTypeAvatarUpdate        EventType = "avatar_update"
+	EventTypePresenceUpdate      EventType = "presence_update"
+	EventTypePresenceSync        EventType = "presence_sync"
+	EventTypePresenceActivity    EventType = "presence_activity"
+	EventTypeHeartbeat           EventType = "heartbeat"
+	EventTypeHeartbeatAck        EventType = "heartbeat_ack"
+	EventTypeError               EventType = "error"
+	EventTypeMessageEmbedsUpdate EventType = "message_embeds_update"
+	EventTypeUserJoin            EventType = "user_join"
+	EventTypeReactUpdate         EventType = "react_update"
+	EventTypeNewNotification     EventType = "new_notification"
+	EventTypeRoleAdd             EventType = "role_add"
+	EventTypeRoleRemove          EventType = "role_remove"
+	EventTypeDMUpdate            EventType = "dm_update"
 	// Eventos de voz (canais type "voice" + SFU). Inbound: client → server.
 	// Outbound: voice_joined, voice_answer, voice_ice_candidate,
 	// voice_state_update, voice_leave, active_speaker_update, voice_audio_routes.
@@ -217,42 +215,20 @@ type AttachmentModerationUpdateOutbound struct {
 	Status       string    `json:"status"`
 }
 
-// NewPreviewOutbound é o evento de link preview vinculado a uma mensagem,
-// distribuído após o processamento em background (crawl) da mensagem. Um
-// evento por preview.
-type NewPreviewOutbound struct {
-	Type      EventType `json:"type"`
-	MessageID string    `json:"message_id"`
-	PreviewID string    `json:"preview_id"`
-}
-
-// RemovePreviewOutbound é o evento de link preview removido de uma mensagem
-// (edição que substitui/limpa os previews), distribuído após o processamento
-// em background. Um evento por preview.
-type RemovePreviewOutbound struct {
-	Type      EventType `json:"type"`
-	MessageID string    `json:"message_id"`
-	PreviewID string    `json:"preview_id"`
-}
-
-// LinkPreviewObject é o objeto de link preview distribuído no evento
-// link_preview_update: mesma forma da resposta de GET /link-previews/:id
-// (campos públicos + image_data, base64 da thumbnail, null quando não há
-// imagem).
-type LinkPreviewObject struct {
-	models.LinkPreview
-	ImageData *string `json:"image_data"`
-}
-
-// LinkPreviewUpdateOutbound é o evento de link preview atualizado (refetch
-// com cache expirou e a row foi reescrita), distribuído aos leitores do canal
-// com o objeto completo — o cliente atualiza o cache sem refetch. Um evento
-// por mensagem vinculada ao preview.
-type LinkPreviewUpdateOutbound struct {
-	Type      EventType         `json:"type"`
-	ChannelID string            `json:"channel_id"`
-	MessageID string            `json:"message_id"`
-	Preview   LinkPreviewObject `json:"preview"`
+// MessageEmbedsUpdateOutbound é o evento de embeds de uma mensagem: distribuído
+// quando os embeds da mensagem mudam (embeds automáticos processados em
+// background após criação/edição, substituição na edição, remoção ou refetch por
+// expiração de cache). Um evento por mensagem, com a lista ATUAL de embeds dela
+// — o cliente substitui o que tem em cache, sem diff.
+//
+// A lista contém apenas metadados: a mídia (imagem do embed, vídeo) é carregada
+// sob demanda por GET /embeds/:embed_id e GET /embeds/:embed_id/video. Nenhuma
+// imagem é transmitida em base64 no evento.
+type MessageEmbedsUpdateOutbound struct {
+	Type      EventType      `json:"type"`
+	ChannelID string         `json:"channel_id"`
+	MessageID string         `json:"message_id"`
+	Embeds    []models.Embed `json:"embeds"`
 }
 
 // ReactUpdateOutbound é o evento de atualização de reação em uma mensagem

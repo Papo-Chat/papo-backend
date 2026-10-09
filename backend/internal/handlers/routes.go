@@ -222,13 +222,13 @@ func RegisterMediaRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware)
 }
 
-// RegisterLinkPreviewRoutes registra as rotas de link previews.
-func RegisterLinkPreviewRoutes(e *echo.Echo, cfg *config.Config) {
-	e.GET("/link-previews/:preview_id", func(c echo.Context) error {
-		return GetLinkPreviewHandler(cfg.BaseURL, c)
+// RegisterEmbedRoutes registra as rotas de embeds.
+func RegisterEmbedRoutes(e *echo.Echo, cfg *config.Config) {
+	e.GET("/embeds/:embed_id", func(c echo.Context) error {
+		return GetEmbedHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
-	e.GET("/link-previews/:preview_id/video", func(c echo.Context) error {
-		return GetLinkPreviewVideoHandler(cfg.BaseURL, c)
+	e.GET("/embeds/:embed_id/video", func(c echo.Context) error {
+		return GetEmbedVideoHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 }
 

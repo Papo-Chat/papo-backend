@@ -64,8 +64,8 @@ func RunMaintenance(ctx context.Context, cfg *config.Config) {
 		if err := archiveUserConnections(jobCtx); err != nil {
 			utils.Errorf("manutenção: arquivamento de conexões de sessão: %v", err)
 		}
-		if removed := cleanupStalePreviewRateBuckets(); removed > 0 {
-			utils.Infof("manutenção: %d bucket(s) obsoleto(s) de rate limit de preview removido(s)", removed)
+		if removed := cleanupStaleEmbedRateBuckets(); removed > 0 {
+			utils.Infof("manutenção: %d bucket(s) obsoleto(s) de rate limit de embed removido(s)", removed)
 		}
 	}
 

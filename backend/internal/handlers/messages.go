@@ -2,10 +2,10 @@ package handlers
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
+	"strings"
 	"time"
 
 	"papo/internal/middleware"
@@ -94,6 +94,15 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 	content := c.FormValue("content")
 	replyTo := c.FormValue("reply_to")
 
+	// embeds: campo JSON (string no multipart) com os embeds customizados da
+	// mensagem. O service valida os limites e rejeita source_type de link.
+	embeds, err := parseEmbedsField(c.FormValue("embeds"))
+	if err != nil {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido",
+			"campo embeds deve ser um array JSON de embeds")
+	}
+
 	var inputs []services.AttachmentInput
 	if c.Request().MultipartForm != nil {
 		for _, fileHeader := range c.Request().MultipartForm.File["attachments"] {
@@ -112,7 +121,7 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 		}
 	}
 
-	message, err := services.CreateMessage(c.Request().Context(), channelID, userID, content, replyTo, inputs)
+	message, err := services.CreateMessage(c.Request().Context(), channelID, userID, content, replyTo, inputs, embeds)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -122,6 +131,9 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
 			"máximo de 10 attachments por mensagem")
+	case errors.Is(err, services.ErrInvalidEmbed):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", err.Error())
 	case errors.Is(err, services.ErrMessageNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado",
@@ -169,10 +181,21 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 		moderation.Enqueue(attachment.ID)
 	}
 
-	// Processa os link previews em background (o crawl não bloqueia a
-	// resposta); os previews chegam via WS new_preview.
+	// Embeds customizados já estão gravados: distribui message_embeds_update com
+	// a lista atual da mensagem (os link embeds ainda serão processados).
+	if len(message.Embeds) > 0 {
+		broadcastChannelEvent(c, message.ChannelID, websocket.MessageEmbedsUpdateOutbound{
+			Type:      websocket.EventTypeMessageEmbedsUpdate,
+			ChannelID: message.ChannelID,
+			MessageID: message.ID,
+			Embeds:    message.Embeds,
+		})
+	}
+
+	// Processa os link embeds do content em background (o crawl não bloqueia a
+	// resposta); eles chegam via WS message_embeds_update.
 	requestID := c.Request().Header.Get(echo.HeaderXRequestID)
-	go processNewMessagePreviews(context.Background(), requestID, message.ChannelID, message.ID, userID, content)
+	go processNewMessageEmbeds(context.Background(), requestID, message.ChannelID, message.ID, userID, content, message.Embeds)
 
 	// Dispara as notificações da mensagem em background (menções, replies e
 	// @everyone); as entregas chegam via WS new_notification (unicast).
@@ -182,7 +205,8 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 }
 
 type updateMessageRequest struct {
-	Content string `json:"content"`
+	Content string                `json:"content"`
+	Embeds  []services.EmbedInput `json:"embeds"`
 }
 
 // UpdateMessageHandler implementa PUT /messages/:message_id.
@@ -207,12 +231,15 @@ func UpdateMessageHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	message, err := services.EditMessage(c.Request().Context(), messageID, userID, req.Content)
+	message, err := services.EditMessage(c.Request().Context(), messageID, userID, req.Content, req.Embeds)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
 			"content tem no máximo 8192 caracteres")
+	case errors.Is(err, services.ErrInvalidEmbed):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", err.Error())
 	case errors.Is(err, services.ErrMessageNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "mensagem não encontrada")
@@ -241,11 +268,14 @@ func UpdateMessageHandler(baseURL string, c echo.Context) error {
 		EditedAt:  derefTime(message.EditedAt),
 	})
 
-	// Processa os link previews do content novo em background (o crawl não
-	// bloqueia a resposta); as mudanças chegam via WS new_preview /
-	// remove_preview.
+	// Distribui a lista atual de embeds da mensagem (os customizados gravados
+	// agora + os de link ainda vinculados, que o crawl ainda vai substituir).
 	requestID := c.Request().Header.Get(echo.HeaderXRequestID)
-	go processEditedMessagePreviews(context.Background(), requestID, message.ChannelID, message.ID, userID, derefString(message.Content))
+	broadcastMessageEmbedsUpdate(c.Request().Context(), requestID, message.ChannelID, message.ID)
+
+	// Processa os link embeds do content novo em background (o crawl não
+	// bloqueia a resposta); as mudanças chegam via WS message_embeds_update.
+	go processEditedMessageEmbeds(context.Background(), requestID, message.ChannelID, message.ID, userID, derefString(message.Content), message.Embeds)
 
 	return c.JSON(http.StatusOK, message)
 }
@@ -469,83 +499,100 @@ func broadcastChannelEventCtx(ctx context.Context, requestID, channelID string, 
 	hub.BroadcastToUsers(event, allowed)
 }
 
-// processNewMessagePreviews processa em background os link previews de uma
-// mensagem recém-criada e distribui os eventos new_preview (um por preview) e
-// link_preview_update (previews refetchados que atualizaram mensagens já
-// vinculadas). Best-effort: falhas são logadas e não afetam a mensagem já
-// criada.
-func processNewMessagePreviews(ctx context.Context, requestID, channelID, messageID, authorID, content string) {
-	previews, updates := services.ProcessMessagePreviews(ctx, messageID, authorID, content)
-	for _, p := range previews {
-		broadcastChannelEventCtx(ctx, requestID, channelID, websocket.NewPreviewOutbound{
-			Type:      websocket.EventTypeNewPreview,
-			MessageID: messageID,
-			PreviewID: p.ID,
-		})
+// processNewMessageEmbeds processa em background os link embeds de uma mensagem
+// recém-criada e distribui message_embeds_update com a lista atual de embeds da
+// mensagem (customizados + automáticos) e, para cada embed refetchado, um evento
+// por mensagem já vinculada a ele. Best-effort: falhas são logadas e não afetam
+// a mensagem já criada.
+func processNewMessageEmbeds(ctx context.Context, requestID, channelID, messageID, authorID, content string, customs []models.Embed) {
+	linked, updates := services.ProcessMessageEmbeds(ctx, messageID, authorID, content, customs)
+	if len(linked) > 0 {
+		broadcastMessageEmbedsUpdate(ctx, requestID, channelID, messageID)
 	}
-	broadcastLinkPreviewUpdates(ctx, requestID, updates)
+	broadcastEmbedUpdates(ctx, requestID, updates)
 }
 
-// processEditedMessagePreviews processa em background os link previews de uma
-// mensagem editada e distribui os eventos new_preview (adicionados),
-// remove_preview (removidos) e link_preview_update (previews refetchados que
-// atualizaram mensagens já vinculadas). Best-effort: falhas são logadas e não
+// processEditedMessageEmbeds processa em background os link embeds de uma
+// mensagem editada (os vínculos de link são substituídos) e distribui
+// message_embeds_update com a lista atual de embeds da mensagem — inclusive
+// quando a edição remove todos os embeds — e, para cada embed refetchado, um
+// evento por mensagem já vinculada a ele. Best-effort: falhas são logadas e não
 // afetam a mensagem já editada.
-func processEditedMessagePreviews(ctx context.Context, requestID, channelID, messageID, authorID, content string) {
-	added, removed, updates := services.ProcessEditedMessagePreviews(ctx, messageID, authorID, content)
-	for _, p := range added {
-		broadcastChannelEventCtx(ctx, requestID, channelID, websocket.NewPreviewOutbound{
-			Type:      websocket.EventTypeNewPreview,
-			MessageID: messageID,
-			PreviewID: p.ID,
-		})
+func processEditedMessageEmbeds(ctx context.Context, requestID, channelID, messageID, authorID, content string, customs []models.Embed) {
+	added, removed, updates := services.ProcessEditedMessageEmbeds(ctx, messageID, authorID, content, customs)
+	if len(added) > 0 || len(removed) > 0 {
+		broadcastMessageEmbedsUpdate(ctx, requestID, channelID, messageID)
 	}
-	for _, p := range removed {
-		broadcastChannelEventCtx(ctx, requestID, channelID, websocket.RemovePreviewOutbound{
-			Type:      websocket.EventTypeRemovePreview,
-			MessageID: messageID,
-			PreviewID: p.ID,
-		})
-	}
-	broadcastLinkPreviewUpdates(ctx, requestID, updates)
+	broadcastEmbedUpdates(ctx, requestID, updates)
 }
 
-// broadcastLinkPreviewUpdates distribui um evento link_preview_update por
-// mensagem vinculada a cada preview refetchado, apenas aos leitores do canal
-// da mensagem (broadcastChannelEventCtx). O objeto do preview é montado uma
-// única vez por preview (a imagem é lida do disco e reutilizada).
-func broadcastLinkPreviewUpdates(ctx context.Context, requestID string, updates []services.PreviewUpdate) {
+// broadcastMessageEmbedsUpdate distribui message_embeds_update com a lista
+// atual de embeds da mensagem, apenas aos leitores do canal. A lista traz
+// apenas metadados: a mídia é carregada sob demanda pelo cliente.
+func broadcastMessageEmbedsUpdate(ctx context.Context, requestID, channelID, messageID string) {
+	embedsByMessage, err := services.ListMessageEmbeds(ctx, []string{messageID})
+	if err != nil {
+		utils.Errorf("request_id=%s falha ao listar os embeds da mensagem %s: %v", requestID, messageID, err)
+		return
+	}
+	broadcastChannelEventCtx(ctx, requestID, channelID, websocket.MessageEmbedsUpdateOutbound{
+		Type:      websocket.EventTypeMessageEmbedsUpdate,
+		ChannelID: channelID,
+		MessageID: messageID,
+		Embeds:    embedsByMessage[messageID],
+	})
+}
+
+// broadcastEmbedUpdates distribui um evento message_embeds_update por mensagem
+// vinculada a um embed refetchado (a row mudou no banco e os clientes têm a
+// versão antiga), apenas aos leitores do canal da mensagem. As listas atuais
+// são lidas em lote (uma única query).
+func broadcastEmbedUpdates(ctx context.Context, requestID string, updates []services.EmbedUpdate) {
+	if len(updates) == 0 {
+		return
+	}
+
+	channelByMessage := make(map[string]string)
 	for _, u := range updates {
-		preview := linkPreviewUpdateObject(u.Preview)
 		for _, ref := range u.Messages {
-			broadcastChannelEventCtx(ctx, requestID, ref.ChannelID, websocket.LinkPreviewUpdateOutbound{
-				Type:      websocket.EventTypeLinkPreviewUpdate,
-				ChannelID: ref.ChannelID,
-				MessageID: ref.MessageID,
-				Preview:   preview,
-			})
+			channelByMessage[ref.MessageID] = ref.ChannelID
 		}
+	}
+	messageIDs := make([]string, 0, len(channelByMessage))
+	for messageID := range channelByMessage {
+		messageIDs = append(messageIDs, messageID)
+	}
+
+	embedsByMessage, err := services.ListMessageEmbeds(ctx, messageIDs)
+	if err != nil {
+		utils.Errorf("request_id=%s falha ao listar os embeds das mensagens atualizadas: %v", requestID, err)
+		return
+	}
+
+	for _, messageID := range messageIDs {
+		channelID := channelByMessage[messageID]
+		broadcastChannelEventCtx(ctx, requestID, channelID, websocket.MessageEmbedsUpdateOutbound{
+			Type:      websocket.EventTypeMessageEmbedsUpdate,
+			ChannelID: channelID,
+			MessageID: messageID,
+			Embeds:    embedsByMessage[messageID],
+		})
 	}
 }
 
-// linkPreviewUpdateObject monta o objeto do preview do evento
-// link_preview_update (mesma forma da resposta de GET /link-previews/:id):
-// campos públicos + image_data (base64) quando a thumbnail existe em disco.
-// Falha de leitura não bloqueia o evento (o preview segue sem a imagem).
-func linkPreviewUpdateObject(preview models.LinkPreview) websocket.LinkPreviewObject {
-	obj := websocket.LinkPreviewObject{LinkPreview: preview}
-	if preview.ImageMedia != nil {
-		data, err := os.ReadFile(services.MediaBlobPath(*preview.ImageMedia))
-		if errors.Is(err, os.ErrNotExist) {
-			// imagem ausente em disco: preview sem a imagem
-		} else if err != nil {
-			utils.Errorf("falha ao ler a imagem do preview %s: %v", preview.ID, err)
-		} else {
-			b64 := base64.StdEncoding.EncodeToString(data)
-			obj.ImageData = &b64
-		}
+// parseEmbedsField decodifica o campo "embeds" do multipart (uma string JSON)
+// em []services.EmbedInput. Campo ausente ou vazio → nil (mensagem sem embeds
+// customizados). Os limites são validados no service.
+func parseEmbedsField(raw string) ([]services.EmbedInput, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil, nil
 	}
-	return obj
+	var embeds []services.EmbedInput
+	if err := json.Unmarshal([]byte(raw), &embeds); err != nil {
+		return nil, err
+	}
+	return embeds, nil
 }
 
 // derefString retorna o valor da ponteira de string ou "" quando nil.
@@ -587,4 +634,3 @@ func broadcastDirectConversationUpdates(ctx context.Context, channelID string) {
 		})
 	}
 }
-

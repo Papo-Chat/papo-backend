@@ -187,7 +187,7 @@ func main() {
 	handlers.RegisterMessageRoutes(e, cfg)
 	handlers.RegisterAttachmentRoutes(e, cfg)
 	handlers.RegisterMediaRoutes(e, cfg)
-	handlers.RegisterLinkPreviewRoutes(e, cfg)
+	handlers.RegisterEmbedRoutes(e, cfg)
 	handlers.RegisterEmojiRoutes(e, cfg)
 	handlers.RegisterRoleRoutes(e, cfg)
 	handlers.RegisterSearchRoutes(e, cfg)

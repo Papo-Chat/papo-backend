@@ -32,8 +32,8 @@ import (
 	"papo/internal/storage"
 	"papo/internal/utils"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // migrationsDir é o caminho relativo ao diretório deste pacote (backend/internal/services/test_services).
@@ -477,7 +477,6 @@ func TestFxTwitterImageURL(t *testing.T) {
 		t.Fatalf("imagem do card inesperada: %q", got)
 	}
 }
-
 
 func TestFxTwitterVideoURL(t *testing.T) {
 	status := &fxTwitterStatus{Media: fxTwitterMedia{
@@ -5456,11 +5455,11 @@ func TestListMessages(t *testing.T) {
 	channel := newTestMessageChannel(t, &owner.ID)
 	grantChannelPermission(t, channel, reader, models.ChannelPermission{ReadChannel: true})
 
-	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "primeira mensagem", "", nil); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "primeira mensagem", "", nil, nil); err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "segunda mensagem", "", nil); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "segunda mensagem", "", nil, nil); err != nil {
 		t.Fatalf("falha ao criar segunda mensagem de apoio: %v", err)
 	}
 
@@ -5505,12 +5504,12 @@ func TestListMessagesSince(t *testing.T) {
 	owner := newTestMessageUser(t)
 	channel := newTestMessageChannel(t, &owner.ID)
 
-	first, err := CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", "", nil)
+	first, err := CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar primeira mensagem: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", "", nil); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", "", nil, nil); err != nil {
 		t.Fatalf("falha ao criar segunda mensagem: %v", err)
 	}
 
@@ -5531,7 +5530,7 @@ func TestListMessagesHasMore(t *testing.T) {
 	channel := newTestMessageChannel(t, &owner.ID)
 
 	for i := 0; i < 101; i++ {
-		if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem "+randHex(2), "", nil); err != nil {
+		if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem "+randHex(2), "", nil, nil); err != nil {
 			t.Fatalf("falha ao criar mensagem de apoio %d: %v", i, err)
 		}
 	}
@@ -5559,7 +5558,7 @@ func TestCreateMessage(t *testing.T) {
 	grantChannelPermission(t, channel, writer, models.ChannelPermission{SendMessages: true})
 
 	// dono do servidor: sempre pode enviar
-	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "olá mundo", "", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "olá mundo", "", nil, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage do dono retornou erro: %v", err)
 	}
@@ -5583,12 +5582,12 @@ func TestCreateMessage(t *testing.T) {
 	}
 
 	// usuário com send_messages: pode enviar
-	if _, err := CreateMessage(testCtx(), channel.ID, writer.ID, "mensagem do writer", "", nil); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, writer.ID, "mensagem do writer", "", nil, nil); err != nil {
 		t.Errorf("CreateMessage do writer retornou erro: %v", err)
 	}
 
 	// usuário sem permissão no canal: negado
-	if _, err := CreateMessage(testCtx(), channel.ID, stranger.ID, "mensagem do estranho", "", nil); !errors.Is(err, ErrPermissionDenied) {
+	if _, err := CreateMessage(testCtx(), channel.ID, stranger.ID, "mensagem do estranho", "", nil, nil); !errors.Is(err, ErrPermissionDenied) {
 		t.Errorf("esperava ErrPermissionDenied para usuário sem send_messages, obtive %v", err)
 	}
 }
@@ -5599,37 +5598,37 @@ func TestCreateMessageInvalidInput(t *testing.T) {
 	channel := newTestMessageChannel(t, &owner.ID)
 
 	// channel_id vazio
-	if _, err := CreateMessage(testCtx(), "", owner.ID, "conteúdo", "", nil); !errors.Is(err, ErrChannelNotFound) {
+	if _, err := CreateMessage(testCtx(), "", owner.ID, "conteúdo", "", nil, nil); !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para channel_id vazio, obtive %v", err)
 	}
 
 	// canal inexistente
-	if _, err := CreateMessage(testCtx(), randUUID(), owner.ID, "conteúdo", "", nil); !errors.Is(err, ErrChannelNotFound) {
+	if _, err := CreateMessage(testCtx(), randUUID(), owner.ID, "conteúdo", "", nil, nil); !errors.Is(err, ErrChannelNotFound) {
 		t.Errorf("esperava ErrChannelNotFound para canal inexistente, obtive %v", err)
 	}
 
 	// author_id vazio
-	if _, err := CreateMessage(testCtx(), channel.ID, "", "conteúdo", "", nil); !errors.Is(err, ErrInvalidInput) {
+	if _, err := CreateMessage(testCtx(), channel.ID, "", "conteúdo", "", nil, nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para author_id vazio, obtive %v", err)
 	}
 
 	// content acima do limite (8192 caracteres)
-	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, strings.Repeat("a", 8193), "", nil); !errors.Is(err, ErrInvalidInput) {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, strings.Repeat("a", 8193), "", nil, nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para content acima do limite, obtive %v", err)
 	}
 
 	// content vazio sem attachments
-	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", "", nil); !errors.Is(err, ErrInvalidInput) {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", "", nil, nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para content vazio sem attachments, obtive %v", err)
 	}
 
 	// nome de attachment vazio
-	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", "", []AttachmentInput{{OriginalFileName: "", Content: strings.NewReader("x")}}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", "", []AttachmentInput{{OriginalFileName: "", Content: strings.NewReader("x")}}, nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para nome de attachment vazio, obtive %v", err)
 	}
 
 	// nome de attachment acima do limite (128 caracteres)
-	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", "", []AttachmentInput{{OriginalFileName: strings.Repeat("a", 129) + ".txt", Content: strings.NewReader("x")}}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", "", []AttachmentInput{{OriginalFileName: strings.Repeat("a", 129) + ".txt", Content: strings.NewReader("x")}}, nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para nome de attachment acima do limite, obtive %v", err)
 	}
 }
@@ -5640,13 +5639,13 @@ func TestCreateMessageBoundary(t *testing.T) {
 	channel := newTestMessageChannel(t, &owner.ID)
 
 	// content exatamente no limite (8192 caracteres): aceito
-	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, strings.Repeat("a", 8192), "", nil); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, strings.Repeat("a", 8192), "", nil, nil); err != nil {
 		t.Errorf("CreateMessage com content no limite retornou erro: %v", err)
 	}
 
 	// nome de attachment exatamente no limite (128 caracteres): aceito
 	name := strings.Repeat("a", 127) + "b"
-	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", "", []AttachmentInput{{OriginalFileName: name, Content: strings.NewReader("conteúdo")}}); err != nil {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "", "", []AttachmentInput{{OriginalFileName: name, Content: strings.NewReader("conteúdo")}}, nil); err != nil {
 		t.Errorf("CreateMessage com nome de attachment no limite retornou erro: %v", err)
 	}
 }
@@ -5656,12 +5655,12 @@ func TestCreateMessageReplyTo(t *testing.T) {
 	owner := newTestMessageUser(t)
 	channel := newTestMessageChannel(t, &owner.ID)
 
-	target, err := CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem alvo", "", nil)
+	target, err := CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem alvo", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem alvo: %v", err)
 	}
 
-	reply, err := CreateMessage(testCtx(), channel.ID, owner.ID, "resposta", target.ID, nil)
+	reply, err := CreateMessage(testCtx(), channel.ID, owner.ID, "resposta", target.ID, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage com reply_to retornou erro: %v", err)
 	}
@@ -5683,7 +5682,7 @@ func TestCreateMessageReplyToNotFound(t *testing.T) {
 	owner := newTestMessageUser(t)
 	channel := newTestMessageChannel(t, &owner.ID)
 
-	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "resposta", randUUID(), nil); !errors.Is(err, ErrMessageNotFound) {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "resposta", randUUID(), nil, nil); !errors.Is(err, ErrMessageNotFound) {
 		t.Errorf("esperava ErrMessageNotFound para reply_to inexistente, obtive %v", err)
 	}
 }
@@ -5704,12 +5703,12 @@ func TestCreateMessageReplyToDifferentChannel(t *testing.T) {
 		t.Fatalf("falha ao criar canal B: %v", err)
 	}
 
-	target, err := CreateMessage(testCtx(), channelA.ID, owner.ID, "mensagem no canal A", "", nil)
+	target, err := CreateMessage(testCtx(), channelA.ID, owner.ID, "mensagem no canal A", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem no canal A: %v", err)
 	}
 
-	if _, err := CreateMessage(testCtx(), channelB.ID, owner.ID, "resposta no canal B", target.ID, nil); !errors.Is(err, ErrInvalidInput) {
+	if _, err := CreateMessage(testCtx(), channelB.ID, owner.ID, "resposta no canal B", target.ID, nil, nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para reply_to de outro canal, obtive %v", err)
 	}
 }
@@ -5719,11 +5718,11 @@ func TestCreateMessageReplyToDangling(t *testing.T) {
 	owner := newTestMessageUser(t)
 	channel := newTestMessageChannel(t, &owner.ID)
 
-	target, err := CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem a ser apagada", "", nil)
+	target, err := CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem a ser apagada", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem alvo: %v", err)
 	}
-	reply, err := CreateMessage(testCtx(), channel.ID, owner.ID, "resposta", target.ID, nil)
+	reply, err := CreateMessage(testCtx(), channel.ID, owner.ID, "resposta", target.ID, nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar resposta: %v", err)
 	}
@@ -5759,7 +5758,7 @@ func TestCreateMessageMaxAttachments(t *testing.T) {
 	}
 
 	// exatamente no limite (10 attachments): aceito
-	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "no limite", "", inputs(10))
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "no limite", "", inputs(10), nil)
 	if err != nil {
 		t.Fatalf("CreateMessage com 10 attachments retornou erro: %v", err)
 	}
@@ -5768,7 +5767,7 @@ func TestCreateMessageMaxAttachments(t *testing.T) {
 	}
 
 	// acima do limite (11 attachments): ErrTooManyAttachments
-	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "acima do limite", "", inputs(11)); !errors.Is(err, ErrTooManyAttachments) {
+	if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "acima do limite", "", inputs(11), nil); !errors.Is(err, ErrTooManyAttachments) {
 		t.Errorf("esperava ErrTooManyAttachments para 11 attachments, obtive %v", err)
 	}
 }
@@ -5794,7 +5793,7 @@ func TestCreateMessageWithAttachments(t *testing.T) {
 	// dono: pode enviar com attachments
 	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "com arquivo", "", []AttachmentInput{
 		{OriginalFileName: "documento.txt", Content: strings.NewReader("conteúdo do documento")},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage do dono com attachment retornou erro: %v", err)
 	}
@@ -5833,14 +5832,14 @@ func TestCreateMessageWithAttachments(t *testing.T) {
 	// writer com send_messages + send_attachment: pode enviar
 	if _, err := CreateMessage(testCtx(), channel.ID, writer.ID, "com arquivo do writer", "", []AttachmentInput{
 		{OriginalFileName: "outro.txt", Content: strings.NewReader("outro conteúdo")},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Errorf("CreateMessage do writer com attachment retornou erro: %v", err)
 	}
 
 	// noAttachment com send_messages mas sem send_attachment: negado
 	if _, err := CreateMessage(testCtx(), channel.ID, noAttachment.ID, "com arquivo negado", "", []AttachmentInput{
 		{OriginalFileName: "negado.txt", Content: strings.NewReader("não deve passar")},
-	}); !errors.Is(err, ErrPermissionDenied) {
+	}, nil); !errors.Is(err, ErrPermissionDenied) {
 		t.Errorf("esperava ErrPermissionDenied para usuário sem send_attachment, obtive %v", err)
 	}
 }
@@ -5853,7 +5852,7 @@ func TestCreateMessageAttachmentSanitization(t *testing.T) {
 	// nome com componentes de caminho é sanitizado para o último segmento
 	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "sanitizado", "", []AttachmentInput{
 		{OriginalFileName: "campos/sub/pasta/arquivo.txt", Content: strings.NewReader("conteúdo")},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage retornou erro: %v", err)
 	}
@@ -5875,11 +5874,11 @@ func TestCreateMessageAttachmentDeduplication(t *testing.T) {
 		return AttachmentInput{OriginalFileName: "dup.txt", Content: strings.NewReader(content)}
 	}
 
-	first, err := CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", "", []AttachmentInput{input()})
+	first, err := CreateMessage(testCtx(), channel.ID, owner.ID, "primeira", "", []AttachmentInput{input()}, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage da primeira mensagem retornou erro: %v", err)
 	}
-	second, err := CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", "", []AttachmentInput{input()})
+	second, err := CreateMessage(testCtx(), channel.ID, owner.ID, "segunda", "", []AttachmentInput{input()}, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage da segunda mensagem retornou erro: %v", err)
 	}
@@ -5918,13 +5917,13 @@ func TestEditMessage(t *testing.T) {
 	other := newTestMessageUser(t)
 	channel := newTestMessageChannel(t, &owner.ID)
 
-	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "original", "", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "original", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
 
 	// autor: pode editar
-	edited, err := EditMessage(testCtx(), message.ID, owner.ID, "editado")
+	edited, err := EditMessage(testCtx(), message.ID, owner.ID, "editado", nil)
 	if err != nil {
 		t.Fatalf("EditMessage do autor retornou erro: %v", err)
 	}
@@ -5936,7 +5935,7 @@ func TestEditMessage(t *testing.T) {
 	}
 
 	// não autor: negado
-	if _, err := EditMessage(testCtx(), message.ID, other.ID, "invadido"); !errors.Is(err, ErrPermissionDenied) {
+	if _, err := EditMessage(testCtx(), message.ID, other.ID, "invadido", nil); !errors.Is(err, ErrPermissionDenied) {
 		t.Errorf("esperava ErrPermissionDenied para não autor, obtive %v", err)
 	}
 }
@@ -5946,13 +5945,13 @@ func TestEditMessageClearsContent(t *testing.T) {
 	owner := newTestMessageUser(t)
 	channel := newTestMessageChannel(t, &owner.ID)
 
-	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "vai ser limpo", "", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "vai ser limpo", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
 
 	// content vazio limpa o texto da mensagem (NULL)
-	edited, err := EditMessage(testCtx(), message.ID, owner.ID, "")
+	edited, err := EditMessage(testCtx(), message.ID, owner.ID, "", nil)
 	if err != nil {
 		t.Fatalf("EditMessage com content vazio retornou erro: %v", err)
 	}
@@ -5965,28 +5964,28 @@ func TestEditMessageInvalidInput(t *testing.T) {
 	cleanServers(testCtx())
 	owner := newTestMessageUser(t)
 	channel := newTestMessageChannel(t, &owner.ID)
-	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", "", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
 
 	// message_id vazio
-	if _, err := EditMessage(testCtx(), "", owner.ID, "x"); !errors.Is(err, ErrMessageNotFound) {
+	if _, err := EditMessage(testCtx(), "", owner.ID, "x", nil); !errors.Is(err, ErrMessageNotFound) {
 		t.Errorf("esperava ErrMessageNotFound para message_id vazio, obtive %v", err)
 	}
 
 	// mensagem inexistente
-	if _, err := EditMessage(testCtx(), randUUID(), owner.ID, "x"); !errors.Is(err, ErrMessageNotFound) {
+	if _, err := EditMessage(testCtx(), randUUID(), owner.ID, "x", nil); !errors.Is(err, ErrMessageNotFound) {
 		t.Errorf("esperava ErrMessageNotFound para mensagem inexistente, obtive %v", err)
 	}
 
 	// author_id vazio
-	if _, err := EditMessage(testCtx(), message.ID, "", "x"); !errors.Is(err, ErrInvalidInput) {
+	if _, err := EditMessage(testCtx(), message.ID, "", "x", nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para author_id vazio, obtive %v", err)
 	}
 
 	// content acima do limite
-	if _, err := EditMessage(testCtx(), message.ID, owner.ID, strings.Repeat("a", 8193)); !errors.Is(err, ErrInvalidInput) {
+	if _, err := EditMessage(testCtx(), message.ID, owner.ID, strings.Repeat("a", 8193), nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("esperava ErrInvalidInput para content acima do limite, obtive %v", err)
 	}
 }
@@ -5998,7 +5997,7 @@ func TestDeleteMessage(t *testing.T) {
 	owner := newTestMessageUser(t)
 	channel := newTestMessageChannel(t, &owner.ID)
 
-	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "vai ser apagada", "", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "vai ser apagada", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -6020,7 +6019,7 @@ func TestDeleteMessageByModerator(t *testing.T) {
 	channel := newTestMessageChannel(t, &owner.ID)
 	grantChannelPermission(t, channel, moderator, models.ChannelPermission{DeleteMessages: true})
 
-	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem do dono", "", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem do dono", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -6034,7 +6033,7 @@ func TestDeleteMessageByModerator(t *testing.T) {
 	}
 
 	// usuário sem permissão: negado
-	other, err := CreateMessage(testCtx(), channel.ID, owner.ID, "outra mensagem", "", nil)
+	other, err := CreateMessage(testCtx(), channel.ID, owner.ID, "outra mensagem", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -6047,7 +6046,7 @@ func TestDeleteMessageInvalidInput(t *testing.T) {
 	cleanServers(testCtx())
 	owner := newTestMessageUser(t)
 	channel := newTestMessageChannel(t, &owner.ID)
-	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", "", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "conteúdo", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
@@ -6211,7 +6210,7 @@ func TestDownloadAttachment(t *testing.T) {
 
 	message, err := CreateMessage(testCtx(), channel.ID, owner.ID, "com anexo", "", []AttachmentInput{
 		{OriginalFileName: "documento.txt", Content: strings.NewReader("conteúdo do documento")},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage com attachment retornou erro: %v", err)
 	}
@@ -6605,29 +6604,29 @@ func TestSearchMessages(t *testing.T) {
 	}
 	grantChannelPermission(t, restricted, reader, models.ChannelPermission{ReadChannel: true})
 
-	m1, err := CreateMessage(testCtx(), channel.ID, owner.ID, "zebra borboleta", "", nil)
+	m1, err := CreateMessage(testCtx(), channel.ID, owner.ID, "zebra borboleta", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 1: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m2, err := CreateMessage(testCtx(), channel.ID, reader.ID, "borboleta vagalume", "", nil)
+	m2, err := CreateMessage(testCtx(), channel.ID, reader.ID, "borboleta vagalume", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 2: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m3, err := CreateMessage(testCtx(), channel.ID, stranger.ID, "vagalume", "", nil)
+	m3, err := CreateMessage(testCtx(), channel.ID, stranger.ID, "vagalume", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 3: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
 	m4, err := CreateMessage(testCtx(), channel.ID, owner.ID, "peixe", "", []AttachmentInput{
 		{OriginalFileName: "peixe.txt", Content: strings.NewReader("conteúdo do peixe")},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 4 com attachment: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	m5, err := CreateMessage(testCtx(), restricted.ID, owner.ID, "zebra secreta", "", nil)
+	m5, err := CreateMessage(testCtx(), restricted.ID, owner.ID, "zebra secreta", "", nil, nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem 5 no canal restrito: %v", err)
 	}
@@ -6815,7 +6814,7 @@ func TestSearchMessages(t *testing.T) {
 
 	t.Run("paginação", func(t *testing.T) {
 		for i := 0; i < 101; i++ {
-			if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "pagina "+randHex(2), "", nil); err != nil {
+			if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "pagina "+randHex(2), "", nil, nil); err != nil {
 				t.Fatalf("falha ao criar mensagem de paginação %d: %v", i, err)
 			}
 		}
@@ -7278,15 +7277,16 @@ func TestEnsureAttachmentThumbnailEnabledFlag(t *testing.T) {
 	})
 }
 
-func TestDownloadPreviewImageDisabled(t *testing.T) {
+func TestDownloadEmbedImageDisabled(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.ThumbnailEnabled = false
-	if sha, err := downloadPreviewImage(testCtx(), cfg, "https://exemplo.com/imagem.png"); err == nil || sha != "" {
-		t.Error("THUMBNAIL_ENABLED=false deveria retornar erro com hash vazio (sem fetch)")
+	media, err := downloadEmbedImage(testCtx(), cfg, "https://exemplo.com/imagem.png")
+	if err == nil || media != nil {
+		t.Error("THUMBNAIL_ENABLED=false deveria retornar erro sem mídia (sem fetch)")
 	}
 }
 
-func TestExtractPreviewURLs(t *testing.T) {
+func TestExtractEmbedURLs(t *testing.T) {
 	cases := []struct {
 		content string
 		max     int
@@ -7303,14 +7303,14 @@ func TestExtractPreviewURLs(t *testing.T) {
 		{"https://a.com/x", 0, []string{"https://a.com/x"}},
 	}
 	for _, tc := range cases {
-		got := extractPreviewURLs(tc.content, tc.max)
+		got := extractEmbedURLs(tc.content, tc.max)
 		if len(got) != len(tc.want) {
-			t.Errorf("extractPreviewURLs(%q, %d) = %v, esperado %v", tc.content, tc.max, got, tc.want)
+			t.Errorf("extractEmbedURLs(%q, %d) = %v, esperado %v", tc.content, tc.max, got, tc.want)
 			continue
 		}
 		for i := range got {
 			if got[i] != tc.want[i] {
-				t.Errorf("extractPreviewURLs(%q, %d)[%d] = %q, esperado %q", tc.content, tc.max, i, got[i], tc.want[i])
+				t.Errorf("extractEmbedURLs(%q, %d)[%d] = %q, esperado %q", tc.content, tc.max, i, got[i], tc.want[i])
 			}
 		}
 	}
@@ -7342,17 +7342,30 @@ func TestParseOpenGraph(t *testing.T) {
 			<title>Título da página</title>
 			<meta property="og:title" content="OG Title">
 			<meta property="og:description" content="OG Desc">
+			<meta property="og:url" content="https://exemplo.com/noticias/post-1">
+			<meta property="og:site_name" content="Exemplo News">
 			<meta property="og:image" content="https://cdn.exemplo.com/img.png">
+			<meta property="og:image:width" content="1200">
+			<meta property="og:image:height" content="630">
 		</head><body></body></html>`)
-		title, desc, img := parseOpenGraph(body, page)
-		if title != "OG Title" {
-			t.Errorf("title = %q, esperado %q", title, "OG Title")
+		meta := parseOpenGraph(body, page)
+		if meta.title != "OG Title" {
+			t.Errorf("title = %q, esperado %q", meta.title, "OG Title")
 		}
-		if desc != "OG Desc" {
-			t.Errorf("description = %q, esperado %q", desc, "OG Desc")
+		if meta.description != "OG Desc" {
+			t.Errorf("description = %q, esperado %q", meta.description, "OG Desc")
 		}
-		if img != "https://cdn.exemplo.com/img.png" {
-			t.Errorf("image = %q, esperado URL absoluta do og:image", img)
+		if meta.siteName != "Exemplo News" {
+			t.Errorf("site_name = %q, esperado %q", meta.siteName, "Exemplo News")
+		}
+		if meta.canonicalURL != "https://exemplo.com/noticias/post-1" {
+			t.Errorf("canonicalURL = %q, esperado og:url", meta.canonicalURL)
+		}
+		if meta.imageURL != "https://cdn.exemplo.com/img.png" {
+			t.Errorf("image = %q, esperado URL absoluta do og:image", meta.imageURL)
+		}
+		if meta.imageWidth != 1200 || meta.imageHeight != 630 {
+			t.Errorf("dimensões da imagem = %d/%d, esperado 1200/630", meta.imageWidth, meta.imageHeight)
 		}
 	})
 
@@ -7363,26 +7376,29 @@ func TestParseOpenGraph(t *testing.T) {
 			<meta name="description" content="Página Desc">
 			<meta name="twitter:image" content="https://cdn.exemplo.com/tw.png">
 		</head><body></body></html>`)
-		title, desc, img := parseOpenGraph(body, page)
-		if title != "TW Title" {
-			t.Errorf("title = %q, esperado fallback twitter", title)
+		meta := parseOpenGraph(body, page)
+		if meta.title != "TW Title" {
+			t.Errorf("title = %q, esperado fallback twitter", meta.title)
 		}
-		if desc != "Página Desc" {
-			t.Errorf("description = %q, esperado meta name=description", desc)
+		if meta.description != "Página Desc" {
+			t.Errorf("description = %q, esperado meta name=description", meta.description)
 		}
-		if img != "https://cdn.exemplo.com/tw.png" {
-			t.Errorf("image = %q, esperado twitter:image", img)
+		if meta.imageURL != "https://cdn.exemplo.com/tw.png" {
+			t.Errorf("image = %q, esperado twitter:image", meta.imageURL)
+		}
+		if meta.siteName != "" || meta.canonicalURL != "" {
+			t.Errorf("site_name/canonicalURL deveriam ser vazios, obtive %q/%q", meta.siteName, meta.canonicalURL)
 		}
 	})
 
 	t.Run("title da pagina quando nao ha meta", func(t *testing.T) {
 		body := []byte(`<html><head><title>Só o Title</title></head><body></body></html>`)
-		title, desc, img := parseOpenGraph(body, page)
-		if title != "Só o Title" {
-			t.Errorf("title = %q, esperado <title> da página", title)
+		meta := parseOpenGraph(body, page)
+		if meta.title != "Só o Title" {
+			t.Errorf("title = %q, esperado <title> da página", meta.title)
 		}
-		if desc != "" || img != "" {
-			t.Errorf("desc/img deveriam ser vazios, obtive %q/%q", desc, img)
+		if meta.description != "" || meta.imageURL != "" {
+			t.Errorf("desc/img deveriam ser vazios, obtive %q/%q", meta.description, meta.imageURL)
 		}
 	})
 
@@ -7390,16 +7406,79 @@ func TestParseOpenGraph(t *testing.T) {
 		body := []byte(`<html><head>
 			<meta property="og:image" content="/midias/img.png">
 		</head><body></body></html>`)
-		_, _, img := parseOpenGraph(body, page)
-		if img != "https://exemplo.com/midias/img.png" {
-			t.Errorf("image = %q, esperado resolvida contra a URL da página", img)
+		meta := parseOpenGraph(body, page)
+		if meta.imageURL != "https://exemplo.com/midias/img.png" {
+			t.Errorf("image = %q, esperado resolvida contra a URL da página", meta.imageURL)
 		}
 	})
 
 	t.Run("corpo vazio", func(t *testing.T) {
-		title, desc, img := parseOpenGraph(nil, page)
-		if title != "" || desc != "" || img != "" {
-			t.Errorf("corpo vazio deveria retornar tudo vazio, obtive %q/%q/%q", title, desc, img)
+		meta := parseOpenGraph(nil, page)
+		if meta.title != "" || meta.description != "" || meta.imageURL != "" || meta.videoURL != "" {
+			t.Errorf("corpo vazio deveria retornar tudo vazio, obtive %+v", meta)
+		}
+	})
+
+	t.Run("og:video:secure_url tem prioridade", func(t *testing.T) {
+		body := []byte(`<html><head>
+			<meta property="og:video" content="http://cdn.exemplo.com/v.mp4">
+			<meta property="og:video:url" content="http://cdn.exemplo.com/v2.mp4">
+			<meta property="og:video:secure_url" content="https://cdn.exemplo.com/secure.mp4">
+			<meta property="og:video:type" content="video/mp4">
+			<meta property="og:video:width" content="1280">
+			<meta property="og:video:height" content="720">
+		</head><body></body></html>`)
+		meta := parseOpenGraph(body, page)
+		if meta.videoURL != "https://cdn.exemplo.com/secure.mp4" {
+			t.Errorf("videoURL = %q, esperado a URL segura", meta.videoURL)
+		}
+		if meta.videoType != "video/mp4" {
+			t.Errorf("videoType = %q, esperado video/mp4", meta.videoType)
+		}
+		if meta.videoWidth != 1280 || meta.videoHeight != 720 {
+			t.Errorf("dimensões do vídeo = %d/%d, esperado 1280/720", meta.videoWidth, meta.videoHeight)
+		}
+	})
+
+	t.Run("og:video em http é descartado", func(t *testing.T) {
+		body := []byte(`<html><head>
+			<meta property="og:video" content="http://cdn.exemplo.com/v.mp4">
+			<meta property="og:video:url" content="http://cdn.exemplo.com/v2.mp4">
+			<meta property="og:video:type" content="video/mp4">
+		</head><body></body></html>`)
+		meta := parseOpenGraph(body, page)
+		if meta.videoURL != "" {
+			t.Errorf("vídeo em http deveria ser descartado, obtive %q", meta.videoURL)
+		}
+	})
+
+	t.Run("og:video relativo resolvido contra a pagina", func(t *testing.T) {
+		body := []byte(`<html><head>
+			<meta property="og:video" content="/midias/v.mp4">
+			<meta property="og:video:type" content="video/mp4; charset=binary">
+		</head><body></body></html>`)
+		meta := parseOpenGraph(body, page)
+		if meta.videoURL != "https://exemplo.com/midias/v.mp4" {
+			t.Errorf("videoURL = %q, esperado resolvida contra a URL da página", meta.videoURL)
+		}
+		if meta.videoType != "video/mp4" {
+			t.Errorf("videoType = %q, esperado video/mp4 sem parâmetros", meta.videoType)
+		}
+	})
+
+	t.Run("og:video com tipo de página não é vídeo", func(t *testing.T) {
+		body := []byte(`<html><head>
+			<meta property="og:video" content="https://exemplo.com/player">
+			<meta property="og:video:type" content="text/html">
+		</head><body></body></html>`)
+		meta := parseOpenGraph(body, page)
+		// O parser coleta o metadado; quem decide se é vídeo aceito é o
+		// allowlist de MIME (allowedVideoMIMEs) em GetOrCreateEmbed.
+		if meta.videoURL == "" {
+			t.Fatalf("o parser deveria coletar o og:video, obtive vazio")
+		}
+		if allowedVideoMIMEs[meta.videoType] {
+			t.Errorf("text/html não deveria ser um MIME de vídeo aceito: %q", meta.videoType)
 		}
 	})
 }
@@ -7508,36 +7587,38 @@ func TestNullableTextAndFirstNonEmpty(t *testing.T) {
 	}
 }
 
-func TestGetOrCreatePreviewCacheHit(t *testing.T) {
+func TestGetOrCreateEmbedCacheHit(t *testing.T) {
 	ctx := testCtx()
 	user := newTestMessageUser(t)
 
 	title := "Título em cache"
-	seed, err := storage.UpsertPreview(ctx, models.LinkPreview{
-		URL:   "https://cache-hit.example.com/pagina",
-		Kind:  "og",
-		Title: &title,
+	seed, err := storage.UpsertLinkEmbed(ctx, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    strPtr("https://cache-hit.example.com/pagina"),
+		URL:         strPtr("https://cache-hit.example.com/pagina"),
+		Title:       &title,
 	})
 	if err != nil {
-		t.Fatalf("UpsertPreview retornou erro: %v", err)
+		t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
 	}
 
-	got, refetched, err := GetOrCreatePreview(ctx, user.ID, "https://cache-hit.example.com/pagina")
+	got, refetched, err := GetOrCreateEmbed(ctx, user.ID, "https://cache-hit.example.com/pagina")
 	if err != nil {
-		t.Fatalf("GetOrCreatePreview com cache hit retornou erro (deveria evitar rede): %v", err)
+		t.Fatalf("GetOrCreateEmbed com cache hit retornou erro (deveria evitar rede): %v", err)
 	}
 	if refetched {
 		t.Errorf("cache hit dentro do TTL não deve marcar refetch, obtive refetched=true")
 	}
 	if got.ID != seed.ID {
-		t.Errorf("esperava o mesmo id do preview em cache, obtive %s (esperado %s)", got.ID, seed.ID)
+		t.Errorf("esperava o mesmo id do embed em cache, obtive %s (esperado %s)", got.ID, seed.ID)
 	}
 	if got.Title == nil || *got.Title != title {
 		t.Errorf("esperava title %q do cache, obtive %v", title, got.Title)
 	}
 }
 
-func TestGetLinkPreview(t *testing.T) {
+func TestGetEmbed(t *testing.T) {
 	ctx := testCtx()
 	cleanServers(ctx)
 	owner := newTestMessageUser(t)
@@ -7548,79 +7629,85 @@ func TestGetLinkPreview(t *testing.T) {
 	imgBytes := pngAvatarBytes(16, 16)
 	imgHash := newTestMediaHash(t, imgBytes)
 
-	preview, err := storage.UpsertPreview(ctx, models.LinkPreview{
-		URL:        "https://preview-image.example.com/pagina",
-		Kind:       "og",
-		ImageMedia: &imgHash,
-	})
-	if err != nil {
-		t.Fatalf("UpsertPreview retornou erro: %v", err)
+	seedLinkEmbed := func(rawURL string, mediaSHA *string) models.Embed {
+		t.Helper()
+		cacheKey := rawURL
+		embed := models.Embed{
+			SourceType:  "link",
+			FetchMethod: "opengraph",
+			CacheKey:    &cacheKey,
+			URL:         &cacheKey,
+		}
+		if mediaSHA != nil {
+			embed.Thumbnail = &models.EmbedMedia{MediaSHA: mediaSHA}
+		}
+		created, err := storage.UpsertLinkEmbed(ctx, embed)
+		if err != nil {
+			t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
+		}
+		return created
 	}
 
-	message, err := storage.CreateMessage(ctx, channel.ID, owner.ID, "mensagem com preview", "", nil)
+	embed := seedLinkEmbed("https://embed-image.example.com/pagina", &imgHash)
+
+	message, err := storage.CreateMessage(ctx, channel.ID, owner.ID, "mensagem com embed", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
-	if err := storage.AddMessagePreviews(ctx, message.ID, []string{preview.ID}); err != nil {
-		t.Fatalf("falha ao vincular preview à mensagem: %v", err)
+	if err := storage.AddMessageEmbeds(ctx, message.ID, []string{embed.ID}); err != nil {
+		t.Fatalf("falha ao vincular embed à mensagem: %v", err)
 	}
 
 	t.Run("dono acessa", func(t *testing.T) {
-		got, err := GetLinkPreview(ctx, preview.ID, owner.ID)
+		got, err := GetEmbed(ctx, embed.ID, owner.ID)
 		if err != nil {
-			t.Fatalf("GetLinkPreview para o dono retornou erro: %v", err)
+			t.Fatalf("GetEmbed para o dono retornou erro: %v", err)
 		}
-		if got.ID != preview.ID {
-			t.Errorf("esperava preview %s, obtive %s", preview.ID, got.ID)
+		if got.ID != embed.ID {
+			t.Errorf("esperava embed %s, obtive %s", embed.ID, got.ID)
+		}
+		// A mídia é resolvida do hash (o caminho nunca vem do cliente).
+		if got.Thumbnail == nil || got.Thumbnail.MediaSHA == nil || *got.Thumbnail.MediaSHA != imgHash {
+			t.Fatalf("esperava thumbnail com o hash da mídia, obtive %+v", got.Thumbnail)
+		}
+		if got.ThumbnailFilePath == nil || *got.ThumbnailFilePath != mediaBlobPath(imgHash) {
+			t.Errorf("esperava ThumbnailFilePath %s, obtive %v", mediaBlobPath(imgHash), got.ThumbnailFilePath)
 		}
 	})
 
-	t.Run("preview sem imagem é acessível (retorna sem imagem)", func(t *testing.T) {
-		noImg, err := storage.UpsertPreview(ctx, models.LinkPreview{
-			URL:  "https://preview-image.example.com/sem-imagem",
-			Kind: "og",
-		})
+	t.Run("embed sem imagem é acessível (retorna sem imagem)", func(t *testing.T) {
+		noImg := seedLinkEmbed("https://embed-image.example.com/sem-imagem", nil)
+		if err := storage.AddMessageEmbeds(ctx, message.ID, []string{noImg.ID}); err != nil {
+			t.Fatalf("falha ao vincular embed: %v", err)
+		}
+		got, err := GetEmbed(ctx, noImg.ID, owner.ID)
 		if err != nil {
-			t.Fatalf("UpsertPreview retornou erro: %v", err)
+			t.Fatalf("embed sem imagem deveria ser acessível, obtive %v", err)
 		}
-		if err := storage.AddMessagePreviews(ctx, message.ID, []string{noImg.ID}); err != nil {
-			t.Fatalf("falha ao vincular preview: %v", err)
-		}
-		got, err := GetLinkPreview(ctx, noImg.ID, owner.ID)
-		if err != nil {
-			t.Fatalf("preview sem imagem deveria ser acessível, obtive %v", err)
-		}
-		if got.ID != noImg.ID || got.ImageFilePath != nil {
-			t.Errorf("esperava preview %s sem imagem, obtive id=%s img=%v", noImg.ID, got.ID, got.ImageFilePath)
+		if got.ID != noImg.ID || got.ThumbnailFilePath != nil {
+			t.Errorf("esperava embed %s sem imagem, obtive id=%s path=%v", noImg.ID, got.ID, got.ThumbnailFilePath)
 		}
 	})
 
-	t.Run("preview sem vinculo vira 404", func(t *testing.T) {
-		unlinked, err := storage.UpsertPreview(ctx, models.LinkPreview{
-			URL:        "https://preview-image.example.com/sem-vinculo",
-			Kind:       "og",
-			ImageMedia: &imgHash,
-		})
-		if err != nil {
-			t.Fatalf("UpsertPreview retornou erro: %v", err)
-		}
-		if _, err := GetLinkPreview(ctx, unlinked.ID, owner.ID); !errors.Is(err, ErrPreviewNotFound) {
-			t.Errorf("esperava ErrPreviewNotFound para preview sem vinculo, obtive %v", err)
+	t.Run("embed sem vinculo vira 404", func(t *testing.T) {
+		unlinked := seedLinkEmbed("https://embed-image.example.com/sem-vinculo", &imgHash)
+		if _, err := GetEmbed(ctx, unlinked.ID, owner.ID); !errors.Is(err, ErrEmbedNotFound) {
+			t.Errorf("esperava ErrEmbedNotFound para embed sem vinculo, obtive %v", err)
 		}
 	})
 
-	t.Run("preview inexistente vira 404", func(t *testing.T) {
-		if _, err := GetLinkPreview(ctx, randUUID(), owner.ID); !errors.Is(err, ErrPreviewNotFound) {
-			t.Errorf("esperava ErrPreviewNotFound, obtive %v", err)
+	t.Run("embed inexistente vira 404", func(t *testing.T) {
+		if _, err := GetEmbed(ctx, randUUID(), owner.ID); !errors.Is(err, ErrEmbedNotFound) {
+			t.Errorf("esperava ErrEmbedNotFound, obtive %v", err)
 		}
 	})
 
 	t.Run("ids vazios viram 404", func(t *testing.T) {
-		if _, err := GetLinkPreview(ctx, "", owner.ID); !errors.Is(err, ErrPreviewNotFound) {
-			t.Errorf("previewID vazio: esperava ErrPreviewNotFound, obtive %v", err)
+		if _, err := GetEmbed(ctx, "", owner.ID); !errors.Is(err, ErrEmbedNotFound) {
+			t.Errorf("embedID vazio: esperava ErrEmbedNotFound, obtive %v", err)
 		}
-		if _, err := GetLinkPreview(ctx, preview.ID, ""); !errors.Is(err, ErrPreviewNotFound) {
-			t.Errorf("userID vazio: esperava ErrPreviewNotFound, obtive %v", err)
+		if _, err := GetEmbed(ctx, embed.ID, ""); !errors.Is(err, ErrEmbedNotFound) {
+			t.Errorf("userID vazio: esperava ErrEmbedNotFound, obtive %v", err)
 		}
 	})
 
@@ -7628,66 +7715,223 @@ func TestGetLinkPreview(t *testing.T) {
 	grantChannelPermission(t, channel, reader, models.ChannelPermission{ReadChannel: true})
 
 	t.Run("leitor com role acessa", func(t *testing.T) {
-		if _, err := GetLinkPreview(ctx, preview.ID, reader.ID); err != nil {
+		if _, err := GetEmbed(ctx, embed.ID, reader.ID); err != nil {
 			t.Errorf("leitor com role deveria acessar, obtive %v", err)
 		}
 	})
 
 	t.Run("canal fechado vira 404 para o de fora", func(t *testing.T) {
-		if _, err := GetLinkPreview(ctx, preview.ID, outsider.ID); !errors.Is(err, ErrPreviewNotFound) {
-			t.Errorf("esperava ErrPreviewNotFound (404, nao vaza existencia), obtive %v", err)
+		if _, err := GetEmbed(ctx, embed.ID, outsider.ID); !errors.Is(err, ErrEmbedNotFound) {
+			t.Errorf("esperava ErrEmbedNotFound (404, nao vaza existencia), obtive %v", err)
 		}
 	})
 }
 
-func TestCreateMessageLinksCachedPreview(t *testing.T) {
+func TestCreateMessageLinksCachedEmbed(t *testing.T) {
 	ctx := testCtx()
 	cleanServers(ctx)
 	author := newTestMessageUser(t)
 	channel := newTestMessageChannel(t, &author.ID)
 
-	title := "Preview da mensagem"
-	seed, err := storage.UpsertPreview(ctx, models.LinkPreview{
-		URL:   "https://msg-preview.example.com/a",
-		Kind:  "og",
-		Title: &title,
+	title := "Embed da mensagem"
+	seed, err := storage.UpsertLinkEmbed(ctx, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    strPtr("https://msg-embed.example.com/a"),
+		URL:         strPtr("https://msg-embed.example.com/a"),
+		Title:       &title,
 	})
 	if err != nil {
-		t.Fatalf("UpsertPreview retornou erro: %v", err)
+		t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
 	}
 
-	content := "veja https://msg-preview.example.com/a."
-	msg, err := CreateMessage(ctx, channel.ID, author.ID, content, "", nil)
+	content := "veja https://msg-embed.example.com/a."
+	msg, err := CreateMessage(ctx, channel.ID, author.ID, content, "", nil, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage retornou erro: %v", err)
 	}
-	// previews são processados em background: a criação não retorna previews
-	if len(msg.Previews) != 0 {
-		t.Errorf("criação não deve retornar previews, obtive %v", msg.Previews)
+	// link embeds são processados em background: a criação não retorna link embeds
+	if len(msg.Embeds) != 0 {
+		t.Errorf("criação não deve retornar link embeds, obtive %v", msg.Embeds)
 	}
 
 	// simula o processamento em background (goroutine do handler)
-	added, updates := ProcessMessagePreviews(ctx, msg.ID, author.ID, content)
+	added, updates := ProcessMessageEmbeds(ctx, msg.ID, author.ID, content, nil)
 	if len(added) != 1 {
-		t.Fatalf("esperava 1 preview processado, obtive %d", len(added))
+		t.Fatalf("esperava 1 embed processado, obtive %d", len(added))
 	}
 	if len(updates) != 0 {
-		t.Errorf("preview em cache (sem refetch) não deve gerar updates, obtive %v", updates)
+		t.Errorf("embed em cache (sem refetch) não deve gerar updates, obtive %v", updates)
 	}
 	if added[0].ID != seed.ID {
-		t.Errorf("esperava preview %s, obtive %s", seed.ID, added[0].ID)
+		t.Errorf("esperava embed %s, obtive %s", seed.ID, added[0].ID)
 	}
 
-	linked, err := storage.ListPreviewsByMessageIDs(ctx, []string{msg.ID})
+	linked, err := storage.ListEmbedsByMessageIDs(ctx, []string{msg.ID})
 	if err != nil {
-		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
 	}
 	if len(linked[msg.ID]) != 1 || linked[msg.ID][0].ID != seed.ID {
-		t.Errorf("preview nao ficou vinculado a mensagem no banco: %v", linked)
+		t.Errorf("embed nao ficou vinculado a mensagem no banco: %v", linked)
 	}
 }
 
-func TestEditMessageReplacesPreviews(t *testing.T) {
+// TestProcessMessageEmbedsURLLimit confirma que LINK_PREVIEW_MAX_URLS continua
+// sendo o teto de URLs do crawler: o orçamento de 10 embeds por mensagem não
+// aumenta esse teto (3 URLs no content, 2 embeds processados).
+func TestProcessMessageEmbedsURLLimit(t *testing.T) {
+	ctx := testCtx()
+	cleanServers(ctx)
+	author := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &author.ID)
+
+	maxURLs := config.LoadConfig().LinkPreviewMaxURLs
+	if maxURLs < 2 {
+		t.Skipf("LINK_PREVIEW_MAX_URLS=%d não permite testar o teto", maxURLs)
+	}
+
+	urls := []string{
+		"https://cap-embed.example.com/a",
+		"https://cap-embed.example.com/b",
+		"https://cap-embed.example.com/c",
+	}
+	for i, u := range urls {
+		title := fmt.Sprintf("Embed cap %d", i)
+		key := u
+		if _, err := storage.UpsertLinkEmbed(ctx, models.Embed{
+			SourceType:  "link",
+			FetchMethod: "opengraph",
+			CacheKey:    &key,
+			URL:         &key,
+			Title:       &title,
+		}); err != nil {
+			t.Fatalf("UpsertLinkEmbed(%s) retornou erro: %v", u, err)
+		}
+	}
+
+	content := urls[0] + " " + urls[1] + " " + urls[2]
+	msg, err := CreateMessage(ctx, channel.ID, author.ID, content, "", nil, nil)
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+
+	added, _ := ProcessMessageEmbeds(ctx, msg.ID, author.ID, content, nil)
+	if len(added) != maxURLs {
+		t.Fatalf("esperava %d embeds (teto do crawler), obtive %d", maxURLs, len(added))
+	}
+
+	linked, err := storage.ListEmbedsByMessageIDs(ctx, []string{msg.ID})
+	if err != nil {
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[msg.ID]) != maxURLs {
+		t.Errorf("esperava %d embeds vinculados, obtive %d", maxURLs, len(linked[msg.ID]))
+	}
+}
+
+// TestCreateMessageCustomEmbeds cobre o embed customizado enviado na criação:
+// gravado com source_type='custom', retornado na resposta e vinculado à
+// mensagem; e a rejeição por limite antes de qualquer gravação.
+func TestCreateMessageCustomEmbeds(t *testing.T) {
+	ctx := testCtx()
+	cleanServers(ctx)
+	author := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &author.ID)
+
+	inputs := []EmbedInput{{
+		Title:       "Cartão",
+		Description: "descrição do cartão",
+		Color:       "#ff8800",
+		Author:      &EmbedAuthorInput{Name: "Autor"},
+		Footer:      &EmbedFooterInput{Text: "rodapé"},
+		Fields:      []EmbedFieldInput{{Name: "f1", Value: "v1", Inline: true}, {Name: "f2", Value: "v2"}},
+	}}
+
+	msg, err := CreateMessage(ctx, channel.ID, author.ID, "mensagem com embed", "", nil, inputs)
+	if err != nil {
+		t.Fatalf("CreateMessage com embed retornou erro: %v", err)
+	}
+	if len(msg.Embeds) != 1 {
+		t.Fatalf("esperava 1 embed customizado na resposta, obtive %v", msg.Embeds)
+	}
+	created := msg.Embeds[0]
+	if created.SourceType != "custom" || created.FetchMethod != "manual" {
+		t.Errorf("esperava source_type=custom/fetch_method=manual, obtive %q/%q", created.SourceType, created.FetchMethod)
+	}
+	if created.Color == nil || *created.Color != "#ff8800" {
+		t.Errorf("color não preservado: %v", created.Color)
+	}
+	if created.Author == nil || created.Author.Name == nil || *created.Author.Name != "Autor" {
+		t.Errorf("author não preservado: %+v", created.Author)
+	}
+	if created.Footer == nil || created.Footer.Text == nil {
+		t.Errorf("footer não preservado: %+v", created.Footer)
+	}
+	if len(created.Fields) != 2 || created.Fields[0].Name != "f1" || !created.Fields[0].Inline {
+		t.Errorf("fields não preservadas na ordem: %+v", created.Fields)
+	}
+	if created.CacheKey != nil {
+		t.Errorf("embed customizado não tem cache_key, obtive %v", created.CacheKey)
+	}
+
+	linked, err := storage.ListEmbedsByMessageIDs(ctx, []string{msg.ID})
+	if err != nil {
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[msg.ID]) != 1 || linked[msg.ID][0].ID != created.ID {
+		t.Errorf("embed customizado nao ficou vinculado a mensagem no banco: %v", linked)
+	}
+
+	// limite de campo: rejeitado antes de criar a mensagem
+	if _, err := CreateMessage(ctx, channel.ID, author.ID, "x", "", nil,
+		[]EmbedInput{{Title: strings.Repeat("a", embedTitleMax+1)}}); !errors.Is(err, ErrInvalidEmbed) {
+		t.Errorf("esperava ErrInvalidEmbed para título acima do limite, obtive %v", err)
+	}
+
+	// soma total do texto: cada campo dentro do limite, mas o total estoura
+	if _, err := CreateMessage(ctx, channel.ID, author.ID, "x", "", nil,
+		[]EmbedInput{
+			{Title: strings.Repeat("a", embedTitleMax), Description: strings.Repeat("b", embedDescriptionMax)},
+			{Title: strings.Repeat("c", embedTitleMax), Description: strings.Repeat("d", embedDescriptionMax)},
+		}); !errors.Is(err, ErrInvalidEmbed) {
+		t.Errorf("esperava ErrInvalidEmbed pela soma total do texto, obtive %v", err)
+	}
+
+	// quantidade de embeds
+	tooMany := make([]EmbedInput, maxEmbedsPerMessage+1)
+	if _, err := CreateMessage(ctx, channel.ID, author.ID, "x", "", nil, tooMany); !errors.Is(err, ErrTooManyEmbeds) {
+		t.Errorf("esperava ErrInvalidEmbed acima de %d embeds, obtive %v", maxEmbedsPerMessage, err)
+	}
+
+	// cor inválida e esquema de URL não permitido
+	if _, err := CreateMessage(ctx, channel.ID, author.ID, "x", "", nil,
+		[]EmbedInput{{Title: "x", Color: "red"}}); !errors.Is(err, ErrInvalidEmbed) {
+		t.Errorf("esperava ErrInvalidEmbed para cor fora de #RRGGBB, obtive %v", err)
+	}
+	if _, err := CreateMessage(ctx, channel.ID, author.ID, "x", "", nil,
+		[]EmbedInput{{Title: "x", URL: "javascript:alert(1)"}}); !errors.Is(err, ErrInvalidEmbed) {
+		t.Errorf("esperava ErrInvalidEmbed para esquema de URL não permitido, obtive %v", err)
+	}
+	if _, err := CreateMessage(ctx, channel.ID, author.ID, "x", "", nil,
+		[]EmbedInput{{Title: "x", Thumbnail: &EmbedMediaInput{URL: "https://cdn.example.com/x.swf", MimeType: "application/x-shockwave-flash"}}}); !errors.Is(err, ErrInvalidEmbed) {
+		t.Errorf("esperava ErrInvalidEmbed para MIME type de imagem não suportado, obtive %v", err)
+	}
+	if _, err := CreateMessage(ctx, channel.ID, author.ID, "x", "", nil,
+		[]EmbedInput{{Title: "x", Video: &EmbedMediaInput{URL: "http://cdn.example.com/v.mp4", MimeType: "video/mp4"}}}); !errors.Is(err, ErrInvalidEmbed) {
+		t.Errorf("esperava ErrInvalidEmbed para vídeo sem HTTPS, obtive %v", err)
+	}
+
+	// nenhuma das mensagens acima foi criada
+	messages, err := storage.ListMessagesByChannel(ctx, channel.ID, nil, "", nil)
+	if err != nil {
+		t.Fatalf("ListMessagesByChannel retornou erro: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Errorf("esperava apenas a mensagem válida criada, obtive %d", len(messages))
+	}
+}
+
+func TestEditMessageReplacesEmbeds(t *testing.T) {
 	ctx := testCtx()
 	cleanServers(ctx)
 	author := newTestMessageUser(t)
@@ -7695,45 +7939,52 @@ func TestEditMessageReplacesPreviews(t *testing.T) {
 
 	titleA := "A"
 	titleB := "B"
-	seedA, err := storage.UpsertPreview(ctx, models.LinkPreview{
-		URL: "https://edit-preview.example.com/a", Kind: "og", Title: &titleA,
+	seedA, err := storage.UpsertLinkEmbed(ctx, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    strPtr("https://edit-embed.example.com/a"),
+		URL:         strPtr("https://edit-embed.example.com/a"),
+		Title:       &titleA,
 	})
 	if err != nil {
-		t.Fatalf("UpsertPreview A retornou erro: %v", err)
+		t.Fatalf("UpsertLinkEmbed A retornou erro: %v", err)
 	}
-	seedB, err := storage.UpsertPreview(ctx, models.LinkPreview{
-		URL: "https://edit-preview.example.com/b", Kind: "og", Title: &titleB,
+	seedB, err := storage.UpsertLinkEmbed(ctx, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    strPtr("https://edit-embed.example.com/b"),
+		URL:         strPtr("https://edit-embed.example.com/b"),
+		Title:       &titleB,
 	})
 	if err != nil {
-		t.Fatalf("UpsertPreview B retornou erro: %v", err)
+		t.Fatalf("UpsertLinkEmbed B retornou erro: %v", err)
 	}
 
-	contentA := "https://edit-preview.example.com/a"
-	msg, err := CreateMessage(ctx, channel.ID, author.ID, contentA, "", nil)
+	contentA := "https://edit-embed.example.com/a"
+	msg, err := CreateMessage(ctx, channel.ID, author.ID, contentA, "", nil, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage retornou erro: %v", err)
 	}
-	// previews são processados em background: a criação não retorna previews
-	if len(msg.Previews) != 0 {
-		t.Fatalf("criação não deve retornar previews, obtive %v", msg.Previews)
+	if len(msg.Embeds) != 0 {
+		t.Fatalf("criação não deve retornar link embeds, obtive %v", msg.Embeds)
 	}
-	added, updates := ProcessMessagePreviews(ctx, msg.ID, author.ID, contentA)
+	added, updates := ProcessMessageEmbeds(ctx, msg.ID, author.ID, contentA, nil)
 	if len(added) != 1 || added[0].ID != seedA.ID {
-		t.Fatalf("esperava preview A processado na criação, obtive %v", added)
+		t.Fatalf("esperava embed A processado na criação, obtive %v", added)
 	}
 	if len(updates) != 0 {
-		t.Fatalf("preview em cache (sem refetch) não deve gerar updates, obtive %v", updates)
+		t.Fatalf("embed em cache (sem refetch) não deve gerar updates, obtive %v", updates)
 	}
 
-	contentB := "agora https://edit-preview.example.com/b"
-	edited, err := EditMessage(ctx, msg.ID, author.ID, contentB)
+	contentB := "agora https://edit-embed.example.com/b"
+	edited, err := EditMessage(ctx, msg.ID, author.ID, contentB, nil)
 	if err != nil {
 		t.Fatalf("EditMessage retornou erro: %v", err)
 	}
-	if len(edited.Previews) != 0 {
-		t.Errorf("edição não deve retornar previews, obtive %v", edited.Previews)
+	if len(edited.Embeds) != 0 {
+		t.Errorf("edição sem embeds customizados não deve retornar embeds, obtive %v", edited.Embeds)
 	}
-	added, removed, updates := ProcessEditedMessagePreviews(ctx, msg.ID, author.ID, contentB)
+	added, removed, updates := ProcessEditedMessageEmbeds(ctx, msg.ID, author.ID, contentB, nil)
 	if len(added) != 1 || added[0].ID != seedB.ID {
 		t.Errorf("esperava B adicionado após edição, obtive %v", added)
 	}
@@ -7741,26 +7992,26 @@ func TestEditMessageReplacesPreviews(t *testing.T) {
 		t.Errorf("esperava A removido após edição, obtive %v", removed)
 	}
 	if len(updates) != 0 {
-		t.Errorf("previews em cache (sem refetch) não devem gerar updates, obtive %v", updates)
+		t.Errorf("embeds em cache (sem refetch) não devem gerar updates, obtive %v", updates)
 	}
-	linked, err := storage.ListPreviewsByMessageIDs(ctx, []string{msg.ID})
+	linked, err := storage.ListEmbedsByMessageIDs(ctx, []string{msg.ID})
 	if err != nil {
-		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
 	}
 	if len(linked[msg.ID]) != 1 || linked[msg.ID][0].ID != seedB.ID {
-		t.Errorf("preview A deveria ter sido removido no banco, obtive %v", linked)
+		t.Errorf("embed A deveria ter sido removido no banco, obtive %v", linked)
 	}
 
-	cleared, err := EditMessage(ctx, msg.ID, author.ID, "")
+	cleared, err := EditMessage(ctx, msg.ID, author.ID, "", nil)
 	if err != nil {
 		t.Fatalf("EditMessage com content vazio retornou erro: %v", err)
 	}
-	if len(cleared.Previews) != 0 {
-		t.Errorf("esperava previews limpos após content vazio, obtive %v", cleared.Previews)
+	if len(cleared.Embeds) != 0 {
+		t.Errorf("esperava embeds limpos após content vazio, obtive %v", cleared.Embeds)
 	}
-	added, removed, updates = ProcessEditedMessagePreviews(ctx, msg.ID, author.ID, "")
+	added, removed, updates = ProcessEditedMessageEmbeds(ctx, msg.ID, author.ID, "", nil)
 	if len(added) != 0 {
-		t.Errorf("não esperava previews adicionados após content vazio, obtive %v", added)
+		t.Errorf("não esperava embeds adicionados após content vazio, obtive %v", added)
 	}
 	if len(removed) != 1 || removed[0].ID != seedB.ID {
 		t.Errorf("esperava B removido após content vazio, obtive %v", removed)
@@ -7768,12 +8019,82 @@ func TestEditMessageReplacesPreviews(t *testing.T) {
 	if len(updates) != 0 {
 		t.Errorf("content vazio não deve gerar updates, obtive %v", updates)
 	}
-	linked, err = storage.ListPreviewsByMessageIDs(ctx, []string{msg.ID})
+	linked, err = storage.ListEmbedsByMessageIDs(ctx, []string{msg.ID})
 	if err != nil {
-		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
 	}
 	if len(linked[msg.ID]) != 0 {
 		t.Errorf("vinculos deveriam ter sido limpos no banco, obtive %v", linked)
+	}
+}
+
+// TestEditMessageReplacesCustomEmbeds garante que a edição substitui a lista de
+// embeds customizados (o registro antigo é removido) sem tocar nos link embeds
+// vinculados à mensagem.
+func TestEditMessageReplacesCustomEmbeds(t *testing.T) {
+	ctx := testCtx()
+	cleanServers(ctx)
+	author := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &author.ID)
+
+	content := "https://custom-edit.example.com/a"
+	seedLink, err := storage.UpsertLinkEmbed(ctx, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    strPtr("https://custom-edit.example.com/a"),
+		URL:         strPtr("https://custom-edit.example.com/a"),
+	})
+	if err != nil {
+		t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
+	}
+
+	msg, err := CreateMessage(ctx, channel.ID, author.ID, content, "", nil,
+		[]EmbedInput{{Title: "antigo"}, {Title: "antigo 2"}})
+	if err != nil {
+		t.Fatalf("CreateMessage retornou erro: %v", err)
+	}
+	if len(msg.Embeds) != 2 {
+		t.Fatalf("esperava 2 embeds customizados na criação, obtive %v", msg.Embeds)
+	}
+	oldIDs := make(map[string]bool, len(msg.Embeds))
+	for _, e := range msg.Embeds {
+		oldIDs[e.ID] = true
+	}
+
+	if err := storage.AddMessageEmbeds(ctx, msg.ID, []string{seedLink.ID}); err != nil {
+		t.Fatalf("falha ao vincular o link embed à mensagem: %v", err)
+	}
+
+	edited, err := EditMessage(ctx, msg.ID, author.ID, content, []EmbedInput{{Title: "novo"}})
+	if err != nil {
+		t.Fatalf("EditMessage retornou erro: %v", err)
+	}
+	if len(edited.Embeds) != 1 || edited.Embeds[0].Title == nil || *edited.Embeds[0].Title != "novo" {
+		t.Fatalf("esperava o embed customizado substituído, obtive %v", edited.Embeds)
+	}
+
+	linked, err := storage.ListEmbedsByMessageIDs(ctx, []string{msg.ID})
+	if err != nil {
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[msg.ID]) != 2 {
+		t.Fatalf("esperava o novo customizado + o link embed, obtive %+v", linked[msg.ID])
+	}
+	for _, e := range linked[msg.ID] {
+		if oldIDs[e.ID] {
+			t.Errorf("o embed customizado antigo deveria ter sido removido do vínculo: %+v", e)
+		}
+		if e.SourceType == "custom" && e.ID != edited.Embeds[0].ID {
+			t.Errorf("embed customizado inesperado vinculado: %+v", e)
+		}
+	}
+	for oldID := range oldIDs {
+		if _, err := storage.GetEmbedByID(ctx, oldID); !errors.Is(err, storage.ErrNotFound) {
+			t.Errorf("o registro do embed customizado antigo %s deveria ter sido removido, obtive %v", oldID, err)
+		}
+	}
+	if _, err := storage.GetEmbedByID(ctx, seedLink.ID); err != nil {
+		t.Errorf("o link embed compartilhado não deveria ser removido, obtive %v", err)
 	}
 }
 
@@ -7866,7 +8187,7 @@ func TestDownloadAttachmentThumbnail(t *testing.T) {
 	})
 }
 
-func TestListMessagesWithThumbnailsAndPreviews(t *testing.T) {
+func TestListMessagesWithThumbnailsAndEmbeds(t *testing.T) {
 	ctx := testCtx()
 	cleanServers(ctx)
 	author := newTestMessageUser(t)
@@ -7884,22 +8205,24 @@ func TestListMessagesWithThumbnailsAndPreviews(t *testing.T) {
 	}
 	ensureAttachmentThumbnail(ctx, attachment.ID, mediaBlobPath(pngHash), "image/png")
 
-	title := "Preview da listagem"
-	seed, err := storage.UpsertPreview(ctx, models.LinkPreview{
-		URL:   "https://list-preview.example.com/x",
-		Kind:  "og",
-		Title: &title,
+	title := "Embed da listagem"
+	seed, err := storage.UpsertLinkEmbed(ctx, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    strPtr("https://list-embed.example.com/x"),
+		URL:         strPtr("https://list-embed.example.com/x"),
+		Title:       &title,
 	})
 	if err != nil {
-		t.Fatalf("UpsertPreview retornou erro: %v", err)
+		t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
 	}
 
-	message, err := storage.CreateMessage(ctx, channel.ID, author.ID, "https://list-preview.example.com/x", "", []string{attachment.ID})
+	message, err := storage.CreateMessage(ctx, channel.ID, author.ID, "https://list-embed.example.com/x", "", []string{attachment.ID})
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
-	if err := storage.AddMessagePreviews(ctx, message.ID, []string{seed.ID}); err != nil {
-		t.Fatalf("falha ao vincular preview: %v", err)
+	if err := storage.AddMessageEmbeds(ctx, message.ID, []string{seed.ID}); err != nil {
+		t.Fatalf("falha ao vincular embed: %v", err)
 	}
 
 	list, err := ListMessages(ctx, channel.ID, author.ID, nil, "")
@@ -7910,8 +8233,8 @@ func TestListMessagesWithThumbnailsAndPreviews(t *testing.T) {
 		t.Fatalf("esperava 1 mensagem, obtive %d", len(list.Messages))
 	}
 	m := list.Messages[0]
-	if len(m.Previews) != 1 || m.Previews[0].ID != seed.ID {
-		t.Errorf("mensagem deveria carregar o preview, obtive %v", m.Previews)
+	if len(m.Embeds) != 1 || m.Embeds[0].ID != seed.ID {
+		t.Errorf("mensagem deveria carregar o embed, obtive %v", m.Embeds)
 	}
 	if len(m.Attachments) != 1 {
 		t.Fatalf("mensagem deveria carregar 1 attachment, obtive %d", len(m.Attachments))

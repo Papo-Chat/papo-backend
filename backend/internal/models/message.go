@@ -39,14 +39,14 @@ type MessageAttachment struct {
 	ModerationStatus string    `json:"moderation_status"`
 }
 
-// MessageWithAttachment é a mensagem com seus attachments, link previews e
-// contagem de reações, como exposta pela API (respostas de listagem, criação
-// e edição de mensagens). UserReactions são as reações do usuário
-// autenticado à mensagem (vazio quando ele não reagiu).
+// MessageWithAttachment é a mensagem com seus attachments, embeds e contagem
+// de reações, como exposta pela API (respostas de listagem, criação e edição
+// de mensagens). UserReactions são as reações do usuário autenticado à
+// mensagem (vazio quando ele não reagiu).
 type MessageWithAttachment struct {
 	Message
 	Attachments   []MessageAttachment      `json:"attachments"`
-	Previews      []LinkPreview            `json:"previews"`
+	Embeds        []Embed                  `json:"embeds"`
 	Reactions     []MessageReactionSummary `json:"reactions"`
 	UserReactions []MessageUserReaction    `json:"user_reactions"`
 }

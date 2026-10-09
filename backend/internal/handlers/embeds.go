@@ -15,20 +15,20 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// linkPreviewResponse é a resposta de GET /link-previews/:preview_id: os
-// campos públicos do preview + a imagem embutida em base64 (image_data) quando
-// existe. ImageFilePath é excluída da serialização (json:"-").
-type linkPreviewResponse struct {
-	models.LinkPreview
+// embedResponse é a resposta de GET /embeds/:embed_id: os campos públicos do
+// embed + a imagem embutida em base64 (image_data) quando existe. A referência
+// interna da mídia (ThumbnailFilePath) é excluída da serialização (json:"-").
+type embedResponse struct {
+	models.Embed
 	ImageData *string `json:"image_data"`
 }
 
-// GetLinkPreviewHandler implementa GET /link-previews/:preview_id.
-// Autorização: preview_id → message_previews → mensagem → canal → mesmo check
-// de read_channel (reutilizado no service). Preview inexistente ou sem vínculo
-// com mensagem acessível → 404 (não vaza existência). A resposta é o preview
-// em JSON com a imagem embutida em base64 (image_data) quando existe.
-func GetLinkPreviewHandler(baseURL string, c echo.Context) error {
+// GetEmbedHandler implementa GET /embeds/:embed_id.
+// Autorização: embed_id → message_embeds → mensagem → canal → mesmo check de
+// read_channel (reutilizado no service). Embed inexistente ou sem vínculo com
+// mensagem acessível → 404 (não vaza existência). A resposta é o embed em JSON
+// com a imagem embutida em base64 (image_data) quando existe.
+func GetEmbedHandler(baseURL string, c echo.Context) error {
 	userID, ok := c.Get(middleware.UserIDContextKey).(string)
 	if !ok || userID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
@@ -36,32 +36,32 @@ func GetLinkPreviewHandler(baseURL string, c echo.Context) error {
 			"token de autenticação ausente, inválido ou expirado")
 	}
 
-	preview, err := services.GetLinkPreview(c.Request().Context(), c.Param("preview_id"), userID)
+	embed, err := services.GetEmbed(c.Request().Context(), c.Param("embed_id"), userID)
 	switch {
-	case errors.Is(err, services.ErrPreviewNotFound):
+	case errors.Is(err, services.ErrEmbedNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
-			"not-found", "Recurso não encontrado", "preview não encontrado")
+			"not-found", "Recurso não encontrado", "embed não encontrado")
 	case errors.Is(err, services.ErrChannelNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "canal não encontrado")
 	case err != nil:
-		utils.Errorf("request_id=%s falha ao buscar o preview: %v",
+		utils.Errorf("request_id=%s falha ao buscar o embed: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
-			"internal", "Erro interno", "falha ao buscar o preview")
+			"internal", "Erro interno", "falha ao buscar o embed")
 	}
 
-	resp := linkPreviewResponse{LinkPreview: preview}
-	if preview.ImageFilePath != nil {
-		data, readErr := os.ReadFile(*preview.ImageFilePath)
+	resp := embedResponse{Embed: embed}
+	if embed.ThumbnailFilePath != nil {
+		data, readErr := os.ReadFile(*embed.ThumbnailFilePath)
 		switch {
 		case errors.Is(readErr, os.ErrNotExist):
-			// imagem ausente em disco: devolve o preview sem a imagem
+			// imagem ausente em disco: devolve o embed sem a imagem
 		case readErr != nil:
-			utils.Errorf("request_id=%s falha ao ler a imagem do preview: %v",
+			utils.Errorf("request_id=%s falha ao ler a imagem do embed: %v",
 				c.Request().Header.Get(echo.HeaderXRequestID), readErr)
 			return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
-				"internal", "Erro interno", "falha ao buscar o preview")
+				"internal", "Erro interno", "falha ao buscar o embed")
 		default:
 			b64 := base64.StdEncoding.EncodeToString(data)
 			resp.ImageData = &b64
@@ -71,10 +71,10 @@ func GetLinkPreviewHandler(baseURL string, c echo.Context) error {
 	return c.JSON(http.StatusOK, resp)
 }
 
-
-// GetLinkPreviewVideoHandler faz relay autenticado do vídeo associado ao
-// preview. Suporta Range para seek/playback e evita hotlink direto no CDN do X.
-func GetLinkPreviewVideoHandler(baseURL string, c echo.Context) error {
+// GetEmbedVideoHandler faz relay autenticado do vídeo associado ao embed
+// (GET /embeds/:embed_id/video). Suporta Range para seek/playback e evita
+// hotlink direto no CDN do vídeo.
+func GetEmbedVideoHandler(baseURL string, c echo.Context) error {
 	userID, ok := c.Get(middleware.UserIDContextKey).(string)
 	if !ok || userID == "" {
 		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
@@ -82,21 +82,21 @@ func GetLinkPreviewVideoHandler(baseURL string, c echo.Context) error {
 			"token de autenticação ausente, inválido ou expirado")
 	}
 
-	resp, release, err := services.OpenLinkPreviewVideo(
+	resp, release, err := services.OpenEmbedVideo(
 		c.Request().Context(),
-		c.Param("preview_id"),
+		c.Param("embed_id"),
 		userID,
 		c.Request().Header.Get("Range"),
 	)
 	switch {
-	case errors.Is(err, services.ErrPreviewNotFound):
+	case errors.Is(err, services.ErrEmbedNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
-			"not-found", "Recurso não encontrado", "vídeo de preview não encontrado")
+			"not-found", "Recurso não encontrado", "vídeo de embed não encontrado")
 	case err != nil:
-		utils.Errorf("request_id=%s falha ao abrir vídeo do preview: %v",
+		utils.Errorf("request_id=%s falha ao abrir vídeo do embed: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusBadGateway,
-			"upstream", "Mídia indisponível", "falha ao carregar vídeo do preview")
+			"upstream", "Mídia indisponível", "falha ao carregar vídeo do embed")
 	}
 	defer release()
 	defer resp.Body.Close()

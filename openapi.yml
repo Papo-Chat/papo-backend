@@ -26,7 +26,7 @@ tags:
   - name: Emojis
   - name: Attachments
   - name: Media
-  - name: LinkPreviews
+  - name: Embeds
   - name: Search
   - name: Admin
   - name: Voice
@@ -1780,7 +1780,7 @@ paths:
     get:
       tags: [Messages]
       summary: Lista as mensagens pinadas do canal
-      description: "Permission Check: `read_channel` do canal. Retorna as mensagens pinadas com attachments, previews, thumbnails e reações, na ordem em que foram fixadas (pinned_at crescente)."
+      description: "Permission Check: `read_channel` do canal. Retorna as mensagens pinadas com attachments, embeds, thumbnails e reações, na ordem em que foram fixadas (pinned_at crescente)."
       parameters:
         - $ref: '#/components/parameters/ChannelId'
       responses:
@@ -2144,17 +2144,22 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /link-previews/{preview_id}:
+  /embeds/{embed_id}:
     get:
-      tags: [LinkPreviews]
-      summary: Link preview (dados + imagem em base64)
+      tags: [Embeds]
+      summary: Embed (dados + imagem em base64)
       description: >
-        Dados do link preview com a imagem embutida em base64 (image_data).
-        Permission Check: `read_channel` do canal da mensagem à qual o preview
-        está vinculado (preview sem vínculo acessível → 404). Preview sem
-        imagem é acessível (image_data nulo).
+        Dados do embed com a imagem da thumbnail embutida em base64
+        (image_data). Embed de link (source_type='link') é o preview
+        automático obtido por OpenGraph/oEmbed e reutilizado pelo cache por
+        URL; embed customizado (source_type='custom') pertence à mensagem
+        que o enviou.
+
+        Permission Check: `read_channel` do canal da mensagem à qual o embed
+        está vinculado (embed sem vínculo acessível → 404). Embed sem imagem
+        é acessível (image_data nulo).
       parameters:
-        - name: preview_id
+        - name: embed_id
           in: path
           required: true
           schema:
@@ -2162,15 +2167,63 @@ paths:
             format: uuid
       responses:
         '200':
-          description: Preview em JSON com image_data (base64) quando existe
+          description: Embed em JSON com image_data (base64) quando existe
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LinkPreviewWithImage'
+                $ref: '#/components/schemas/EmbedWithImage'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /embeds/{embed_id}/video:
+    get:
+      tags: [Embeds]
+      summary: Relay autenticado do vídeo do embed
+      description: >
+        Serve o vídeo direto do embed (video.url) por relay do backend, em vez
+        de expor a URL original ao cliente (sem hotlink no CDN de origem).
+        Suporta `Range` (seek/playback). Somente vídeo HTTPS com MIME de vídeo
+        permitido é servido; embed sem vídeo, com tipo não permitido ou com
+        redirect que termine fora de HTTPS → 404 (não vaza existência).
+
+        Permission Check: `read_channel` do canal da mensagem à qual o embed
+        está vinculado.
+      parameters:
+        - name: embed_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: "Vídeo binário (Content-Type = mime type do vídeo)"
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: "Parte do vídeo (Range request; Content-Range indica o intervalo atendido)"
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          description: "Mídia indisponível (falha ao buscar o vídeo na origem)"
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -2314,15 +2367,13 @@ paths:
 
         | Event            | Direction | Payload                                                                           |
         | ---------        | --------- | ---------------------------------------------------------------------             |
-        | `message`        | outbound  | `{ type: "message", id, channel_id, author_id, content, reply_to?, attachments?, created_at }` (reply_to: null quando não é resposta; sem reactions/previews/user_reactions) |
+        | `message`        | outbound  | `{ type: "message", id, channel_id, author_id, content, reply_to?, attachments?, created_at }` (reply_to: null quando não é resposta; sem reactions/embeds/user_reactions) |
         | `message_edit`   | outbound  | `{ type: "message_edit", id, channel_id, content, edited_at }`                          |
         | `message_delete` | outbound  | `{ type: "message_delete", id, channel_id }`                                            |
         | `attachment_moderation_update` | outbound  | `{ type: "attachment_moderation_update", channel_id, message_id, attachment_id, status }` (status: sensitive; o blocked exclui a mensagem e chega como `message_delete`) |
         | `message_pin`    | outbound  | `{ type: "message_pin", message_id, is_pinned }` (is_pinned: true quando a mensagem foi pinada, false quando a fixação foi removida) |
         | `react_update`   | outbound  | `{ type: "react_update", message_id, emoji_id, unicode, count }` (emoji_id/unicode: um é null; count = usuários que reagiram com aquele emoji, 0 quando a última foi removida) |
-        | `link_preview_update` | outbound | `{ type: "link_preview_update", channel_id, message_id, preview }` (preview: objeto completo do link preview, mesma forma de `GET /link-previews/{preview_id}` incluindo `image_data`; um evento por mensagem vinculada, distribuído aos leitores do canal quando o preview é refetchado com cache expirada) |
-        | `new_preview`    | outbound  | `{ type: "new_preview", message_id, preview_id }` (sem channel_id; distribuído após o processamento em background (crawl) da mensagem; um evento por preview) |
-        | `remove_preview` | outbound  | `{ type: "remove_preview", message_id, preview_id }` (sem channel_id; edição que substitui/limpa os previews; um evento por preview) |
+        | `message_embeds_update` | outbound | `{ type: "message_embeds_update", channel_id, message_id, embeds }` (embeds: lista ATUAL de embeds da mensagem, mesma forma do campo `embeds` de `GET /channels/{channel_id}/messages`; metadados apenas, sem `image_data` — a mídia é buscada sob demanda por `GET /embeds/{embed_id}` e `GET /embeds/{embed_id}/video`. Um evento por mensagem, distribuído aos leitores do canal após o crawl em background (criação/edição), após a substituição de embeds na edição (lista vazia quando todos foram removidos) ou quando um embed compartilhado é refetchado por expiração de cache) |
         | `new_notification` | unicast  | `{ type: "new_notification", id, user_id, message_id, message_content }` (id: row de notificação ou UUID efêmero quando a configuração all gera evento sem row; user_id: autor da mensagem; message_content: truncado a 512 caracteres) |
         | `channel_create` | outbound  | `{ type: "channel_create", channel_id, name, channel_type, position, topic? }` (topic: null para canais category) |
         | `channel_update` | outbound  | `{ type: "channel_update", channel_id, name, position, topic? }`                               |
@@ -3353,13 +3404,15 @@ components:
           description: >
             O schema (attachments.messages_id) permite múltiplos attachments
             por mensagem.
-        previews:
+        embeds:
           type: array
           items:
-            $ref: '#/components/schemas/LinkPreview'
+            $ref: '#/components/schemas/Embed'
           description: >
-            Link previews (OpenGraph/oEmbed) extraídos do content da mensagem
-            (best-effort; vazio quando não há URL ou a extração falhou).
+            Embeds da mensagem: automáticos (source_type='link', extraídos do
+            content por OpenGraph/oEmbed, best-effort) e customizados
+            (source_type='custom', enviados pela própria mensagem). Vazio
+            quando a mensagem não tem embed. Máximo de 10 por mensagem.
         reactions:
           type: array
           items:
@@ -3382,7 +3435,7 @@ components:
       description: >
         Última mensagem do canal em forma resumida, como exibida na listagem
         de canais (diferente do schema Message): inclui author_username e não
-        inclui channel_id, edited_at, reply_to, attachments, previews,
+        inclui channel_id, edited_at, reply_to, attachments, embeds,
         reactions ou user_reactions.
       properties:
         id:
@@ -3605,6 +3658,13 @@ components:
           items:
             type: string
             format: binary
+        embeds:
+          type: string
+          description: >
+            Opcional. Array JSON serializado (string dentro do multipart) com
+            os embeds customizados da mensagem; ver EmbedInput. Os embeds
+            automáticos de link são extraídos do content pelo backend e não
+            podem ser enviados aqui.
 
     UpdateMessageRequest:
       type: object
@@ -3613,6 +3673,14 @@ components:
         content:
           type: string
           description: "Menções de usuário usam o formato canônico @mention(<@userId>)."
+        embeds:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmbedInput'
+          description: >
+            Opcional. Nova lista completa de embeds customizados da mensagem
+            (array vazio remove os embeds customizados). Os embeds de link
+            continuam sendo substituídos pelo backend a partir do novo content.
 
     Attachment:
       type: object
@@ -3648,74 +3716,276 @@ components:
             pending/processing/clean/sensitive/blocked/failed
             (pending quando a moderação está desativada).
 
-    LinkPreview:
+    Embed:
       type: object
       description: >
-        Preview de link (OpenGraph ou oEmbed) em cache por URL normalizada.
-        kind: 'og' (OpenGraph) ou 'oembed' (provedor allowlistado).
+        Embed de mensagem. source_type: 'link' (preview automático de link,
+        obtido por fetch e reutilizado pelo cache por URL normalizada) ou
+        'custom' (embed enviado pela mensagem, dono do próprio registro).
+        fetch_method: 'opengraph' (parser OpenGraph), 'oembed' (provedor
+        allowlistado) ou 'manual' (embed customizado).
+
+        A mídia é referenciada internamente: a imagem da thumbnail é servida
+        por GET /embeds/{embed_id} (image_data) e o vídeo por
+        GET /embeds/{embed_id}/video (relay autenticado com suporte a Range).
       properties:
         id:
           type: string
           format: uuid
-        url:
+        source_type:
           type: string
-          format: uri
-          description: URL normalizada (chave do cache)
-        kind:
+          enum: [link, custom]
+        fetch_method:
           type: string
-          enum: [og, oembed]
-        title:
-          type: string
-          nullable: true
-          description: Título (máx. 200 chars, truncado)
-        description:
-          type: string
-          nullable: true
-          description: Descrição (máx. 300 chars, truncada)
-        provider_name:
+          enum: [opengraph, oembed, manual]
+        provider:
           type: string
           nullable: true
           description: Nome do provedor (oEmbed)
-        embed_url:
+        site_name:
           type: string
           nullable: true
-          description: >
-            Embed de vídeo derivado de padrão hardcoded (MVP: apenas
-            YouTube, formato https://www.youtube.com/embed/<id>). O frontend
-            deve renderizar iframe somente se casar exatamente com esse
-            padrão.
-        video_url:
+          description: Nome do site (og:site_name)
+        url:
           type: string
           format: uri
           nullable: true
           description: >
-            URL HTTPS direta de mídia de vídeo validada pelo backend.
-            Para X/Twitter, somente hosts de vídeo do twimg são aceitos.
-        image_mime_type:
+            URL da página exibida (og:url quando o site declara; caso contrário
+            a URL do link). Em embed customizado, a URL informada por quem
+            criou o embed.
+        title:
           type: string
           nullable: true
-          description: MIME da thumbnail da imagem do preview (webp/gif)
-        image_size_bytes:
-          type: integer
-          format: int64
+          description: Título (máx. 256 caracteres, truncado)
+        description:
+          type: string
           nullable: true
+          description: Descrição (máx. 4192 caracteres, truncada)
+        color:
+          type: string
+          nullable: true
+          pattern: '^#[0-9a-fA-F]{6}$'
+          description: Cor de destaque do embed customizado (#RRGGBB)
+        author:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EmbedAuthor'
+        thumbnail:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EmbedMedia'
+          description: Thumbnail do embed (imagem baixada e re-servida pelo backend)
+        image:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EmbedMedia'
+          description: Imagem adicional do embed customizado
+        video:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EmbedMedia'
+          description: Vídeo direto do embed (servido pelo relay do backend)
+        footer:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EmbedFooter'
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmbedField'
+          description: Fields do embed, na ordem de exibição (máx. 25)
+        embed_url:
+          type: string
+          format: uri
+          nullable: true
+          description: >
+            Embed de vídeo derivado de padrão hardcoded do backend (MVP: apenas
+            YouTube, formato https://www.youtube.com/embed/<id>). Nunca vem de
+            HTML recebido do site: o frontend deve renderizar iframe somente se
+            casar exatamente com esse padrão (provedor allowlistado).
+        created_at:
+          type: string
+          format: date-time
         fetched_at:
           type: string
           format: date-time
+          nullable: true
+          description: >
+            Última busca do link embed (omitido quando o embed é customizado).
 
-    LinkPreviewWithImage:
+    EmbedAuthor:
+      type: object
       description: >
-        LinkPreview + imagem embutida em base64 (resposta de
-        GET /link-previews/{preview_id}).
+        Autor declarado pelo site (oEmbed) ou pelo embed customizado.
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: Nome do autor (máx. 256 caracteres)
+        url:
+          type: string
+          format: uri
+          nullable: true
+        media:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EmbedMedia'
+          description: Avatar/ícone do autor
+
+    EmbedMedia:
+      type: object
+      description: >
+        Mídia do embed (thumbnail, imagem, vídeo, ícone do footer, avatar do
+        autor). A referência interna do blob (sha256) não é exposta: a imagem é
+        lida por GET /embeds/{embed_id} e o vídeo por
+        GET /embeds/{embed_id}/video.
+      properties:
+        url:
+          type: string
+          format: uri
+          nullable: true
+          description: >
+            URL HTTPS da mídia de vídeo no backend de origem (o cliente não a
+            usa direto: pede o relay GET /embeds/{embed_id}/video). Imagens não
+            expõem URL.
+        mime_type:
+          type: string
+          nullable: true
+          description: >
+            MIME da mídia. Imagem: image/jpeg, image/png, image/webp,
+            image/gif. Vídeo: video/mp4, video/webm, video/ogg.
+        width:
+          type: integer
+          nullable: true
+        height:
+          type: integer
+          nullable: true
+        size_bytes:
+          type: integer
+          format: int64
+          nullable: true
+
+    EmbedFooter:
+      type: object
+      description: Rodapé do embed (texto e ícone opcionais).
+      properties:
+        text:
+          type: string
+          nullable: true
+          description: Texto do rodapé (máx. 2048 caracteres)
+        icon:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EmbedMedia'
+
+    EmbedField:
+      type: object
+      description: Linha de nome/valor do embed.
+      properties:
+        position:
+          type: integer
+          description: Ordem de exibição (0..N)
+        name:
+          type: string
+          description: Nome da field (máx. 256 caracteres)
+        value:
+          type: string
+          description: Valor da field (máx. 1024 caracteres)
+        inline:
+          type: boolean
+          description: true quando a field pode ser renderizada lado a lado
+
+    EmbedWithImage:
+      description: >
+        Embed + imagem da thumbnail embutida em base64 (resposta de
+        GET /embeds/{embed_id}).
       allOf:
-        - $ref: '#/components/schemas/LinkPreview'
+        - $ref: '#/components/schemas/Embed'
         - type: object
           properties:
             image_data:
               type: string
               format: byte
               nullable: true
-              description: Imagem do preview em base64 (null quando não há imagem)
+              description: Imagem do embed em base64 (null quando não há imagem)
+
+    EmbedInput:
+      type: object
+      description: >
+        Embed customizado enviado na criação/edição de mensagem. O cliente não
+        controla source_type, fetch_method, cache_key, timestamps nem a
+        referência interna da mídia: o backend fixa source_type='custom' e
+        fetch_method='manual' e nunca sobrescreve um embed gerado pelo crawler.
+
+        Limites (contados por caracteres Unicode): 10 embeds por mensagem
+        (somando os automáticos), título 256, descrição 4192, 25 fields por
+        embed, nome de field 256, valor 1024, autor 256, footer 2048, soma do
+        texto de todos os embeds da mensagem 6000, URL 2048. Cor fora de
+        #RRGGBB, esquema de URL não permitido e MIME type não suportado → 400.
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        url:
+          type: string
+          format: uri
+          description: URL da página relacionada (http ou https)
+        color:
+          type: string
+          pattern: '^#[0-9a-fA-F]{6}$'
+        site_name:
+          type: string
+        author:
+          type: object
+          properties:
+            name:
+              type: string
+            url:
+              type: string
+              format: uri
+        footer:
+          type: object
+          properties:
+            text:
+              type: string
+        thumbnail:
+          $ref: '#/components/schemas/EmbedMediaInput'
+        image:
+          $ref: '#/components/schemas/EmbedMediaInput'
+        video:
+          $ref: '#/components/schemas/EmbedMediaInput'
+        fields:
+          type: array
+          items:
+            type: object
+            required: [name, value]
+            properties:
+              name:
+                type: string
+              value:
+                type: string
+              inline:
+                type: boolean
+
+    EmbedMediaInput:
+      type: object
+      description: >
+        Mídia de um embed customizado informada por URL: o backend baixa e
+        re-serve (client SSRF-safe, robots.txt, teto de tamanho e magic bytes
+        verificados). Thumbnail/image: exige HTTPS e MIME de imagem suportado
+        (image/jpeg, image/png, image/webp, image/gif). Video: exige HTTPS e
+        mime_type obrigatório dentro do allowlist (video/mp4, video/webm,
+        video/ogg); é servido pelo relay GET /embeds/{embed_id}/video.
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+        mime_type:
+          type: string
+          description: MIME declarado; rejeitado quando não suportado
 
     Role:
       type: object

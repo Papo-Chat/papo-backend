@@ -131,7 +131,7 @@ func newApp() *echo.Echo {
 	RegisterMessageRoutes(e, cfg)
 	RegisterAttachmentRoutes(e, cfg)
 	RegisterMediaRoutes(e, cfg)
-	RegisterLinkPreviewRoutes(e, cfg)
+	RegisterEmbedRoutes(e, cfg)
 	RegisterEmojiRoutes(e, cfg)
 	RegisterRoleRoutes(e, cfg)
 	RegisterSearchRoutes(e, cfg)
@@ -393,7 +393,7 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 		{http.MethodGet, "/attachments/00000000-0000-4000-8000-000000000000"},
 		{http.MethodGet, "/attachments/00000000-0000-4000-8000-000000000000/thumbnail"},
 		{http.MethodGet, "/media/0000000000000000000000000000000000000000000000000000000000000000"},
-		{http.MethodGet, "/link-previews/00000000-0000-4000-8000-000000000000"},
+		{http.MethodGet, "/embeds/00000000-0000-4000-8000-000000000000"},
 		{http.MethodGet, "/emojis"},
 		{http.MethodPost, "/emojis"},
 		{http.MethodDelete, "/emojis/00000000-0000-4000-8000-000000000000"},
@@ -3564,24 +3564,27 @@ func TestDownloadAttachmentThumbnailRouteNotFound(t *testing.T) {
 	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "thumbnail não encontrada")
 }
 
-// newPreviewWithImageRoute grava um preview com imagem real em disco e o
+// newEmbedWithImageRoute grava um link embed com imagem real em disco e o
 // vincula a uma mensagem nova no canal informado.
-func newPreviewWithImageRoute(t *testing.T, e *echo.Echo, channelID, token string) models.LinkPreview {
+func newEmbedWithImageRoute(t *testing.T, e *echo.Echo, channelID, token string) models.Embed {
 	t.Helper()
 	ctx := context.Background()
 
 	img := pngAvatarBytes(16, 16)
 	imgHash := newTestMediaHash(t, img)
-	// URL unica por chamada: UpsertPreview faz ON CONFLICT (url) DO UPDATE,
-	// entao uma URL fixa seria compartilhada entre testes e o preview ficaria
-	// vinculado a mensagens de canais diferentes.
-	preview, err := storage.UpsertPreview(ctx, models.LinkPreview{
-		URL:        "https://preview-route.example.com/pagina-" + randHex(8),
-		Kind:       "og",
-		ImageMedia: &imgHash,
+	// URL unica por chamada: UpsertLinkEmbed faz ON CONFLICT (cache_key) DO
+	// UPDATE, entao uma URL fixa seria compartilhada entre testes e o embed
+	// ficaria vinculado a mensagens de canais diferentes.
+	cacheKey := "https://embed-route.example.com/pagina-" + randHex(8)
+	embed, err := storage.UpsertLinkEmbed(ctx, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    &cacheKey,
+		URL:         &cacheKey,
+		Thumbnail:   &models.EmbedMedia{MediaSHA: &imgHash},
 	})
 	if err != nil {
-		t.Fatalf("UpsertPreview retornou erro: %v", err)
+		t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
 	}
 
 	rec := doMultipart(t, e, http.MethodPost, "/messages",
@@ -3594,17 +3597,45 @@ func newPreviewWithImageRoute(t *testing.T, e *echo.Echo, channelID, token strin
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if err := storage.AddMessagePreviews(ctx, created.Message.ID, []string{preview.ID}); err != nil {
-		t.Fatalf("falha ao vincular preview à mensagem: %v", err)
+	if err := storage.AddMessageEmbeds(ctx, created.Message.ID, []string{embed.ID}); err != nil {
+		t.Fatalf("falha ao vincular embed à mensagem: %v", err)
 	}
-	return preview
+	return embed
 }
 
-// TestBroadcastLinkPreviewUpdatesChannelReadersOnly garante que
-// broadcastLinkPreviewUpdates distribui o evento link_preview_update
-// ({channel_id, message_id, preview}) apenas aos leitores do canal: o dono do
-// servidor recebe e usuário sem read_channel não recebe (fail-closed).
-func TestBroadcastLinkPreviewUpdatesChannelReadersOnly(t *testing.T) {
+// newEmbedRoute grava um embed (link ou customizado) e o vincula a uma mensagem
+// nova no canal informado.
+func newEmbedRoute(t *testing.T, e *echo.Echo, channelID, token string, embed models.Embed) models.Embed {
+	t.Helper()
+	ctx := context.Background()
+
+	created, err := storage.UpsertLinkEmbed(ctx, embed)
+	if err != nil {
+		t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
+	}
+
+	rec := doMultipart(t, e, http.MethodPost, "/messages",
+		map[string]string{"channel_id": channelID, "content": "mensagem de apoio"},
+		nil, authCookie(token))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("esperava status 201 ao criar mensagem, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var message models.MessageWithAttachment
+	if err := json.Unmarshal(rec.Body.Bytes(), &message); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if err := storage.AddMessageEmbeds(ctx, message.Message.ID, []string{created.ID}); err != nil {
+		t.Fatalf("falha ao vincular embed à mensagem: %v", err)
+	}
+	return created
+}
+
+// TestBroadcastMessageEmbedsUpdateChannelReadersOnly garante que
+// broadcastEmbedUpdates distribui o evento message_embeds_update
+// ({channel_id, message_id, embeds}) apenas aos leitores do canal: o dono do
+// servidor recebe e usuário sem read_channel não recebe (fail-closed). O payload
+// traz metadados, sem imagem em base64.
+func TestBroadcastMessageEmbedsUpdateChannelReadersOnly(t *testing.T) {
 	e := newApp()
 	cfg := config.LoadConfig()
 	RegisterWebSocketRoutes(e, cfg)
@@ -3625,10 +3656,10 @@ func TestBroadcastLinkPreviewUpdatesChannelReadersOnly(t *testing.T) {
 		t.Fatalf("falha ao atualizar permissões do canal: %v", err)
 	}
 
-	preview := newPreviewWithImageRoute(t, e, channel.ID, ownerToken)
-	refs, err := storage.ListMessageRefsByPreviewID(context.Background(), preview.ID)
+	embed := newEmbedWithImageRoute(t, e, channel.ID, ownerToken)
+	refs, err := storage.ListMessageRefsByEmbedID(context.Background(), embed.ID)
 	if err != nil {
-		t.Fatalf("ListMessageRefsByPreviewID retornou erro: %v", err)
+		t.Fatalf("ListMessageRefsByEmbedID retornou erro: %v", err)
 	}
 	if len(refs) != 1 || refs[0].ChannelID != channel.ID {
 		t.Fatalf("esperava 1 ref no canal, obtive %+v", refs)
@@ -3657,8 +3688,8 @@ func TestBroadcastLinkPreviewUpdatesChannelReadersOnly(t *testing.T) {
 	// o outsider recebe o presence_update do dono (que conectou depois)
 	readWSMessage(t, outsiderConn)
 
-	broadcastLinkPreviewUpdates(context.Background(), "test-req", []services.PreviewUpdate{{
-		Preview:  preview,
+	broadcastEmbedUpdates(context.Background(), "test-req", []services.EmbedUpdate{{
+		Embed:    embed,
 		Messages: refs,
 	}})
 
@@ -3667,18 +3698,22 @@ func TestBroadcastLinkPreviewUpdatesChannelReadersOnly(t *testing.T) {
 		Type      string `json:"type"`
 		ChannelID string `json:"channel_id"`
 		MessageID string `json:"message_id"`
-		Preview   struct {
-			ID            string  `json:"id"`
-			URL           string  `json:"url"`
-			ImageMimeType *string `json:"image_mime_type"`
-			ImageData     *string `json:"image_data"`
-		} `json:"preview"`
+		Embeds    []struct {
+			ID         string `json:"id"`
+			SourceType string `json:"source_type"`
+			URL        string `json:"url"`
+			Thumbnail  *struct {
+				MimeType *string `json:"mime_type"`
+				MediaSHA *string `json:"media_sha"`
+			} `json:"thumbnail"`
+			ImageData *string `json:"image_data"`
+		} `json:"embeds"`
 	}
 	if err := json.Unmarshal(data, &event); err != nil {
 		t.Fatalf("falha ao decodificar evento: %v", err)
 	}
-	if event.Type != "link_preview_update" {
-		t.Fatalf("esperava tipo link_preview_update, obtive %q (corpo: %s)", event.Type, data)
+	if event.Type != "message_embeds_update" {
+		t.Fatalf("esperava tipo message_embeds_update, obtive %q (corpo: %s)", event.Type, data)
 	}
 	if event.ChannelID != channel.ID {
 		t.Errorf("esperava channel_id %s, obtive %s", channel.ID, event.ChannelID)
@@ -3686,14 +3721,23 @@ func TestBroadcastLinkPreviewUpdatesChannelReadersOnly(t *testing.T) {
 	if event.MessageID != refs[0].MessageID {
 		t.Errorf("esperava message_id %s, obtive %s", refs[0].MessageID, event.MessageID)
 	}
-	if event.Preview.ID != preview.ID || event.Preview.URL != preview.URL {
-		t.Errorf("preview inesperado: %+v", event.Preview)
+	if len(event.Embeds) != 1 {
+		t.Fatalf("esperava 1 embed na lista, obtive %d (corpo: %s)", len(event.Embeds), data)
 	}
-	if event.Preview.ImageMimeType == nil || *event.Preview.ImageMimeType != "image/png" {
-		t.Errorf("esperava image_mime_type image/png, obtive %v", event.Preview.ImageMimeType)
+	got := event.Embeds[0]
+	if got.ID != embed.ID || got.URL != *embed.URL {
+		t.Errorf("embed inesperado: %+v", got)
 	}
-	if event.Preview.ImageData == nil {
-		t.Fatal("esperava image_data presente")
+	if got.SourceType != "link" {
+		t.Errorf("esperava source_type link, obtive %q", got.SourceType)
+	}
+	if got.Thumbnail == nil || got.Thumbnail.MimeType == nil || *got.Thumbnail.MimeType != "image/png" {
+		t.Errorf("esperava thumbnail.mime_type image/png, obtive %+v", got.Thumbnail)
+	}
+	// O evento carrega metadados: a mídia é buscada sob demanda pela rota
+	// GET /embeds/:embed_id, nunca em base64.
+	if got.ImageData != nil {
+		t.Error("o evento não deveria conter image_data em base64")
 	}
 
 	// não-leitor do canal: nenhum evento (fail-closed)
@@ -3709,38 +3753,46 @@ func assertNoWSMessage(t *testing.T, conn *ws.Conn, wait time.Duration) {
 	}
 }
 
-// TestGetLinkPreviewRouteOwner garante que o dono do servidor busca o preview
-// via GET /link-previews/:preview_id em JSON, com os campos do preview e a
-// imagem em base64 (image_data) correspondente ao arquivo em disco.
-func TestGetLinkPreviewRouteOwner(t *testing.T) {
+// TestGetEmbedRouteOwner garante que o dono do servidor busca o embed via
+// GET /embeds/:embed_id em JSON, com os campos do embed e a imagem em base64
+// (image_data) correspondente ao arquivo em disco.
+func TestGetEmbedRouteOwner(t *testing.T) {
 	e := newApp()
 	userID, token := registerAndLogin(t, e)
 	createServerFor(t, userID)
 	channel := createChannelFor(t, "chn_"+randHex(4))
-	preview := newPreviewWithImageRoute(t, e, channel.ID, token)
+	embed := newEmbedWithImageRoute(t, e, channel.ID, token)
 
-	rec := do(t, e, http.MethodGet, "/link-previews/"+preview.ID, nil, authCookie(token))
+	rec := do(t, e, http.MethodGet, "/embeds/"+embed.ID, nil, authCookie(token))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 	var got struct {
-		ID            string  `json:"id"`
-		URL           string  `json:"url"`
-		ImageMimeType *string `json:"image_mime_type"`
-		ImageData     *string `json:"image_data"`
+		ID         string `json:"id"`
+		SourceType string `json:"source_type"`
+		URL        string `json:"url"`
+		Thumbnail  *struct {
+			MimeType *string `json:"mime_type"`
+			MediaSHA *string `json:"media_sha"`
+		} `json:"thumbnail"`
+		ImageData *string `json:"image_data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if got.ID != preview.ID {
-		t.Errorf("esperava preview %s, obtive %s", preview.ID, got.ID)
+	if got.ID != embed.ID {
+		t.Errorf("esperava embed %s, obtive %s", embed.ID, got.ID)
 	}
-	if got.URL != preview.URL {
-		t.Errorf("esperava url %s, obtive %s", preview.URL, got.URL)
+	if got.URL != *embed.URL {
+		t.Errorf("esperava url %s, obtive %s", *embed.URL, got.URL)
 	}
-	if got.ImageMimeType == nil || *got.ImageMimeType != "image/png" {
-		t.Errorf("esperava image_mime_type image/png, obtive %v", got.ImageMimeType)
+	if got.Thumbnail == nil || got.Thumbnail.MimeType == nil || *got.Thumbnail.MimeType != "image/png" {
+		t.Fatalf("esperava thumbnail.mime_type image/png, obtive %+v", got.Thumbnail)
+	}
+	// A referência interna da mídia não é exposta.
+	if got.Thumbnail.MediaSHA != nil {
+		t.Errorf("thumbnail.media_sha não deveria ser exposto: %v", got.Thumbnail.MediaSHA)
 	}
 	if got.ImageData == nil {
 		t.Fatalf("esperava image_data presente")
@@ -3749,7 +3801,11 @@ func TestGetLinkPreviewRouteOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao decodificar image_data: %v", err)
 	}
-	blob, err := os.ReadFile(mediaPathFor(*preview.ImageMedia))
+	thumbSHA := embed.Thumbnail.MediaSHA
+	if thumbSHA == nil {
+		t.Fatalf("esperava thumbnail com mídia no embed de apoio")
+	}
+	blob, err := os.ReadFile(mediaPathFor(*thumbSHA))
 	if err != nil {
 		t.Fatalf("falha ao ler a imagem em disco: %v", err)
 	}
@@ -3758,52 +3814,54 @@ func TestGetLinkPreviewRouteOwner(t *testing.T) {
 	}
 }
 
-// TestGetLinkPreviewRouteUnauthorized garante que a rota sem
-// autenticação responde 401.
-func TestGetLinkPreviewRouteUnauthorized(t *testing.T) {
+// TestGetEmbedRouteUnauthorized garante que a rota sem autenticação responde 401.
+func TestGetEmbedRouteUnauthorized(t *testing.T) {
 	e := newApp()
 
-	rec := do(t, e, http.MethodGet, "/link-previews/00000000-0000-4000-8000-000000000000", nil, nil)
+	rec := do(t, e, http.MethodGet, "/embeds/00000000-0000-4000-8000-000000000000", nil, nil)
 
 	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
 		"token de autenticação ausente, inválido ou expirado")
 }
 
-// TestGetLinkPreviewRouteNotFound garante que a rota responde 404 para
-// preview inexistente, preview sem vinculo com mensagem e preview de canal
-// fechado para quem não tem acesso (não vaza existência). Preview sem imagem
-// é acessível (200, image_data nulo).
-func TestGetLinkPreviewRouteNotFound(t *testing.T) {
+// TestGetEmbedRouteNotFound garante que a rota responde 404 para embed
+// inexistente, embed sem vinculo com mensagem e embed de canal fechado para quem
+// não tem acesso (não vaza existência). Embed sem imagem é acessível (200,
+// image_data nulo).
+func TestGetEmbedRouteNotFound(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
 	_, strangerToken := registerAndLogin(t, e)
 	createServerFor(t, ownerID)
 	channel := createChannelFor(t, "chn_"+randHex(4))
-	preview := newPreviewWithImageRoute(t, e, channel.ID, ownerToken)
+	embed := newEmbedWithImageRoute(t, e, channel.ID, ownerToken)
 
-	rec := do(t, e, http.MethodGet, "/link-previews/00000000-0000-4000-8000-000000000000", nil, authCookie(ownerToken))
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "preview não encontrado")
+	rec := do(t, e, http.MethodGet, "/embeds/00000000-0000-4000-8000-000000000000", nil, authCookie(ownerToken))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "embed não encontrado")
 
 	ctx := context.Background()
-	noImg, err := storage.UpsertPreview(ctx, models.LinkPreview{
-		URL:  "https://preview-route.example.com/sem-imagem-" + randHex(8),
-		Kind: "og",
+	cacheKey := "https://embed-route.example.com/sem-imagem-" + randHex(8)
+	noImg, err := storage.UpsertLinkEmbed(ctx, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    &cacheKey,
+		URL:         &cacheKey,
 	})
 	if err != nil {
-		t.Fatalf("UpsertPreview retornou erro: %v", err)
+		t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
 	}
 	var msgID string
 	if err := storage.GetDB().QueryRowContext(ctx,
 		"SELECT id FROM messages WHERE channel_id = $1 LIMIT 1", channel.ID).Scan(&msgID); err != nil {
 		t.Fatalf("falha ao buscar mensagem de apoio: %v", err)
 	}
-	if err := storage.AddMessagePreviews(ctx, msgID, []string{noImg.ID}); err != nil {
-		t.Fatalf("falha ao vincular preview: %v", err)
+	if err := storage.AddMessageEmbeds(ctx, msgID, []string{noImg.ID}); err != nil {
+		t.Fatalf("falha ao vincular embed: %v", err)
 	}
-	// preview sem imagem é acessível: 200 com image_data nulo
-	rec = do(t, e, http.MethodGet, "/link-previews/"+noImg.ID, nil, authCookie(ownerToken))
+	// embed sem imagem é acessível: 200 com image_data nulo
+	rec = do(t, e, http.MethodGet, "/embeds/"+noImg.ID, nil, authCookie(ownerToken))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("preview sem imagem deveria ser acessível, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+		t.Fatalf("embed sem imagem deveria ser acessível, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
 	var noImgResp struct {
 		ID        string  `json:"id"`
@@ -3813,32 +3871,154 @@ func TestGetLinkPreviewRouteNotFound(t *testing.T) {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
 	if noImgResp.ID != noImg.ID {
-		t.Errorf("esperava preview %s, obtive %s", noImg.ID, noImgResp.ID)
+		t.Errorf("esperava embed %s, obtive %s", noImg.ID, noImgResp.ID)
 	}
 	if noImgResp.ImageData != nil {
 		t.Errorf("esperava image_data nulo, obtive %q", *noImgResp.ImageData)
 	}
 
-	unlinked, err := storage.UpsertPreview(ctx, models.LinkPreview{
-		URL:  "https://preview-route.example.com/sem-vinculo-" + randHex(8),
-		Kind: "og",
+	unlinkedKey := "https://embed-route.example.com/sem-vinculo-" + randHex(8)
+	unlinked, err := storage.UpsertLinkEmbed(ctx, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    &unlinkedKey,
+		URL:         &unlinkedKey,
 	})
 	if err != nil {
-		t.Fatalf("UpsertPreview retornou erro: %v", err)
+		t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
 	}
-	rec = do(t, e, http.MethodGet, "/link-previews/"+unlinked.ID, nil, authCookie(ownerToken))
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "preview não encontrado")
+	rec = do(t, e, http.MethodGet, "/embeds/"+unlinked.ID, nil, authCookie(ownerToken))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "embed não encontrado")
 
 	// canal fechado: estranho sem acesso → 404 (não 403, não vaza existência)
 	closeChannelRoute(t, e, channel.ID, ownerToken)
-	rec = do(t, e, http.MethodGet, "/link-previews/"+preview.ID, nil, authCookie(strangerToken))
-	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "preview não encontrado")
+	rec = do(t, e, http.MethodGet, "/embeds/"+embed.ID, nil, authCookie(strangerToken))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "embed não encontrado")
 
 	// dono continua acessando
-	rec = do(t, e, http.MethodGet, "/link-previews/"+preview.ID, nil, authCookie(ownerToken))
+	rec = do(t, e, http.MethodGet, "/embeds/"+embed.ID, nil, authCookie(ownerToken))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dono deveria continuar acessando, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
+}
+
+// TestCreateMessageCustomEmbedsRoute cobre o campo JSON "embeds" do
+// POST /messages: o embed customizado é gravado, retornado na resposta e
+// vinculado à mensagem; entrada fora dos limites responde 400.
+func TestCreateMessageCustomEmbedsRoute(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+
+	rec := doMultipart(t, e, http.MethodPost, "/messages",
+		map[string]string{
+			"channel_id": channel.ID,
+			"content":    "mensagem com embed customizado",
+			"embeds":     `[{"title":"Cartão","description":"descrição","color":"#00ff00","fields":[{"name":"f1","value":"v1","inline":true}]}]`,
+		},
+		nil, authCookie(token))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("esperava status 201, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var created models.MessageWithAttachment
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(created.Embeds) != 1 {
+		t.Fatalf("esperava 1 embed na resposta, obtive %v", created.Embeds)
+	}
+	embed := created.Embeds[0]
+	if embed.SourceType != "custom" || embed.FetchMethod != "manual" {
+		t.Errorf("esperava source_type=custom/fetch_method=manual, obtive %q/%q", embed.SourceType, embed.FetchMethod)
+	}
+	if embed.Title == nil || *embed.Title != "Cartão" {
+		t.Errorf("title não preservado: %v", embed.Title)
+	}
+	if embed.Color == nil || *embed.Color != "#00ff00" {
+		t.Errorf("color não preservado: %v", embed.Color)
+	}
+	if len(embed.Fields) != 1 || embed.Fields[0].Name != "f1" || !embed.Fields[0].Inline {
+		t.Errorf("fields não preservadas: %+v", embed.Fields)
+	}
+
+	// embed inválido: 400 e nenhuma mensagem criada
+	rec = doMultipart(t, e, http.MethodPost, "/messages",
+		map[string]string{
+			"channel_id": channel.ID,
+			"content":    "embed inválido",
+			"embeds":     `[{"title":"x","color":"verde"}]`,
+		},
+		nil, authCookie(token))
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"embed customizado inválido (embed 1): cor deve usar o formato #RRGGBB")
+
+	// campo embeds que não é JSON válido
+	rec = doMultipart(t, e, http.MethodPost, "/messages",
+		map[string]string{"channel_id": channel.ID, "content": "x", "embeds": "não é json"},
+		nil, authCookie(token))
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"campo embeds deve ser um array JSON de embeds")
+
+	var count int
+	if err := storage.GetDB().QueryRowContext(context.Background(),
+		"SELECT COUNT(*) FROM messages WHERE channel_id = $1", channel.ID).Scan(&count); err != nil {
+		t.Fatalf("falha ao contar mensagens: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("esperava apenas a mensagem válida criada, obtive %d", count)
+	}
+}
+
+// TestGetEmbedVideoRoute cobre o relay autenticado de vídeo: embed sem vídeo ou
+// com MIME de vídeo não permitido responde 404 (sem sair da rede), e o acesso
+// segue o mesmo check de leitura do canal.
+func TestGetEmbedVideoRoute(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+
+	// embed sem vídeo → 404
+	noVideoKey := "https://embed-video.example.com/no-video-" + randHex(8)
+	noVideo := newEmbedRoute(t, e, channel.ID, token, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    &noVideoKey,
+	})
+	rec := do(t, e, http.MethodGet, "/embeds/"+noVideo.ID+"/video", nil, authCookie(token))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "vídeo de embed não encontrado")
+
+	// vídeo com MIME que não é vídeo → 404 (o relay não aceita o tipo)
+	badTypeKey := "https://embed-video.example.com/bad-type-" + randHex(8)
+	badTypeURL := "https://embed-video.example.com/player"
+	badTypeMIME := "text/html"
+	badType := newEmbedRoute(t, e, channel.ID, token, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    &badTypeKey,
+		Video:       &models.EmbedMedia{URL: &badTypeURL, MimeType: &badTypeMIME},
+	})
+	rec = do(t, e, http.MethodGet, "/embeds/"+badType.ID+"/video", nil, authCookie(token))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "vídeo de embed não encontrado")
+
+	// vídeo sem HTTPS não é aceito pelo relay
+	httpVideoKey := "https://embed-video.example.com/http-" + randHex(8)
+	httpVideoURL := "http://embed-video.example.com/v.mp4"
+	httpVideoMIME := "video/mp4"
+	httpVideo := newEmbedRoute(t, e, channel.ID, token, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    &httpVideoKey,
+		Video:       &models.EmbedMedia{URL: &httpVideoURL, MimeType: &httpVideoMIME},
+	})
+	rec = do(t, e, http.MethodGet, "/embeds/"+httpVideo.ID+"/video", nil, authCookie(token))
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "vídeo de embed não encontrado")
+
+	// sem autenticação → 401
+	rec = do(t, e, http.MethodGet, "/embeds/"+noVideo.ID+"/video", nil, nil)
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
 }
 
 // --- rotas de emojis (tarefa 7.4) ---

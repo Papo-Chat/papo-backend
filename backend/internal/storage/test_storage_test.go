@@ -245,7 +245,7 @@ func newTestUser(t *testing.T) models.User {
 
 // newTestMedia insere um registro de mídia (tabela media) com o conteúdo
 // informado e retorna o sha256 (hex) — referência usada por avatar, ícone,
-// emoji, attachment, thumbnail e link preview.
+// emoji, attachment, thumbnail e embed.
 func newTestMedia(t *testing.T, content []byte) string {
 	t.Helper()
 	return newTestMediaWithMime(t, content, "image/png")
@@ -3496,42 +3496,66 @@ func TestAttachmentThumbnailCascadeOnMessageDelete(t *testing.T) {
 	}
 }
 
-// --- link previews ---
+// --- embeds ---
 
-func newTestPreview(t *testing.T, url string) models.LinkPreview {
+func newTestLinkEmbed(t *testing.T, rawURL string) models.Embed {
 	t.Helper()
 	title := "título"
-	preview, err := UpsertPreview(testCtx(), models.LinkPreview{
-		URL:   url,
-		Kind:  "og",
-		Title: &title,
+	cacheKey := rawURL
+	embed, err := UpsertLinkEmbed(testCtx(), models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    &cacheKey,
+		URL:         &cacheKey,
+		Title:       &title,
 	})
 	if err != nil {
-		t.Fatalf("falha ao criar preview de apoio: %v", err)
+		t.Fatalf("falha ao criar link embed de apoio: %v", err)
 	}
-	return preview
+	return embed
 }
 
-func TestUpsertPreview(t *testing.T) {
-	p1, err := UpsertPreview(testCtx(), models.LinkPreview{
-		URL:   "https://upsert.example.com/pagina",
-		Kind:  "og",
-		Title: strPtr("A"),
+func newTestCustomEmbed(t *testing.T, title string, fields []models.EmbedField) models.Embed {
+	t.Helper()
+	name := title
+	embed, err := CreateCustomEmbed(testCtx(), models.Embed{
+		SourceType:  "custom",
+		FetchMethod: "manual",
+		Title:       &name,
+	}, fields)
+	if err != nil {
+		t.Fatalf("falha ao criar embed customizado de apoio: %v", err)
+	}
+	return embed
+}
+
+func TestUpsertLinkEmbed(t *testing.T) {
+	p1, err := UpsertLinkEmbed(testCtx(), models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    strPtr("https://upsert.example.com/pagina"),
+		URL:         strPtr("https://upsert.example.com/pagina"),
+		Title:       strPtr("A"),
 	})
 	if err != nil {
-		t.Fatalf("UpsertPreview retornou erro: %v", err)
+		t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
 	}
-	if p1.ID == "" || p1.FetchedAt.IsZero() {
+	if p1.ID == "" || p1.FetchedAt == nil {
 		t.Errorf("esperava id e fetched_at preenchidos: %+v", p1)
 	}
+	if p1.CacheKey == nil || *p1.CacheKey != "https://upsert.example.com/pagina" {
+		t.Errorf("esperava cache_key com a URL, obtive %v", p1.CacheKey)
+	}
 
-	p2, err := UpsertPreview(testCtx(), models.LinkPreview{
-		URL:   "https://upsert.example.com/pagina",
-		Kind:  "og",
-		Title: strPtr("B"),
+	p2, err := UpsertLinkEmbed(testCtx(), models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    strPtr("https://upsert.example.com/pagina"),
+		URL:         strPtr("https://upsert.example.com/pagina"),
+		Title:       strPtr("B"),
 	})
 	if err != nil {
-		t.Fatalf("UpsertPreview (update) retornou erro: %v", err)
+		t.Fatalf("UpsertLinkEmbed (update) retornou erro: %v", err)
 	}
 	if p2.ID != p1.ID {
 		t.Errorf("upsert da mesma URL deveria manter o mesmo id, obtive %s (esperado %s)", p2.ID, p1.ID)
@@ -3540,31 +3564,87 @@ func TestUpsertPreview(t *testing.T) {
 		t.Errorf("upsert deveria atualizar o title, obtive %v", p2.Title)
 	}
 
-	byURL, err := GetPreviewByURL(testCtx(), "https://upsert.example.com/pagina")
+	byCacheKey, err := GetEmbedByCacheKey(testCtx(), "https://upsert.example.com/pagina")
 	if err != nil {
-		t.Fatalf("GetPreviewByURL retornou erro: %v", err)
+		t.Fatalf("GetEmbedByCacheKey retornou erro: %v", err)
 	}
-	if byURL.Title == nil || *byURL.Title != "B" {
-		t.Errorf("GetPreviewByURL deveria retornar o title atualizado, obtive %v", byURL.Title)
+	if byCacheKey.Title == nil || *byCacheKey.Title != "B" {
+		t.Errorf("GetEmbedByCacheKey deveria retornar o title atualizado, obtive %v", byCacheKey.Title)
 	}
 
-	byID, err := GetPreviewByID(testCtx(), p1.ID)
+	byID, err := GetEmbedByID(testCtx(), p1.ID)
 	if err != nil {
-		t.Fatalf("GetPreviewByID retornou erro: %v", err)
+		t.Fatalf("GetEmbedByID retornou erro: %v", err)
 	}
-	if byID.URL != "https://upsert.example.com/pagina" {
-		t.Errorf("GetPreviewByID retornou URL incorreta: %q", byID.URL)
+	if byID.CacheKey == nil || *byID.CacheKey != "https://upsert.example.com/pagina" {
+		t.Errorf("GetEmbedByID retornou cache_key incorreta: %v", byID.CacheKey)
 	}
 
-	if _, err := GetPreviewByURL(testCtx(), "https://nao-existe.example.com"); !errors.Is(err, ErrNotFound) {
+	if _, err := GetEmbedByCacheKey(testCtx(), "https://nao-existe.example.com"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("esperava ErrNotFound para URL inexistente, obtive %v", err)
 	}
-	if _, err := GetPreviewByID(testCtx(), randUUID()); !errors.Is(err, ErrNotFound) {
+	if _, err := GetEmbedByID(testCtx(), randUUID()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("esperava ErrNotFound para id inexistente, obtive %v", err)
 	}
 }
 
-func TestAddMessagePreviews(t *testing.T) {
+// TestCreateCustomEmbed cobre o registro próprio do embed customizado: cache_key
+// e fetched_at nulos (não participa do cache por URL) e fields na ordem enviada.
+func TestCreateCustomEmbed(t *testing.T) {
+	fields := []models.EmbedField{
+		{Name: "primeira", Value: "valor 1", Inline: true},
+		{Name: "segunda", Value: "valor 2"},
+	}
+	created, err := CreateCustomEmbed(testCtx(), models.Embed{
+		SourceType:  "custom",
+		FetchMethod: "manual",
+		Title:       strPtr("custom"),
+		URL:         strPtr("https://custom.example.com/pagina"),
+	}, fields)
+	if err != nil {
+		t.Fatalf("CreateCustomEmbed retornou erro: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatalf("esperava id preenchido: %+v", created)
+	}
+	if created.SourceType != "custom" || created.FetchMethod != "manual" {
+		t.Errorf("esperava source_type=custom e fetch_method=manual, obtive %q/%q", created.SourceType, created.FetchMethod)
+	}
+	if created.CacheKey != nil {
+		t.Errorf("embed customizado não tem cache_key, obtive %v", created.CacheKey)
+	}
+	if created.FetchedAt != nil {
+		t.Errorf("embed customizado não tem fetched_at, obtive %v", created.FetchedAt)
+	}
+	if len(created.Fields) != 2 {
+		t.Fatalf("esperava 2 fields, obtive %d", len(created.Fields))
+	}
+	for i, field := range created.Fields {
+		if field.Position != i {
+			t.Errorf("field %d deveria ter position %d, obtive %d (%+v)", i, i, field.Position, field)
+		}
+	}
+	if !created.Fields[0].Inline || created.Fields[1].Inline {
+		t.Errorf("inline das fields não foi preservado: %+v", created.Fields)
+	}
+
+	// URL repetida NÃO reutiliza o registro: cada embed customizado é dono do
+	// próprio row (diferente do link embed, que é compartilhado pelo cache).
+	sameURL, err := CreateCustomEmbed(testCtx(), models.Embed{
+		SourceType:  "custom",
+		FetchMethod: "manual",
+		Title:       strPtr("custom 2"),
+		URL:         strPtr("https://custom.example.com/pagina"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateCustomEmbed (segunda chamada) retornou erro: %v", err)
+	}
+	if sameURL.ID == created.ID {
+		t.Error("embeds customizados com a mesma URL não deveriam compartilhar o registro")
+	}
+}
+
+func TestAddMessageEmbeds(t *testing.T) {
 	author := newTestUser(t)
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
@@ -3572,106 +3652,111 @@ func TestAddMessagePreviews(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
-	p1 := newTestPreview(t, "https://add.example.com/1")
-	p2 := newTestPreview(t, "https://add.example.com/2")
+	p1 := newTestLinkEmbed(t, "https://add.example.com/1")
+	p2 := newTestLinkEmbed(t, "https://add.example.com/2")
 
-	if err := AddMessagePreviews(testCtx(), message.ID, []string{p1.ID, p2.ID}); err != nil {
-		t.Fatalf("AddMessagePreviews retornou erro: %v", err)
+	if err := AddMessageEmbeds(testCtx(), message.ID, []string{p1.ID, p2.ID}); err != nil {
+		t.Fatalf("AddMessageEmbeds retornou erro: %v", err)
 	}
-	linked, err := ListPreviewsByMessageIDs(testCtx(), []string{message.ID})
+	linked, err := ListEmbedsByMessageIDs(testCtx(), []string{message.ID})
 	if err != nil {
-		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
 	}
 	if len(linked[message.ID]) != 2 {
-		t.Fatalf("esperava 2 previews vinculados, obtive %d", len(linked[message.ID]))
+		t.Fatalf("esperava 2 embeds vinculados, obtive %d", len(linked[message.ID]))
 	}
 
 	// duplicados são ignorados
-	if err := AddMessagePreviews(testCtx(), message.ID, []string{p1.ID, p2.ID}); err != nil {
-		t.Fatalf("AddMessagePreviews duplicada retornou erro: %v", err)
+	if err := AddMessageEmbeds(testCtx(), message.ID, []string{p1.ID, p2.ID}); err != nil {
+		t.Fatalf("AddMessageEmbeds duplicada retornou erro: %v", err)
 	}
-	linked, err = ListPreviewsByMessageIDs(testCtx(), []string{message.ID})
+	linked, err = ListEmbedsByMessageIDs(testCtx(), []string{message.ID})
 	if err != nil {
-		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
 	}
 	if len(linked[message.ID]) != 2 {
 		t.Errorf("duplicados deveriam ser ignorados, obtive %d", len(linked[message.ID]))
 	}
 
 	// lista vazia é no-op
-	if err := AddMessagePreviews(testCtx(), message.ID, nil); err != nil {
-		t.Errorf("AddMessagePreviews com lista vazia deveria ser no-op, obtive %v", err)
+	if err := AddMessageEmbeds(testCtx(), message.ID, nil); err != nil {
+		t.Errorf("AddMessageEmbeds com lista vazia deveria ser no-op, obtive %v", err)
 	}
 
 	// FK: mensagem inexistente
-	if err := AddMessagePreviews(testCtx(), randUUID(), []string{p1.ID}); err == nil {
+	if err := AddMessageEmbeds(testCtx(), randUUID(), []string{p1.ID}); err == nil {
 		t.Error("esperava erro de FK para mensagem inexistente")
 	}
-	// FK: preview inexistente
-	if err := AddMessagePreviews(testCtx(), message.ID, []string{randUUID()}); err == nil {
-		t.Error("esperava erro de FK para preview inexistente")
+	// FK: embed inexistente
+	if err := AddMessageEmbeds(testCtx(), message.ID, []string{randUUID()}); err == nil {
+		t.Error("esperava erro de FK para embed inexistente")
 	}
 }
 
-// TestListMessageRefsByPreviewID garante que a listagem de mensagens
-// vinculadas a um preview retorna o par (message_id, channel_id) correto —
-// base do evento link_preview_update.
-func TestListMessageRefsByPreviewID(t *testing.T) {
+// TestListMessageRefsByEmbedID garante que a listagem de mensagens vinculadas a
+// um embed retorna o par (message_id, channel_id) correto — base do evento
+// message_embeds_update.
+func TestListMessageRefsByEmbedID(t *testing.T) {
 	author := newTestUser(t)
 	_ = newTestServer(t, nil)
 	channelA := newTestChannel(t)
 	channelB := newTestChannel(t)
-	msgA, err := CreateMessage(testCtx(), channelA.ID, author.ID, "msgA", "", nil)
+
+	msgA, err := CreateMessage(testCtx(), channelA.ID, author.ID, "A", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem A: %v", err)
 	}
-	msgB, err := CreateMessage(testCtx(), channelB.ID, author.ID, "msgB", "", nil)
+	msgB, err := CreateMessage(testCtx(), channelB.ID, author.ID, "B", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem B: %v", err)
 	}
-	p1 := newTestPreview(t, "https://refs.example.com/1")
-	p2 := newTestPreview(t, "https://refs.example.com/2")
 
-	if err := AddMessagePreviews(testCtx(), msgA.ID, []string{p1.ID, p2.ID}); err != nil {
-		t.Fatalf("AddMessagePreviews (A) retornou erro: %v", err)
+	p1 := newTestLinkEmbed(t, "https://refs.example.com/1")
+	p2 := newTestLinkEmbed(t, "https://refs.example.com/2")
+
+	if err := AddMessageEmbeds(testCtx(), msgA.ID, []string{p1.ID, p2.ID}); err != nil {
+		t.Fatalf("AddMessageEmbeds (A) retornou erro: %v", err)
 	}
-	if err := AddMessagePreviews(testCtx(), msgB.ID, []string{p1.ID}); err != nil {
-		t.Fatalf("AddMessagePreviews (B) retornou erro: %v", err)
+	if err := AddMessageEmbeds(testCtx(), msgB.ID, []string{p1.ID}); err != nil {
+		t.Fatalf("AddMessageEmbeds (B) retornou erro: %v", err)
 	}
 
-	refs, err := ListMessageRefsByPreviewID(testCtx(), p1.ID)
+	refs, err := ListMessageRefsByEmbedID(testCtx(), p1.ID)
 	if err != nil {
-		t.Fatalf("ListMessageRefsByPreviewID retornou erro: %v", err)
+		t.Fatalf("ListMessageRefsByEmbedID retornou erro: %v", err)
 	}
-	want := map[string]string{msgA.ID: channelA.ID, msgB.ID: channelB.ID}
-	if len(refs) != len(want) {
-		t.Fatalf("esperava %d refs, obtive %d: %+v", len(want), len(refs), refs)
+	if len(refs) != 2 {
+		t.Fatalf("esperava 2 mensagens vinculadas, obtive %d", len(refs))
 	}
+	byMessage := make(map[string]string, len(refs))
 	for _, ref := range refs {
-		if want[ref.MessageID] != ref.ChannelID {
-			t.Errorf("ref inesperada: %+v (canal esperado %s)", ref, want[ref.MessageID])
-		}
+		byMessage[ref.MessageID] = ref.ChannelID
+	}
+	if byMessage[msgA.ID] != channelA.ID || byMessage[msgB.ID] != channelB.ID {
+		t.Errorf("pares (message_id, channel_id) incorretos: %+v", refs)
 	}
 
-	refs, err = ListMessageRefsByPreviewID(testCtx(), p2.ID)
+	refs, err = ListMessageRefsByEmbedID(testCtx(), p2.ID)
 	if err != nil {
-		t.Fatalf("ListMessageRefsByPreviewID (p2) retornou erro: %v", err)
+		t.Fatalf("ListMessageRefsByEmbedID (p2) retornou erro: %v", err)
 	}
-	if len(refs) != 1 || refs[0].MessageID != msgA.ID || refs[0].ChannelID != channelA.ID {
-		t.Errorf("esperava apenas a ref de A para p2, obtive %+v", refs)
+	if len(refs) != 1 || refs[0].MessageID != msgA.ID {
+		t.Errorf("p2 deveria estar vinculado apenas à mensagem A, obtive %+v", refs)
 	}
 
-	// preview inexistente: lista vazia, sem erro
-	refs, err = ListMessageRefsByPreviewID(testCtx(), randUUID())
+	// embed inexistente: lista vazia, sem erro
+	refs, err = ListMessageRefsByEmbedID(testCtx(), randUUID())
 	if err != nil {
-		t.Fatalf("ListMessageRefsByPreviewID (inexistente) retornou erro: %v", err)
+		t.Fatalf("ListMessageRefsByEmbedID (inexistente) retornou erro: %v", err)
 	}
 	if len(refs) != 0 {
-		t.Errorf("preview inexistente não deveria retornar refs, obtive %+v", refs)
+		t.Errorf("embed inexistente não deveria retornar refs, obtive %+v", refs)
 	}
 }
 
-func TestReplaceMessagePreviews(t *testing.T) {
+// TestReplaceMessageLinkEmbeds garante que a substituição após edição alcança
+// apenas os vínculos de link: um embed customizado da mesma mensagem permanece.
+func TestReplaceMessageLinkEmbeds(t *testing.T) {
 	author := newTestUser(t)
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
@@ -3679,93 +3764,157 @@ func TestReplaceMessagePreviews(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
-	p1 := newTestPreview(t, "https://replace.example.com/1")
-	p2 := newTestPreview(t, "https://replace.example.com/2")
-	p3 := newTestPreview(t, "https://replace.example.com/3")
 
-	if err := AddMessagePreviews(testCtx(), message.ID, []string{p1.ID}); err != nil {
-		t.Fatalf("AddMessagePreviews retornou erro: %v", err)
+	p1 := newTestLinkEmbed(t, "https://replace.example.com/1")
+	p2 := newTestLinkEmbed(t, "https://replace.example.com/2")
+	p3 := newTestLinkEmbed(t, "https://replace.example.com/3")
+	custom := newTestCustomEmbed(t, "custom", nil)
+
+	if err := AddMessageEmbeds(testCtx(), message.ID, []string{p1.ID, custom.ID}); err != nil {
+		t.Fatalf("AddMessageEmbeds retornou erro: %v", err)
 	}
-	if err := ReplaceMessagePreviews(testCtx(), message.ID, []string{p2.ID, p3.ID}); err != nil {
-		t.Fatalf("ReplaceMessagePreviews retornou erro: %v", err)
+
+	if err := ReplaceMessageLinkEmbeds(testCtx(), message.ID, []string{p2.ID, p3.ID}); err != nil {
+		t.Fatalf("ReplaceMessageLinkEmbeds retornou erro: %v", err)
 	}
-	linked, err := ListPreviewsByMessageIDs(testCtx(), []string{message.ID})
+	linked, err := ListEmbedsByMessageIDs(testCtx(), []string{message.ID})
 	if err != nil {
-		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[message.ID]) != 3 {
+		t.Fatalf("esperava p2, p3 e o embed customizado vinculados, obtive %d", len(linked[message.ID]))
 	}
 	ids := make(map[string]bool, len(linked[message.ID]))
-	for _, p := range linked[message.ID] {
-		ids[p.ID] = true
+	for _, e := range linked[message.ID] {
+		ids[e.ID] = true
 	}
-	if len(ids) != 2 || !ids[p2.ID] || !ids[p3.ID] || ids[p1.ID] {
-		t.Errorf("replace deveria trocar p1 por p2+p3, obtive %v", ids)
+	if ids[p1.ID] || !ids[p2.ID] || !ids[p3.ID] || !ids[custom.ID] {
+		t.Errorf("substituição incorreta: %+v", linked[message.ID])
 	}
 
-	if err := ReplaceMessagePreviews(testCtx(), message.ID, nil); err != nil {
-		t.Fatalf("ReplaceMessagePreviews (limpeza) retornou erro: %v", err)
+	// limpeza: content sem URL remove só os vínculos de link
+	if err := ReplaceMessageLinkEmbeds(testCtx(), message.ID, nil); err != nil {
+		t.Fatalf("ReplaceMessageLinkEmbeds (limpeza) retornou erro: %v", err)
 	}
-	linked, err = ListPreviewsByMessageIDs(testCtx(), []string{message.ID})
+	linked, err = ListEmbedsByMessageIDs(testCtx(), []string{message.ID})
 	if err != nil {
-		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
 	}
-	if len(linked[message.ID]) != 0 {
-		t.Errorf("lista vazia deveria limpar os vinculos, obtive %d", len(linked[message.ID]))
+	if len(linked[message.ID]) != 1 || linked[message.ID][0].ID != custom.ID {
+		t.Errorf("após a limpeza deveria sobrar só o embed customizado, obtive %+v", linked[message.ID])
 	}
 }
 
-func TestListPreviewsByMessageIDs(t *testing.T) {
+// TestReplaceMessageCustomEmbeds garante que a substituição dos embeds
+// customizados remove o registro antigo (cada embed customizado é dono do
+// próprio row) e não toca nos embeds de link da mensagem.
+func TestReplaceMessageCustomEmbeds(t *testing.T) {
 	author := newTestUser(t)
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
-
-	m1, err := CreateMessage(testCtx(), channel.ID, author.ID, "m1", "", nil)
+	message, err := CreateMessage(testCtx(), channel.ID, author.ID, "msg", "", nil)
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+	}
+
+	oldCustom := newTestCustomEmbed(t, "antigo", []models.EmbedField{{Name: "f", Value: "v"}})
+	linkEmbed := newTestLinkEmbed(t, "https://custom-replace.example.com/1")
+	newCustom := newTestCustomEmbed(t, "novo", nil)
+
+	if err := AddMessageEmbeds(testCtx(), message.ID, []string{oldCustom.ID, linkEmbed.ID}); err != nil {
+		t.Fatalf("AddMessageEmbeds retornou erro: %v", err)
+	}
+
+	if err := ReplaceMessageCustomEmbeds(testCtx(), message.ID, []string{newCustom.ID}, []string{oldCustom.ID}); err != nil {
+		t.Fatalf("ReplaceMessageCustomEmbeds retornou erro: %v", err)
+	}
+
+	linked, err := ListEmbedsByMessageIDs(testCtx(), []string{message.ID})
+	if err != nil {
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
+	}
+	ids := make(map[string]bool, len(linked[message.ID]))
+	for _, e := range linked[message.ID] {
+		ids[e.ID] = true
+	}
+	if !ids[newCustom.ID] || !ids[linkEmbed.ID] || ids[oldCustom.ID] {
+		t.Errorf("substituição incorreta: %+v", linked[message.ID])
+	}
+	if _, err := GetEmbedByID(testCtx(), oldCustom.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("o embed customizado antigo deveria ter sido removido, obtive %v", err)
+	}
+	if _, err := GetEmbedByID(testCtx(), linkEmbed.ID); err != nil {
+		t.Errorf("o link embed compartilhado não deveria ser removido, obtive %v", err)
+	}
+
+	// substituir por lista vazia limpa os customizados
+	if err := ReplaceMessageCustomEmbeds(testCtx(), message.ID, nil, []string{newCustom.ID}); err != nil {
+		t.Fatalf("ReplaceMessageCustomEmbeds (limpeza) retornou erro: %v", err)
+	}
+	linked, err = ListEmbedsByMessageIDs(testCtx(), []string{message.ID})
+	if err != nil {
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
+	}
+	if len(linked[message.ID]) != 1 || linked[message.ID][0].ID != linkEmbed.ID {
+		t.Errorf("após a limpeza deveria sobrar só o link embed, obtive %+v", linked[message.ID])
+	}
+}
+
+func TestListEmbedsByMessageIDs(t *testing.T) {
+	author := newTestUser(t)
+	_ = newTestServer(t, nil)
+	channel := newTestChannel(t)
+	m1, err := CreateMessage(testCtx(), channel.ID, author.ID, "m1", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar m1: %v", err)
 	}
 	m2, err := CreateMessage(testCtx(), channel.ID, author.ID, "m2", "", nil)
 	if err != nil {
-		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+		t.Fatalf("falha ao criar m2: %v", err)
 	}
 	m3, err := CreateMessage(testCtx(), channel.ID, author.ID, "m3", "", nil)
 	if err != nil {
-		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
+		t.Fatalf("falha ao criar m3: %v", err)
 	}
 
-	p1 := newTestPreview(t, "https://list.example.com/1")
-	p2 := newTestPreview(t, "https://list.example.com/2")
-	p3 := newTestPreview(t, "https://list.example.com/3")
+	p1 := newTestLinkEmbed(t, "https://list.example.com/1")
+	p2 := newTestLinkEmbed(t, "https://list.example.com/2")
+	p3 := newTestCustomEmbed(t, "custom", []models.EmbedField{{Name: "f", Value: "v"}})
 
-	if err := AddMessagePreviews(testCtx(), m1.ID, []string{p1.ID, p2.ID}); err != nil {
-		t.Fatalf("AddMessagePreviews retornou erro: %v", err)
+	if err := AddMessageEmbeds(testCtx(), m1.ID, []string{p1.ID, p2.ID}); err != nil {
+		t.Fatalf("AddMessageEmbeds retornou erro: %v", err)
 	}
-	if err := AddMessagePreviews(testCtx(), m2.ID, []string{p3.ID}); err != nil {
-		t.Fatalf("AddMessagePreviews retornou erro: %v", err)
+	if err := AddMessageEmbeds(testCtx(), m2.ID, []string{p3.ID}); err != nil {
+		t.Fatalf("AddMessageEmbeds retornou erro: %v", err)
 	}
 
-	linked, err := ListPreviewsByMessageIDs(testCtx(), []string{m1.ID, m2.ID, m3.ID})
+	linked, err := ListEmbedsByMessageIDs(testCtx(), []string{m1.ID, m2.ID, m3.ID})
 	if err != nil {
-		t.Fatalf("ListPreviewsByMessageIDs retornou erro: %v", err)
+		t.Fatalf("ListEmbedsByMessageIDs retornou erro: %v", err)
 	}
 	if len(linked[m1.ID]) != 2 {
-		t.Errorf("m1 deveria ter 2 previews, obtive %d", len(linked[m1.ID]))
+		t.Errorf("m1 deveria ter 2 embeds, obtive %d", len(linked[m1.ID]))
 	}
 	if len(linked[m2.ID]) != 1 || linked[m2.ID][0].ID != p3.ID {
-		t.Errorf("m2 deveria ter o preview p3, obtive %v", linked[m2.ID])
+		t.Errorf("m2 deveria ter o embed p3, obtive %v", linked[m2.ID])
+	}
+	if len(linked[m2.ID]) == 1 && len(linked[m2.ID][0].Fields) != 1 {
+		t.Errorf("as fields do embed deveriam vir na listagem, obtive %+v", linked[m2.ID][0].Fields)
 	}
 	if _, ok := linked[m3.ID]; ok {
-		t.Error("mensagem sem preview nao deveria aparecer no mapa")
+		t.Error("mensagem sem embed não deveria aparecer no mapa")
 	}
 
-	empty, err := ListPreviewsByMessageIDs(testCtx(), nil)
+	empty, err := ListEmbedsByMessageIDs(testCtx(), nil)
 	if err != nil {
-		t.Fatalf("ListPreviewsByMessageIDs com lista vazia retornou erro: %v", err)
+		t.Fatalf("ListEmbedsByMessageIDs com lista vazia retornou erro: %v", err)
 	}
 	if len(empty) != 0 {
-		t.Errorf("lista vazia deveria retornar mapa vazio, obtive %d", len(empty))
+		t.Errorf("lista vazia deveria retornar mapa vazio, obtive %v", empty)
 	}
 }
 
-func TestGetChannelIDByPreviewID(t *testing.T) {
+func TestGetChannelIDByEmbedID(t *testing.T) {
 	author := newTestUser(t)
 	_ = newTestServer(t, nil)
 	channel := newTestChannel(t)
@@ -3773,23 +3922,22 @@ func TestGetChannelIDByPreviewID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("falha ao criar mensagem de apoio: %v", err)
 	}
-
-	p1 := newTestPreview(t, "https://channel.example.com/1")
-	if err := AddMessagePreviews(testCtx(), message.ID, []string{p1.ID}); err != nil {
-		t.Fatalf("AddMessagePreviews retornou erro: %v", err)
+	p1 := newTestLinkEmbed(t, "https://channel.example.com/1")
+	if err := AddMessageEmbeds(testCtx(), message.ID, []string{p1.ID}); err != nil {
+		t.Fatalf("AddMessageEmbeds retornou erro: %v", err)
 	}
 
-	channelID, err := GetChannelIDByPreviewID(testCtx(), p1.ID)
+	channelID, err := GetChannelIDByEmbedID(testCtx(), p1.ID)
 	if err != nil {
-		t.Fatalf("GetChannelIDByPreviewID retornou erro: %v", err)
+		t.Fatalf("GetChannelIDByEmbedID retornou erro: %v", err)
 	}
 	if channelID != channel.ID {
 		t.Errorf("esperava channel %s, obtive %s", channel.ID, channelID)
 	}
 
-	unlinked := newTestPreview(t, "https://channel.example.com/2")
-	if _, err := GetChannelIDByPreviewID(testCtx(), unlinked.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("preview sem vinculo deveria retornar ErrNotFound, obtive %v", err)
+	unlinked := newTestLinkEmbed(t, "https://channel.example.com/2")
+	if _, err := GetChannelIDByEmbedID(testCtx(), unlinked.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("embed sem vínculo deveria retornar ErrNotFound, obtive %v", err)
 	}
 }
 

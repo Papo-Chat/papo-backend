@@ -23,6 +23,8 @@ var ErrPermissionDenied = errors.New("permissão negada")
 // por mensagem (10, README).
 var ErrTooManyAttachments = errors.New("máximo de attachments por mensagem excedido")
 
+var ErrTooManyEmbeds = errors.New("máximo de embeds por mensagem excedido")
+
 // ErrTooManyPinnedMessages indica que o canal atingiu o limite de mensagens
 // pinadas (100, README).
 var ErrTooManyPinnedMessages = errors.New("limite de mensagens pinadas por canal atingido")
@@ -109,7 +111,7 @@ func ListMessagesOrdered(ctx context.Context, channelID, userID string, since *t
 		}
 	}
 
-	previewsByMessage, err := storage.ListPreviewsByMessageIDs(ctx, messageIDs)
+	embedsByMessage, err := storage.ListEmbedsByMessageIDs(ctx, messageIDs)
 	if err != nil {
 		return models.MessageList{}, err
 	}
@@ -126,7 +128,7 @@ func ListMessagesOrdered(ctx context.Context, channelID, userID string, since *t
 		return models.MessageList{}, err
 	}
 	for i := range messages {
-		messages[i].Previews = previewsByMessage[messages[i].ID]
+		messages[i].Embeds = embedsByMessage[messages[i].ID]
 		messages[i].Reactions = reactionCounts[messages[i].ID]
 		messages[i].UserReactions = userReactions[messages[i].ID]
 		setAttachmentThumbnails(&messages[i].Attachments, thumbnails)
@@ -136,7 +138,9 @@ func ListMessagesOrdered(ctx context.Context, channelID, userID string, since *t
 	// retornada (best-effort: uma falha não impede a listagem).
 	if len(messages) > 0 {
 		readIndex := 0
-		if orderAsc { readIndex = len(messages) - 1 }
+		if orderAsc {
+			readIndex = len(messages) - 1
+		}
 		if err := storage.TouchLastReadMessage(ctx, userID, channelID, messages[readIndex].Message); err != nil {
 			utils.Errorf("falha ao atualizar o último read do usuário %s no canal %s: %v", userID, channelID, err)
 		}
@@ -178,10 +182,14 @@ func setAttachmentThumbnails(attachments *[]models.MessageAttachment, thumbnails
 // do conteúdo (o header de content type do upload não é confiado); o
 // tamanho é calculado dos bytes gravados.
 //
-// Os link previews do content NÃO são processados aqui: o crawl bloquearia a
-// resposta. Eles são processados em background (ProcessMessagePreviews,
-// chamado por uma goroutine no handler) e chegam via WS new_preview. A
-// resposta retorna Previews nil.
+// Os link embeds do content NÃO são processados aqui: o crawl bloquearia a
+// resposta. Eles são processados em background (ProcessMessageEmbeds, chamado
+// por uma goroutine no handler) e chegam via WS message_embeds_update. A
+// resposta retorna apenas os embeds customizados criados (link embeds nil).
+//
+// embeds são os embeds customizados da mensagem (source_type='custom'):
+// validados antes de qualquer gravação e com a mídia resolvida por download
+// síncrono (o cliente informa a URL HTTPS e o backend baixa e re-serva).
 //
 // replyTo é opcional: quando informado, a mensagem referenciada deve existir
 // e estar no MESMO canal (a referência pode virar apontador pendente depois,
@@ -192,29 +200,39 @@ func setAttachmentThumbnails(attachments *[]models.MessageAttachment, thumbnails
 // nem attachments, quando um attachment tem nome inválido ou quando replyTo
 // referencia uma mensagem de outro canal,
 // ErrTooManyAttachments quando a mensagem tem mais de 10 attachments,
+// ErrInvalidEmbed quando um embed customizado viola os limites de embed,
 // ErrChannelNotFound quando o canal não existe,
 // ErrMessageNotFound quando replyTo referencia uma mensagem inexistente,
 // ErrPermissionDenied quando o autor não pode enviar mensagens no canal ou
 // enviar attachments no servidor e ErrAttachmentTooLarge quando um arquivo
 // excede 100MB.
-func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo string, attachments []AttachmentInput) (models.MessageWithAttachment, error) {
+func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo string, attachments []AttachmentInput, embeds []EmbedInput) (models.MessageWithAttachment, error) {
 	if channelID == "" {
 		return models.MessageWithAttachment{}, ErrChannelNotFound
 	}
 	if authorID == "" || utf8.RuneCountInString(content) > maxMessageContentLength {
 		return models.MessageWithAttachment{}, ErrInvalidInput
 	}
-	if content == "" && len(attachments) == 0 {
+	if content == "" && len(attachments) == 0 && len(embeds) == 0 {
 		return models.MessageWithAttachment{}, ErrInvalidInput
 	}
 	if len(attachments) > maxAttachmentsPerMessage {
 		return models.MessageWithAttachment{}, ErrTooManyAttachments
 	}
+	if len(embeds) > maxEmbedsPerMessage {
+		return models.MessageWithAttachment{}, ErrTooManyEmbeds
+	}
+
 	for _, att := range attachments {
 		fileName := utils.SanitizeFileName(att.OriginalFileName)
 		if fileName == "" || utf8.RuneCountInString(fileName) > maxAttachmentNameLength {
 			return models.MessageWithAttachment{}, ErrInvalidInput
 		}
+	}
+	// Embeds são validados antes de qualquer gravação: uma mensagem não pode
+	// ser criada com embeds que depois seriam rejeitados.
+	if err := validateCustomEmbeds(embeds); err != nil {
+		return models.MessageWithAttachment{}, err
 	}
 
 	channel, err := storage.GetChannelByID(ctx, channelID)
@@ -309,6 +327,21 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 		setAttachmentThumbnails(&messageAttachments, thumbnails)
 	}
 
+	messageEmbeds, err := CreateCustomEmbeds(ctx, authorID, embeds)
+	if err != nil {
+		return models.MessageWithAttachment{}, err
+	}
+	if len(messageEmbeds) > 0 {
+		embedIDs := make([]string, 0, len(messageEmbeds))
+		for _, e := range messageEmbeds {
+			embedIDs = append(embedIDs, e.ID)
+		}
+		if err := storage.AddMessageEmbeds(ctx, message.ID, embedIDs); err != nil {
+			utils.Errorf("falha ao vincular embeds à mensagem %s: %v", message.ID, err)
+			return models.MessageWithAttachment{}, err
+		}
+	}
+
 	RecordAudit(ctx, AuditEntry{
 		ActorID:    authorID,
 		Action:     ActionMessageCreate,
@@ -333,30 +366,47 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 	return models.MessageWithAttachment{
 		Message:       message,
 		Attachments:   messageAttachments,
+		Embeds:        messageEmbeds,
 		UserReactions: []models.MessageUserReaction{},
 	}, nil
 }
 
-// PreviewUpdate é um link preview refetchado (cache expirado ou URL nova com
-// upsert) e as mensagens já vinculadas a ele — alvos do evento
-// link_preview_update (o objeto do preview mudou no banco e os clientes com a
-// versão antiga precisam atualizar).
-type PreviewUpdate struct {
-	Preview  models.LinkPreview
-	Messages []models.PreviewMessageRef
+// EmbedUpdate é um link embed refetchado (cache expirado ou URL nova com upsert)
+// e as mensagens já vinculadas a ele — alvos do evento message_embeds_update (o
+// objeto do embed mudou no banco e os clientes com a versão antiga precisam
+// atualizar).
+type EmbedUpdate struct {
+	Embed    models.Embed
+	Messages []models.EmbedMessageRef
 }
 
-// crawlPreviews extrai URLs do content e obtém/cria os previews (best-effort:
-// qualquer falha é logada e a URL segue sem preview). O ctx carrega o budget
-// total compartilhado entre as URLs (§6.1). Não vincula nada à mensagem.
-// Retorna os previews obtidos (vazio quando não há URL no content ou todos
-// falharam) e os updates (previews refetchados com as mensagens já
-// vinculadas, consultadas ANTES do vínculo da mensagem atual — na criação a
-// mensagem nova ainda não aparece; na edição os vínculos antigos ainda
+// embedBudget retorna o orçamento que sobra para o crawler depois dos embeds
+// customizados já gravados na mensagem: quantos embeds ainda cabem (10 no
+// total) e quanto texto ainda cabe (6000 no total) (§5).
+func embedBudget(customs []models.Embed) (int, int) {
+	remainingText := embedTotalTextMax
+	for _, e := range customs {
+		remainingText -= embedTextLength(e)
+	}
+	return maxEmbedsPerMessage - len(customs), remainingText
+}
+
+// crawlEmbeds extrai URLs do content e obtém/cria os link embeds (best-effort:
+// qualquer falha é logada e a URL segue sem embed). O ctx carrega o budget total
+// compartilhado entre as URLs (§6.1) e maxEmbeds/maxText limitam o resultado ao
+// orçamento que sobrou na mensagem (os embeds customizados já ocupam parte dele).
+//
+// Embed cujo texto não cabe no orçamento é PULADO, não truncado: a row de um
+// link embed é compartilhada por todas as mensagens que usam a mesma URL.
+//
+// Não vincula nada à mensagem. Retorna os embeds obtidos (vazio quando não há
+// URL no content ou todos falharam) e os updates (embeds refetchados com as
+// mensagens já vinculadas, consultadas ANTES do vínculo da mensagem atual — na
+// criação a mensagem nova ainda não aparece; na edição os vínculos antigos ainda
 // estão em vigor).
-func crawlPreviews(ctx context.Context, authorID, content string) ([]models.LinkPreview, []PreviewUpdate) {
+func crawlEmbeds(ctx context.Context, authorID, content string, maxEmbeds, maxText int) ([]models.Embed, []EmbedUpdate) {
 	cfg := config.LoadConfig()
-	if !cfg.LinkPreviewEnabled || content == "" {
+	if !cfg.LinkPreviewEnabled || content == "" || maxEmbeds <= 0 || maxText <= 0 {
 		return nil, nil
 	}
 
@@ -364,127 +414,163 @@ func crawlPreviews(ctx context.Context, authorID, content string) ([]models.Link
 	if budget <= 0 {
 		budget = 8 * time.Second
 	}
-	previewCtx, cancel := context.WithTimeout(ctx, budget)
+	embedCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
-	var previews []models.LinkPreview
-	var updates []PreviewUpdate
-	for _, rawURL := range extractPreviewURLs(content, cfg.LinkPreviewMaxURLs) {
-		preview, refetched, err := GetOrCreatePreview(previewCtx, authorID, rawURL)
+	// LINK_PREVIEW_MAX_URLS continua sendo o teto de URLs do crawler; o
+	// orçamento da mensagem (10 embeds menos os customizados) só pode reduzir
+	// esse teto, nunca aumentá-lo.
+	maxURLs := cfg.LinkPreviewMaxURLs
+	if maxEmbeds < maxURLs {
+		maxURLs = maxEmbeds
+	}
+
+	var embeds []models.Embed
+	var updates []EmbedUpdate
+	remainingText := maxText
+	for _, rawURL := range extractEmbedURLs(content, maxURLs) {
+		embed, refetched, err := GetOrCreateEmbed(embedCtx, authorID, rawURL)
 		if err != nil {
-			utils.Errorf("link preview para %s pulado: %v", rawURL, err)
+			utils.Errorf("embed para %s pulado: %v", rawURL, err)
 			continue
 		}
-		previews = append(previews, preview)
+		textLen := embedTextLength(embed)
+		if textLen > remainingText {
+			utils.Errorf("embed para %s pulado: excede o texto restante da mensagem", rawURL)
+			continue
+		}
+		remainingText -= textLen
+		embeds = append(embeds, embed)
 		if refetched {
 			// Refetch atualizou a row: as mensagens já vinculadas carregam o
 			// objeto antigo. Sem vínculos (URL nova) não há update.
-			refs, err := storage.ListMessageRefsByPreviewID(previewCtx, preview.ID)
+			refs, err := storage.ListMessageRefsByEmbedID(embedCtx, embed.ID)
 			if err != nil {
-				utils.Errorf("falha ao listar as mensagens do preview %s: %v", preview.ID, err)
+				utils.Errorf("falha ao listar as mensagens do embed %s: %v", embed.ID, err)
 				continue
 			}
 			if len(refs) > 0 {
-				updates = append(updates, PreviewUpdate{Preview: preview, Messages: refs})
+				updates = append(updates, EmbedUpdate{Embed: embed, Messages: refs})
 			}
 		}
 	}
 
-	return previews, updates
+	return embeds, updates
 }
 
-// ProcessMessagePreviews processa em background os link previews de uma
-// mensagem recém-criada (best-effort) e vincula os obtidos. Chamado por uma
-// goroutine após a criação da mensagem (o crawl não pode bloquear a resposta
-// HTTP). Retorna os previews vinculados (vazio quando não há URL no content
-// ou todos falharam) e os updates (previews refetchados com as mensagens já
-// vinculadas — alvos do evento link_preview_update; a mensagem nova não
-// aparece nos updates, pois o vínculo é gravado depois da consulta).
-func ProcessMessagePreviews(ctx context.Context, messageID, authorID, content string) ([]models.LinkPreview, []PreviewUpdate) {
-	previews, updates := crawlPreviews(ctx, authorID, content)
-	if len(previews) == 0 {
+// ProcessMessageEmbeds processa em background os link embeds de uma mensagem
+// recém-criada (best-effort) e vincula os obtidos. Chamado por uma goroutine
+// após a criação da mensagem (o crawl não pode bloquear a resposta HTTP).
+// customs são os embeds customizados já gravados na mensagem: eles consomem o
+// orçamento de quantidade e de texto do crawler. Retorna os embeds vinculados
+// (vazio quando não há URL no content ou todos falharam) e os updates (embeds
+// refetchados com as mensagens já vinculadas — alvos do evento
+// message_embeds_update; a mensagem nova não aparece nos updates, pois o vínculo
+// é gravado depois da consulta).
+func ProcessMessageEmbeds(ctx context.Context, messageID, authorID, content string, customs []models.Embed) ([]models.Embed, []EmbedUpdate) {
+	maxEmbeds, maxText := embedBudget(customs)
+	embeds, updates := crawlEmbeds(ctx, authorID, content, maxEmbeds, maxText)
+	if len(embeds) == 0 {
 		return nil, updates
 	}
 
-	previewIDs := make([]string, 0, len(previews))
-	for _, p := range previews {
-		previewIDs = append(previewIDs, p.ID)
+	embedIDs := make([]string, 0, len(embeds))
+	for _, e := range embeds {
+		embedIDs = append(embedIDs, e.ID)
 	}
-	if err := storage.AddMessagePreviews(ctx, messageID, previewIDs); err != nil {
-		utils.Errorf("falha ao vincular previews à mensagem %s: %v", messageID, err)
+	if err := storage.AddMessageEmbeds(ctx, messageID, embedIDs); err != nil {
+		utils.Errorf("falha ao vincular embeds à mensagem %s: %v", messageID, err)
 		return nil, updates
 	}
 
-	return previews, updates
+	return embeds, updates
 }
 
-// ProcessEditedMessagePreviews processa em background os link previews de uma
-// mensagem editada (best-effort), substitui todos os vínculos e retorna os
-// previews adicionados e removidos (delta em relação aos vínculos anteriores)
-// e os updates (previews refetchados com as mensagens já vinculadas — alvos
-// do evento link_preview_update; a consulta roda com os vínculos antigos em
+// ProcessEditedMessageEmbeds processa em background os link embeds de uma
+// mensagem editada (best-effort), substitui apenas os vínculos de link (os
+// embeds customizados são substituídos junto da edição da mensagem) e retorna os
+// link embeds adicionados e removidos (delta em relação aos vínculos anteriores)
+// e os updates (embeds refetchados com as mensagens já vinculadas — alvos do
+// evento message_embeds_update; a consulta roda com os vínculos antigos em
 // vigor, então a mensagem editada aparece quando ainda está vinculada).
-// Content vazio limpa os vínculos (todos os anteriores viram removidos).
-// Chamado por uma goroutine após a edição da mensagem.
-func ProcessEditedMessagePreviews(ctx context.Context, messageID, authorID, content string) (added, removed []models.LinkPreview, updates []PreviewUpdate) {
-	old, err := storage.ListPreviewsByMessageIDs(ctx, []string{messageID})
+// Content vazio limpa os vínculos de link. Chamado por uma goroutine após a
+// edição da mensagem.
+func ProcessEditedMessageEmbeds(ctx context.Context, messageID, authorID, content string, customs []models.Embed) (added, removed []models.Embed, updates []EmbedUpdate) {
+	old, err := storage.ListEmbedsByMessageIDs(ctx, []string{messageID})
 	if err != nil {
-		utils.Errorf("falha ao listar previews da mensagem %s: %v", messageID, err)
+		utils.Errorf("falha ao listar embeds da mensagem %s: %v", messageID, err)
 		return nil, nil, nil
 	}
-	oldSet := old[messageID]
-	oldByID := make(map[string]models.LinkPreview, len(oldSet))
-	for _, p := range oldSet {
-		oldByID[p.ID] = p
+	oldLinks := make([]models.Embed, 0, len(old[messageID]))
+	oldByID := make(map[string]models.Embed, len(old[messageID]))
+	for _, e := range old[messageID] {
+		if e.SourceType != embedSourceLink {
+			continue
+		}
+		oldLinks = append(oldLinks, e)
+		oldByID[e.ID] = e
 	}
 
-	newPreviews, updates := crawlPreviews(ctx, authorID, content)
-	newByID := make(map[string]models.LinkPreview, len(newPreviews))
-	newIDs := make([]string, 0, len(newPreviews))
-	for _, p := range newPreviews {
-		newByID[p.ID] = p
-		newIDs = append(newIDs, p.ID)
+	maxEmbeds, maxText := embedBudget(customs)
+	newEmbeds, updates := crawlEmbeds(ctx, authorID, content, maxEmbeds, maxText)
+	newByID := make(map[string]models.Embed, len(newEmbeds))
+	newIDs := make([]string, 0, len(newEmbeds))
+	for _, e := range newEmbeds {
+		newByID[e.ID] = e
+		newIDs = append(newIDs, e.ID)
 	}
 
-	// Substitui todos os vínculos (content vazio / sem previews → limpa): o
-	// conteúdo mudou, então preview de URL que saiu do content não pode
+	// Substitui todos os vínculos de link (content vazio / sem embeds → limpa):
+	// o conteúdo mudou, então embed de URL que saiu do content não pode
 	// permanecer.
-	if err := storage.ReplaceMessagePreviews(ctx, messageID, newIDs); err != nil {
-		utils.Errorf("falha ao substituir previews da mensagem %s: %v", messageID, err)
+	if err := storage.ReplaceMessageLinkEmbeds(ctx, messageID, newIDs); err != nil {
+		utils.Errorf("falha ao substituir embeds da mensagem %s: %v", messageID, err)
 		return nil, nil, updates
 	}
 
-	for _, p := range newPreviews {
-		if _, ok := oldByID[p.ID]; !ok {
-			added = append(added, p)
+	for _, e := range newEmbeds {
+		if _, ok := oldByID[e.ID]; !ok {
+			added = append(added, e)
 		}
 	}
-	for _, p := range oldSet {
-		if _, ok := newByID[p.ID]; !ok {
-			removed = append(removed, p)
+	for _, e := range oldLinks {
+		if _, ok := newByID[e.ID]; !ok {
+			removed = append(removed, e)
 		}
 	}
 	return added, removed, updates
+}
+
+// ListMessageEmbeds retorna a lista atual de embeds de cada mensagem (monta o
+// payload do evento message_embeds_update). Mensagens sem embed não aparecem no
+// mapa.
+func ListMessageEmbeds(ctx context.Context, messageIDs []string) (map[string][]models.Embed, error) {
+	return storage.ListEmbedsByMessageIDs(ctx, messageIDs)
 }
 
 // EditMessage edita o conteúdo de uma mensagem (README:
 // PUT /messages/:message_id). Somente o autor da mensagem pode editá-la.
 // Content vazio é aceito e limpa o texto da mensagem (NULL); os attachments
 // não são afetados.
-// Os link previews do content novo NÃO são processados aqui (o crawl
-// bloquearia a resposta): são processados em background
-// (ProcessEditedMessagePreviews, chamado por uma goroutine no handler) e as
-// mudanças chegam via WS new_preview / remove_preview. A resposta retorna
-// Previews nil.
+// embeds é a nova lista completa de embeds customizados da mensagem (array
+// vazio limpa os embeds customizados). Os embeds de link NÃO são substituídos
+// aqui: o crawl do content novo roda em background
+// (ProcessEditedMessageEmbeds, chamado por uma goroutine no handler) e as
+// mudanças chegam via WS message_embeds_update. A resposta retorna apenas os
+// embeds customizados.
 // Retorna ErrMessageNotFound quando a mensagem não existe, ErrInvalidInput
-// quando content excede 8192 caracteres e ErrPermissionDenied quando o
+// quando content excede 8192 caracteres, ErrInvalidEmbed quando um embed
+// customizado viola os limites de embed e ErrPermissionDenied quando o
 // usuário não é o autor.
-func EditMessage(ctx context.Context, messageID, authorID, content string) (models.MessageWithAttachment, error) {
+func EditMessage(ctx context.Context, messageID, authorID, content string, embeds []EmbedInput) (models.MessageWithAttachment, error) {
 	if messageID == "" {
 		return models.MessageWithAttachment{}, ErrMessageNotFound
 	}
 	if authorID == "" || utf8.RuneCountInString(content) > maxMessageContentLength {
 		return models.MessageWithAttachment{}, ErrInvalidInput
+	}
+	if err := validateCustomEmbeds(embeds); err != nil {
+		return models.MessageWithAttachment{}, err
 	}
 
 	message, err := storage.GetMessageByID(ctx, messageID)
@@ -530,6 +616,32 @@ func EditMessage(ctx context.Context, messageID, authorID, content string) (mode
 		return models.MessageWithAttachment{}, err
 	}
 
+	// Substitui os embeds customizados da mensagem (o array enviado é a lista
+	// completa, assim como o content). Os embeds de link ficam intactos aqui:
+	// são substituídos pelo crawl em background.
+	oldEmbeds, err := storage.ListEmbedsByMessageIDs(ctx, []string{updated.ID})
+	if err != nil {
+		return models.MessageWithAttachment{}, err
+	}
+	var oldCustomIDs []string
+	for _, e := range oldEmbeds[updated.ID] {
+		if e.SourceType == embedSourceCustom {
+			oldCustomIDs = append(oldCustomIDs, e.ID)
+		}
+	}
+
+	messageEmbeds, err := CreateCustomEmbeds(ctx, authorID, embeds)
+	if err != nil {
+		return models.MessageWithAttachment{}, err
+	}
+	newCustomIDs := make([]string, 0, len(messageEmbeds))
+	for _, e := range messageEmbeds {
+		newCustomIDs = append(newCustomIDs, e.ID)
+	}
+	if err := storage.ReplaceMessageCustomEmbeds(ctx, updated.ID, newCustomIDs, oldCustomIDs); err != nil {
+		return models.MessageWithAttachment{}, err
+	}
+
 	attachments, err := storage.ListAttachmentsByMessage(ctx, updated.ID)
 	if err != nil {
 		return models.MessageWithAttachment{}, err
@@ -547,10 +659,9 @@ func EditMessage(ctx context.Context, messageID, authorID, content string) (mode
 		setAttachmentThumbnails(&messageAttachments, thumbnails)
 	}
 
-	// Previews NÃO são processados aqui: o crawl bloquearia a resposta. São
-	// processados em background (ProcessEditedMessagePreviews, chamado por
-	// uma goroutine no handler) e as mudanças chegam via WS new_preview /
-	// remove_preview. A resposta retorna Previews nil.
+	// Link embeds NÃO são processados aqui: o crawl bloquearia a resposta. São
+	// processados em background (ProcessEditedMessageEmbeds, chamado por uma
+	// goroutine no handler) e as mudanças chegam via WS message_embeds_update.
 	reactionCounts, err := storage.ReactionCountsByMessages(ctx, []string{updated.ID})
 	if err != nil {
 		return models.MessageWithAttachment{}, err
@@ -571,6 +682,7 @@ func EditMessage(ctx context.Context, messageID, authorID, content string) (mode
 	return models.MessageWithAttachment{
 		Message:       updated,
 		Attachments:   messageAttachments,
+		Embeds:        messageEmbeds,
 		Reactions:     reactionCounts[updated.ID],
 		UserReactions: userReactions[updated.ID],
 	}, nil
@@ -815,7 +927,7 @@ func UnpinMessage(ctx context.Context, channelID, messageID, userID string) (boo
 }
 
 // ListPinnedMessages lista as mensagens pinadas de um canal com attachments,
-// previews, thumbnails e reações, na ordem em que foram fixadas (README:
+// embeds, thumbnails e reações, na ordem em que foram fixadas (README:
 // GET /channels/:channel_id/pinned).
 // O dono do servidor do canal sempre pode ler; em canais sem roles com
 // permissões definidas a leitura é livre para todos; nos demais, o usuário
@@ -859,7 +971,7 @@ func ListPinnedMessages(ctx context.Context, channelID, userID string) (models.P
 		}
 	}
 
-	previewsByMessage, err := storage.ListPreviewsByMessageIDs(ctx, messageIDs)
+	embedsByMessage, err := storage.ListEmbedsByMessageIDs(ctx, messageIDs)
 	if err != nil {
 		return models.PinnedMessageList{}, err
 	}
@@ -876,7 +988,7 @@ func ListPinnedMessages(ctx context.Context, channelID, userID string) (models.P
 		return models.PinnedMessageList{}, err
 	}
 	for i := range messages {
-		messages[i].Previews = previewsByMessage[messages[i].ID]
+		messages[i].Embeds = embedsByMessage[messages[i].ID]
 		messages[i].Reactions = reactionCounts[messages[i].ID]
 		messages[i].UserReactions = userReactions[messages[i].ID]
 		setAttachmentThumbnails(&messages[i].Attachments, thumbnails)

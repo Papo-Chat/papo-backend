@@ -35,6 +35,8 @@ var oembedProviders = map[string]string{
 type oembedResult struct {
 	Title        string `json:"title"`
 	ProviderName string `json:"provider_name"`
+	AuthorName   string `json:"author_name"`
+	AuthorURL    string `json:"author_url"`
 	ThumbnailURL string `json:"thumbnail_url"`
 	Type         string `json:"type"`
 }

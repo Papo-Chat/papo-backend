@@ -41,13 +41,14 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [x] Detecção e moderação de imagens com conteúdo sensível
 - [x] Suporte WebRTC (Audio, Video, Transmissão)
 - [x] Suporte a Push Notifications (FCM)
+- [x] Direct Messages / Block User
+- [x] Rich Embeds
 
 ### V2:
 
 - [ ] Atualizar Pacotes
 - [ ] PUT emojis
-- [ ] Position em Roles
-- [ ] Campo banned exposto na lista de usuários, função de wipe para mensagens de usuário banido, filtro por banned.
+- [ ] Função de wipe para mensagens de usuário banido, filtro por banned.
 - [ ] Thumbnail de imagens não segura mais fluxo (async), com ws event
 - [ ] Refactor endpoints (organizar melhor /admin, /messages)
 - [ ] Setting de slowmode - canais
@@ -58,10 +59,10 @@ Backend do Papo: Um chat self-hosted, inspirado no Discord dos primeiros anos: s
 - [ ] Reply Notifications Toggle (@ON @OFF)
 - [ ] 2P-Auth (Authenticator)
 - [ ] SFU com simulcast
-- [ ] Direct Messages / Block User
 - [ ] Bot API (minimal)
-- [ ] Mention Roles (notification)
 - [ ] Mais User Permissions
+- [ ] Position em Roles
+- [ ] Mention Roles (notification)
 - [ ] Mais User Settings
 - [ ] Favoritos (GIF, Emoji)
 - [ ] Moderação de vídeos
@@ -117,7 +118,7 @@ backend/
 - **Servidor público ou com senha.** Acesso público é só conectar na URL; servidor privado exige senha, validada contra usuário já autenticado (sessão via cookie `HttpOnly` + JWT).
 - **Servidor autoritativo.** O cliente nunca é fonte de verdade — permissão, presença, validação de arquivo e estado de canal são sempre decididos e persistidos no backend.
 - **Attachments endereçados por conteúdo** (SHA-256), com deduplicação automática.
-- **Thumbnail e Link Preview** Processamento de thumbnails muito robusto com etiqueta para robots.txt (oEmbed, OpenGraph, Youtube etc.)
+- **Thumbnails e Embeds** Processamento de thumbnails muito robusto com etiqueta para robots.txt (oEmbed, OpenGraph, Youtube etc.). Previews automáticos de link e embeds personalizados compartilham o mesmo modelo `Embed`.
 - **Roles** Sistema de roles simplificado com permissões para acessar canal, moderação e administração.
 - **Manutenção Automática** Crons autônomas que visam limpar e corrigir estados inválidos do servidor.
 - **Logging** Logs de interações dos usuários que visa cumprir LGPD e GDRP, sem log explicito de IP e com limpeza frequente. 
@@ -278,7 +279,7 @@ Esquema contém também os events de audio e vídeo.
 | Messages | `/channels/:id/messages`, `/messages`, `/messages/:id` |
 | Roles | `/roles` |
 | Emojis | `/emojis`, `/emojis/:id` |
-| Link Preview (Embedding) | `/link-previews/{preview_id}`|
+| Embeds | `/embeds/{embed_id}`, `/embeds/{embed_id}/video` |
 | Attachments | `/attachments/:id` `/attachments/:id/thumbnail` |
 | Media | `/media/:sha_hash` |
 | Search | `/search` |
@@ -293,7 +294,7 @@ Autenticação via o mesmo cookie `Auth` da API REST, validado no handshake.
 | Evento | Direção |
 |---|---|
 | `message`, `message_edit`, `message_delete`, `message_pin` | outbound |
-| `new_preview`, `remove_preview`, `link_preview_update` | outbound |
+| `message_embeds_update` | outbound |
 | `channel_create`, `channel_update`, `channel_delete` | outbound |
 | `typing` | inbound / outbound |
 | `presence_sync` | unicast (snapshot no connect) |

@@ -438,32 +438,32 @@ func TestRunMaintenanceStartsAndStops(t *testing.T) {
 }
 
 // TestCleanupStalePreviewRateBuckets garante que a limpeza remove os buckets
-// de preview por usuário sem uso há mais que previewRateUserTTL e mantém os
-// usados recentemente (o previewRateUsers não pode crescer sem limite).
+// de preview por usuário sem uso há mais que embedRateUserTTL e mantém os
+// usados recentemente (o embedRateUsers não pode crescer sem limite).
 func TestCleanupStalePreviewRateBuckets(t *testing.T) {
-	oldTTL := previewRateUserTTL
-	previewRateUserTTL = time.Hour
-	t.Cleanup(func() { previewRateUserTTL = oldTTL })
+	oldTTL := embedRateUserTTL
+	embedRateUserTTL = time.Hour
+	t.Cleanup(func() { embedRateUserTTL = oldTTL })
 
 	staleBucket := newTokenBucket(10)
 	staleBucket.last = time.Now().Add(-2 * time.Hour) // sem uso há 2h
 	freshBucket := newTokenBucket(10)
 
-	previewRateUsers.Store("user_stale", staleBucket)
-	previewRateUsers.Store("user_fresh", freshBucket)
+	embedRateUsers.Store("user_stale", staleBucket)
+	embedRateUsers.Store("user_fresh", freshBucket)
 	t.Cleanup(func() {
-		previewRateUsers.Delete("user_stale")
-		previewRateUsers.Delete("user_fresh")
+		embedRateUsers.Delete("user_stale")
+		embedRateUsers.Delete("user_fresh")
 	})
 
-	removed := cleanupStalePreviewRateBuckets()
+	removed := cleanupStaleEmbedRateBuckets()
 	if removed != 1 {
 		t.Errorf("esperava 1 bucket removido, obtive %d", removed)
 	}
-	if _, ok := previewRateUsers.Load("user_stale"); ok {
+	if _, ok := embedRateUsers.Load("user_stale"); ok {
 		t.Errorf("bucket sem uso há mais que o TTL deveria ter sido removido")
 	}
-	if _, ok := previewRateUsers.Load("user_fresh"); !ok {
+	if _, ok := embedRateUsers.Load("user_fresh"); !ok {
 		t.Errorf("bucket usado recentemente deveria ter sido mantido")
 	}
 }

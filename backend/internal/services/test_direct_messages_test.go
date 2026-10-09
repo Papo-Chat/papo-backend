@@ -71,7 +71,7 @@ func TestDirectMessagesReuseMessagePipelineAndStayPrivate(t *testing.T) {
 		t.Fatalf("backing DM não deve contar como canal administrável: %d", count)
 	}
 
-	msg, err := CreateMessage(testCtx(), dm.ID, a.ID, "oi", "", nil)
+	msg, err := CreateMessage(testCtx(), dm.ID, a.ID, "oi", "", nil, nil)
 	if err != nil {
 		t.Fatalf("CreateMessage em DM: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestDirectMessagesReuseMessagePipelineAndStayPrivate(t *testing.T) {
 	if err := BlockUser(testCtx(), a.ID, b.ID); err != nil {
 		t.Fatalf("BlockUser: %v", err)
 	}
-	if _, err := CreateMessage(testCtx(), dm.ID, b.ID, "não deve enviar", "", nil); !errors.Is(err, ErrDirectMessageBlocked) {
+	if _, err := CreateMessage(testCtx(), dm.ID, b.ID, "não deve enviar", "", nil, nil); !errors.Is(err, ErrDirectMessageBlocked) {
 		t.Fatalf("envio em DM bloqueada deveria falhar com ErrDirectMessageBlocked, recebeu %v", err)
 	}
 	if _, err := GetDirectConversation(testCtx(), b.ID, dm.ID); !errors.Is(err, ErrDirectMessageBlocked) {

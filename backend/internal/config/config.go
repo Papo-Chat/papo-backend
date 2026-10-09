@@ -38,18 +38,17 @@ type Config struct {
 	ThumbnailTimeout   time.Duration
 	ThumbnailMaxConc   int
 
-	// Link preview (OpenGraph/oEmbed)
-	LinkPreviewEnabled    bool
-	LinkPreviewTimeout    time.Duration
-	LinkPreviewMaxURLs    int
-	LinkPreviewCacheTTL   time.Duration
-	OutboundMaxConc       int
-	RobotsEnabled         bool
-	RobotsCacheTTL        time.Duration
-	PreviewFetchRateGlob  int
-	PreviewFetchRateUser  int
-	PreviewTitleMax       int
-	PreviewDescriptionMax int
+	// Link preview (OpenGraph/oEmbed). Os limites de campo/texto de embed são
+	// fixos no service (services.EmbedInput), não configuração.
+	LinkPreviewEnabled   bool
+	LinkPreviewTimeout   time.Duration
+	LinkPreviewMaxURLs   int
+	LinkPreviewCacheTTL  time.Duration
+	OutboundMaxConc      int
+	RobotsEnabled        bool
+	RobotsCacheTTL       time.Duration
+	PreviewFetchRateGlob int
+	PreviewFetchRateUser int
 
 	// Retenção dos logs de auditoria (dias). A exclusão por retenção é feita
 	// pela rotina de manutenção (services.RunMaintenance), que roda no boot e
@@ -102,17 +101,17 @@ type Config struct {
 	// FCM_RELAY_URL vazio → papo-push fala direto com o FCM (precisa de
 	// GOOGLE_APPLICATION_CREDENTIALS); definido → papo-push encaminha ao
 	// relay remoto (autenticado por FCM_RELAY_TOKEN).
-	UseFCMRelay          bool
-	FCMRelayURL          string
-	FCMRelayToken        string
-	FCMRelayBinary       string
-	FCMRelayRestartMax   int
-	PushHealthPort       int
-	PushWorkers          int
-	PushBatchSize        int
-	PushMaxAttempts      int
-	PushRequestTimeout   time.Duration
-	PushPreview          string
+	UseFCMRelay        bool
+	FCMRelayURL        string
+	FCMRelayToken      string
+	FCMRelayBinary     string
+	FCMRelayRestartMax int
+	PushHealthPort     int
+	PushWorkers        int
+	PushBatchSize      int
+	PushMaxAttempts    int
+	PushRequestTimeout time.Duration
+	PushPreview        string
 }
 
 var (
@@ -161,17 +160,15 @@ func LoadConfig() *Config {
 		ThumbnailTimeout:   time.Duration(getEnvInt("THUMBNAIL_TIMEOUT", 5)) * time.Second,
 		ThumbnailMaxConc:   getEnvInt("THUMBNAIL_MAX_CONCURRENCY", 4),
 
-		LinkPreviewEnabled:    getEnvBool("LINK_PREVIEW_ENABLED", true),
-		LinkPreviewTimeout:    time.Duration(getEnvInt("LINK_PREVIEW_TIMEOUT", 8)) * time.Second,
-		LinkPreviewMaxURLs:    getEnvInt("LINK_PREVIEW_MAX_URLS", 2),
-		LinkPreviewCacheTTL:   time.Duration(getEnvInt("LINK_PREVIEW_CACHE_TTL", 86400)) * time.Second,
-		OutboundMaxConc:       getEnvInt("OUTBOUND_MAX_CONCURRENCY", 4),
-		RobotsEnabled:         getEnvBool("ROBOTS_ENABLED", true),
-		RobotsCacheTTL:        time.Duration(getEnvInt("ROBOTS_CACHE_TTL", 3600)) * time.Second,
-		PreviewFetchRateGlob:  getEnvInt("PREVIEW_FETCH_RATE_GLOBAL", 30),
-		PreviewFetchRateUser:  getEnvInt("PREVIEW_FETCH_RATE_PER_USER", 10),
-		PreviewTitleMax:       getEnvInt("PREVIEW_TITLE_MAX", 200),
-		PreviewDescriptionMax: getEnvInt("PREVIEW_DESCRIPTION_MAX", 300),
+		LinkPreviewEnabled:   getEnvBool("LINK_PREVIEW_ENABLED", true),
+		LinkPreviewTimeout:   time.Duration(getEnvInt("LINK_PREVIEW_TIMEOUT", 8)) * time.Second,
+		LinkPreviewMaxURLs:   getEnvInt("LINK_PREVIEW_MAX_URLS", 2),
+		LinkPreviewCacheTTL:  time.Duration(getEnvInt("LINK_PREVIEW_CACHE_TTL", 86400)) * time.Second,
+		OutboundMaxConc:      getEnvInt("OUTBOUND_MAX_CONCURRENCY", 4),
+		RobotsEnabled:        getEnvBool("ROBOTS_ENABLED", true),
+		RobotsCacheTTL:       time.Duration(getEnvInt("ROBOTS_CACHE_TTL", 3600)) * time.Second,
+		PreviewFetchRateGlob: getEnvInt("PREVIEW_FETCH_RATE_GLOBAL", 30),
+		PreviewFetchRateUser: getEnvInt("PREVIEW_FETCH_RATE_PER_USER", 10),
 
 		LogDuration: time.Duration(getEnvInt("LOG_DURATION", 90)) * 24 * time.Hour,
 
@@ -205,17 +202,17 @@ func LoadConfig() *Config {
 		ModerationNudityThreshold: getEnvFloat("MODERATION_NUDITY_THRESHOLD", 0.8),
 		ModerationGoreThreshold:   getEnvFloat("MODERATION_GORE_THRESHOLD", 0.8),
 
-		UseFCMRelay:          getEnvBool("USE_FCM_RELAY", false),
-		FCMRelayURL:          getEnv("FCM_RELAY_URL", ""),
-		FCMRelayToken:        getEnv("FCM_RELAY_TOKEN", ""),
-		FCMRelayBinary:       getEnv("FCM_RELAY_BINARY", "./papo-push"),
-		FCMRelayRestartMax:   getEnvInt("FCM_RELAY_RESTART_MAX", 10),
-		PushHealthPort:       getEnvInt("PUSH_HEALTH_PORT", 9473),
-		PushWorkers:          getEnvInt("PUSH_WORKERS", 2),
-		PushBatchSize:        getEnvInt("PUSH_BATCH_SIZE", 50),
-		PushMaxAttempts:      getEnvInt("PUSH_MAX_ATTEMPTS", 8),
-		PushRequestTimeout:   time.Duration(getEnvInt("PUSH_REQUEST_TIMEOUT", 5)) * time.Second,
-		PushPreview:          getEnv("PUSH_PREVIEW", "full"),
+		UseFCMRelay:        getEnvBool("USE_FCM_RELAY", false),
+		FCMRelayURL:        getEnv("FCM_RELAY_URL", ""),
+		FCMRelayToken:      getEnv("FCM_RELAY_TOKEN", ""),
+		FCMRelayBinary:     getEnv("FCM_RELAY_BINARY", "./papo-push"),
+		FCMRelayRestartMax: getEnvInt("FCM_RELAY_RESTART_MAX", 10),
+		PushHealthPort:     getEnvInt("PUSH_HEALTH_PORT", 9473),
+		PushWorkers:        getEnvInt("PUSH_WORKERS", 2),
+		PushBatchSize:      getEnvInt("PUSH_BATCH_SIZE", 50),
+		PushMaxAttempts:    getEnvInt("PUSH_MAX_ATTEMPTS", 8),
+		PushRequestTimeout: time.Duration(getEnvInt("PUSH_REQUEST_TIMEOUT", 5)) * time.Second,
+		PushPreview:        getEnv("PUSH_PREVIEW", "full"),
 	})
 
 	return configInstance.Load()
