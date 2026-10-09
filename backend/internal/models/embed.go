@@ -47,6 +47,10 @@ type Embed struct {
 	// ThumbnailFilePath é o caminho do blob da thumbnail em disco, resolvido
 	// do hash pelo service (GET /embeds/:embed_id).
 	ThumbnailFilePath *string `json:"-"`
+
+	// AuthorFilePath é o caminho do blob do ícone do autor em disco, resolvido
+	// do hash pelo service (GET /embeds/:embed_id).
+	AuthorFilePath *string `json:"-"`
 }
 
 // EmbedAuthor é o autor declarado pelo site (oEmbed) ou pelo embed

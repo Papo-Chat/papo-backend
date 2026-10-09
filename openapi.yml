@@ -2190,6 +2190,10 @@ paths:
         permitido é servido; embed sem vídeo, com tipo não permitido ou com
         redirect que termine fora de HTTPS → 404 (não vaza existência).
 
+        O relay serve apenas arquivos de vídeo: um embed cujo `video.url` é a
+        página de iframe allowlistada do provedor (YouTube, sem mime_type) não
+        é servido aqui (404) — o cliente renderiza o iframe dessa URL.
+
         Permission Check: `read_channel` do canal da mensagem à qual o embed
         está vinculado.
       parameters:
@@ -3728,6 +3732,14 @@ components:
         A mídia é referenciada internamente: a imagem da thumbnail é servida
         por GET /embeds/{embed_id} (image_data) e o vídeo por
         GET /embeds/{embed_id}/video (relay autenticado com suporte a Range).
+
+        Player: `video` tem duas formas. Vídeo direto (og:video ou embed
+        customizado) traz `mime_type` de vídeo e é reproduzido pelo relay. Para
+        o provedor de iframe allowlistado (YouTube), `video.url` é a página de
+        embed `https://www.youtube.com/embed/<id>` e `mime_type` não vem: o
+        cliente renderiza iframe somente quando a URL casa exatamente com esse
+        padrão (derivado por padrão hardcoded do backend a partir da URL do
+        link, nunca do campo `html` da resposta oEmbed) e não chama o relay.
       properties:
         id:
           type: string
@@ -3785,7 +3797,11 @@ components:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/EmbedMedia'
-          description: Vídeo direto do embed (servido pelo relay do backend)
+          description: >
+            Vídeo do embed: arquivo direto com mime_type de vídeo (servido pelo
+            relay GET /embeds/{embed_id}/video) ou, para o provedor de iframe
+            allowlistado (YouTube), a página de embed em `url` sem mime_type
+            (renderizada em iframe pelo cliente).
         footer:
           nullable: true
           allOf:
@@ -3799,11 +3815,14 @@ components:
           type: string
           format: uri
           nullable: true
+          deprecated: true
           description: >
-            Embed de vídeo derivado de padrão hardcoded do backend (MVP: apenas
-            YouTube, formato https://www.youtube.com/embed/<id>). Nunca vem de
-            HTML recebido do site: o frontend deve renderizar iframe somente se
-            casar exatamente com esse padrão (provedor allowlistado).
+            Não é emitido pelas respostas atuais: o iframe derivado do padrão
+            hardcoded do backend chegou a ser modelado aqui e hoje é entregue em
+            `video` (url sem mime_type). O padrão continua hardcoded
+            (https://www.youtube.com/embed/<id>) e nunca vem de HTML recebido do
+            site: o cliente deve renderizar iframe somente se a URL casar
+            exatamente com ele (provedor allowlistado).
         created_at:
           type: string
           format: date-time
@@ -3847,14 +3866,17 @@ components:
           nullable: true
           description: >
             URL HTTPS da mídia de vídeo no backend de origem (o cliente não a
-            usa direto: pede o relay GET /embeds/{embed_id}/video). Imagens não
+            usa direto: pede o relay GET /embeds/{embed_id}/video) ou, quando
+            `video` é o iframe allowlistado do provedor (YouTube), a URL da
+            página de embed que o cliente renderiza em iframe. Imagens não
             expõem URL.
         mime_type:
           type: string
           nullable: true
           description: >
             MIME da mídia. Imagem: image/jpeg, image/png, image/webp,
-            image/gif. Vídeo: video/mp4, video/webm, video/ogg.
+            image/gif. Vídeo: video/mp4, video/webm, video/ogg. Ausente quando
+            `video` é a página de iframe allowlistada (não é arquivo de vídeo).
         width:
           type: integer
           nullable: true
@@ -3898,8 +3920,8 @@ components:
 
     EmbedWithImage:
       description: >
-        Embed + imagem da thumbnail embutida em base64 (resposta de
-        GET /embeds/{embed_id}).
+        Embed + imagem da thumbnail embutida em base64 (image_data) e ícone do
+        autor em base64 (author_image_data) — resposta de GET /embeds/{embed_id}.
       allOf:
         - $ref: '#/components/schemas/Embed'
         - type: object
@@ -3909,6 +3931,12 @@ components:
               format: byte
               nullable: true
               description: Imagem do embed em base64 (null quando não há imagem)
+            author_image_data:
+              type: string
+              format: byte
+              nullable: true
+              description: >
+                Ícone do autor em base64 (null quando o embed não tem author_media)
 
     EmbedInput:
       type: object
@@ -3945,6 +3973,14 @@ components:
             url:
               type: string
               format: uri
+            icon_url:
+              type: string
+              format: uri
+              description: >
+                URL HTTPS da imagem do autor (avatar). O backend baixa com o
+                client SSRF-safe e re-serva na tabela media (author_media); a URL
+                original nunca é exposta na resposta. Falha de download grava o
+                embed sem o ícone.
         footer:
           type: object
           properties:

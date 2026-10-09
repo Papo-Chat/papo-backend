@@ -12475,3 +12475,108 @@ func TestDropConnectionRouteWithAuth(t *testing.T) {
 		t.Errorf("esperava dropped=1, obtive %d", resp.Dropped)
 	}
 }
+
+// TestGetEmbedRouteAuthorIcon cobre o ícone do autor de um embed: GET
+// /embeds/:embed_id devolve o autor com sua mídia (mime) e o blob em base64
+// (author_image_data), e um embed sem ícone responde com o campo nulo.
+func TestGetEmbedRouteAuthorIcon(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+
+	avatar := pngAvatarBytes(16, 16)
+	authorHash := newTestMediaHash(t, avatar)
+	authorName := "Jenga"
+	cacheKey := "https://embed-route.example.com/autor-" + randHex(8)
+
+	embed := newEmbedRoute(t, e, channel.ID, token, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    &cacheKey,
+		URL:         &cacheKey,
+		Author:      &models.EmbedAuthor{Name: &authorName, Media: &models.EmbedMedia{MediaSHA: &authorHash}},
+	})
+
+	rec := do(t, e, http.MethodGet, "/embeds/"+embed.ID, nil, authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var got struct {
+		Author *struct {
+			Name  *string `json:"name"`
+			Media *struct {
+				MimeType *string `json:"mime_type"`
+				MediaSHA *string `json:"media_sha"`
+			} `json:"media"`
+		} `json:"author"`
+		AuthorImageData *string `json:"author_image_data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+
+	if got.Author == nil || got.Author.Name == nil || *got.Author.Name != authorName {
+		t.Fatalf("esperava author.name %q, obtive %+v", authorName, got.Author)
+	}
+	if got.Author.Media == nil || got.Author.Media.MimeType == nil || *got.Author.Media.MimeType != "image/png" {
+		t.Fatalf("esperava author.media.mime_type image/png, obtive %+v", got.Author.Media)
+	}
+	// A referência interna da mídia não é exposta.
+	if got.Author.Media.MediaSHA != nil {
+		t.Errorf("author.media.media_sha não deveria ser exposto: %v", got.Author.Media.MediaSHA)
+	}
+	if got.AuthorImageData == nil {
+		t.Fatalf("esperava author_image_data presente")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(*got.AuthorImageData)
+	if err != nil {
+		t.Fatalf("falha ao decodificar author_image_data: %v", err)
+	}
+	blob, err := os.ReadFile(mediaPathFor(authorHash))
+	if err != nil {
+		t.Fatalf("falha ao ler o ícone em disco: %v", err)
+	}
+	if !bytes.Equal(decoded, blob) {
+		t.Errorf("author_image_data não corresponde ao arquivo em disco")
+	}
+}
+
+// TestGetEmbedRouteWithoutAuthorIcon garante que embed sem ícone responde 200 com
+// author_image_data nulo (o campo existe, sem imagem).
+func TestGetEmbedRouteWithoutAuthorIcon(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+
+	authorName := "SemAvatar"
+	cacheKey := "https://embed-route.example.com/sem-icone-" + randHex(8)
+	embed := newEmbedRoute(t, e, channel.ID, token, models.Embed{
+		SourceType:  "link",
+		FetchMethod: "opengraph",
+		CacheKey:    &cacheKey,
+		URL:         &cacheKey,
+		Author:      &models.EmbedAuthor{Name: &authorName},
+	})
+
+	rec := do(t, e, http.MethodGet, "/embeds/"+embed.ID, nil, authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	var got struct {
+		Author          *struct{ Name *string } `json:"author"`
+		AuthorImageData *string                 `json:"author_image_data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if got.Author == nil || got.Author.Name == nil {
+		t.Fatalf("esperava author.name preservado, obtive %+v", got.Author)
+	}
+	if got.AuthorImageData != nil {
+		t.Errorf("esperava author_image_data nulo sem ícone, obtive %d bytes", len(*got.AuthorImageData))
+	}
+}

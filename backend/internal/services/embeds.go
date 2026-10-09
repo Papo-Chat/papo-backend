@@ -1082,6 +1082,10 @@ func GetEmbed(ctx context.Context, embedID, userID string) (models.Embed, error)
 		path := mediaBlobPath(*embed.Thumbnail.MediaSHA)
 		embed.ThumbnailFilePath = &path
 	}
+	if embed.Author != nil && embed.Author.Media != nil && embed.Author.Media.MediaSHA != nil {
+		path := mediaBlobPath(*embed.Author.Media.MediaSHA)
+		embed.AuthorFilePath = &path
+	}
 
 	return embed, nil
 }

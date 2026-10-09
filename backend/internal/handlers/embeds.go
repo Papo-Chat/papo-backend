@@ -16,11 +16,13 @@ import (
 )
 
 // embedResponse é a resposta de GET /embeds/:embed_id: os campos públicos do
-// embed + a imagem embutida em base64 (image_data) quando existe. A referência
-// interna da mídia (ThumbnailFilePath) é excluída da serialização (json:"-").
+// embed + a imagem embutida em base64 (image_data) quando existe, e o ícone do
+// autor em base64 (author_image_data) quando existe. As referências internas de
+// mídia (ThumbnailFilePath, AuthorFilePath) são excluídas da serialização (json:"-").
 type embedResponse struct {
 	models.Embed
-	ImageData *string `json:"image_data"`
+	ImageData       *string `json:"image_data"`
+	AuthorImageData *string `json:"author_image_data"`
 }
 
 // GetEmbedHandler implementa GET /embeds/:embed_id.
@@ -52,23 +54,44 @@ func GetEmbedHandler(baseURL string, c echo.Context) error {
 	}
 
 	resp := embedResponse{Embed: embed}
-	if embed.ThumbnailFilePath != nil {
-		data, readErr := os.ReadFile(*embed.ThumbnailFilePath)
-		switch {
-		case errors.Is(readErr, os.ErrNotExist):
-			// imagem ausente em disco: devolve o embed sem a imagem
-		case readErr != nil:
-			utils.Errorf("request_id=%s falha ao ler a imagem do embed: %v",
-				c.Request().Header.Get(echo.HeaderXRequestID), readErr)
-			return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
-				"internal", "Erro interno", "falha ao buscar o embed")
-		default:
-			b64 := base64.StdEncoding.EncodeToString(data)
-			resp.ImageData = &b64
-		}
+	if data, err := readEmbedBlob(embed.ThumbnailFilePath); err != nil {
+		utils.Errorf("request_id=%s falha ao ler a imagem do embed: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao buscar o embed")
+	} else if data != nil {
+		b64 := base64.StdEncoding.EncodeToString(data)
+		resp.ImageData = &b64
+	}
+	if data, err := readEmbedBlob(embed.AuthorFilePath); err != nil {
+		utils.Errorf("request_id=%s falha ao ler o ícone do autor do embed: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao buscar o embed")
+	} else if data != nil {
+		b64 := base64.StdEncoding.EncodeToString(data)
+		resp.AuthorImageData = &b64
 	}
 
 	return c.JSON(http.StatusOK, resp)
+}
+
+// readEmbedBlob lê o blob de mídia apontado pelo caminho interno. nil, nil
+// quando não há caminho ou o arquivo sumiu do disco (o embed segue sem a imagem);
+// nil, err quando a leitura falha por outro motivo.
+func readEmbedBlob(path *string) ([]byte, error) {
+	if path == nil {
+		return nil, nil
+	}
+	data, err := os.ReadFile(*path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	default:
+		return data, nil
+	}
 }
 
 // GetEmbedVideoHandler faz relay autenticado do vídeo associado ao embed

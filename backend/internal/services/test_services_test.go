@@ -9273,3 +9273,215 @@ func TestDropConnectionNotFound(t *testing.T) {
 		t.Errorf("esperava ErrConnectionNotFound, obtive %v", err)
 	}
 }
+
+func TestUserSummariesBatchIncludesBannedAndPreservesOrder(t *testing.T) {
+	if err := cleanServers(testCtx()); err != nil {
+		t.Fatalf("cleanServers: %v", err)
+	}
+	first, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("Register first: %v", err)
+	}
+	second, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("Register second: %v", err)
+	}
+
+	if owner, err := storage.SetUserBanned(testCtx(), second.ID, true); err != nil || owner {
+		t.Fatalf("SetUserBanned: owner=%v err=%v", owner, err)
+	}
+
+	got, err := UserSummariesBatch(testCtx(), []string{second.ID, first.ID, second.ID})
+	if err != nil {
+		t.Fatalf("UserSummariesBatch: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != second.ID || got[1].ID != first.ID {
+		t.Fatalf("ordem/deduplicação inesperada: %+v", got)
+	}
+	if !got[0].Banned {
+		t.Fatalf("UserSummary não expôs banned=true")
+	}
+}
+
+func TestCreateMessageRejectsCategoryAndAllowsVoice(t *testing.T) {
+	if err := cleanServers(testCtx()); err != nil {
+		t.Fatalf("cleanServers: %v", err)
+	}
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if _, err := storage.CreateServer(testCtx(), newRandomServerName(), &owner.ID); err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+
+	category, err := storage.CreateChannel(testCtx(), newRandomChannelName(), "category", "")
+	if err != nil {
+		t.Fatalf("CreateChannel category: %v", err)
+	}
+	if _, err := CreateMessage(testCtx(), category.ID, owner.ID, "não permitido", "", nil, nil); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("categoria deveria rejeitar mensagem com ErrPermissionDenied, obtive %v", err)
+	}
+
+	voice, err := storage.CreateChannel(testCtx(), newRandomChannelName(), "voice", "")
+	if err != nil {
+		t.Fatalf("CreateChannel voice: %v", err)
+	}
+	if _, err := CreateMessage(testCtx(), voice.ID, owner.ID, "permitido", "", nil, nil); err != nil {
+		t.Fatalf("voice deveria aceitar mensagem: %v", err)
+	}
+}
+
+func TestTranslatePushMentionsPrefersNicknameThenUsername(t *testing.T) {
+	user, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	nickname := "apelido"
+	user.Nickname = &nickname
+	if _, err := storage.UpdateUser(testCtx(), user.ID, user); err != nil {
+		t.Fatalf("UpdateUser nickname: %v", err)
+	}
+
+	content := fmt.Sprintf("oi @mention(<@%s>)", user.ID)
+	if got := translatePushMentions(testCtx(), content); got != "oi @apelido" {
+		t.Fatalf("menção com nickname = %q", got)
+	}
+
+	user.Nickname = nil
+	if _, err := storage.UpdateUser(testCtx(), user.ID, user); err != nil {
+		t.Fatalf("UpdateUser remove nickname: %v", err)
+	}
+	if got := translatePushMentions(testCtx(), content); got != "oi @"+user.Username {
+		t.Fatalf("fallback para username = %q", got)
+	}
+}
+
+func TestServerPasswordChangeRevokesAllSessions(t *testing.T) {
+	if err := cleanServers(testCtx()); err != nil {
+		t.Fatalf("cleanServers: %v", err)
+	}
+
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("Register owner: %v", err)
+	}
+	other, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("Register other: %v", err)
+	}
+
+	oldPassword := newRandomPassword()
+	if _, err := CreateServerWithIcon(testCtx(), newRandomServerName(), "", "", false, &oldPassword, &owner.ID); err != nil {
+		t.Fatalf("CreateServerWithIcon: %v", err)
+	}
+
+	ownerToken, _, err := CreateSessionConnection(testCtx(), owner.ID)
+	if err != nil {
+		t.Fatalf("CreateSessionConnection owner: %v", err)
+	}
+	otherToken, _, err := CreateSessionConnection(testCtx(), other.ID)
+	if err != nil {
+		t.Fatalf("CreateSessionConnection other: %v", err)
+	}
+
+	newPassword := newRandomPassword()
+	result, err := PatchServerWithResult(testCtx(), owner.ID, nil, nil, nil, nil, &newPassword)
+	if err != nil {
+		t.Fatalf("PatchServerWithResult: %v", err)
+	}
+	if !result.PasswordChanged {
+		t.Fatal("esperava PasswordChanged=true")
+	}
+
+	for name, session := range map[string]struct {
+		userID string
+		token  string
+	}{
+		"owner": {owner.ID, ownerToken},
+		"other": {other.ID, otherToken},
+	} {
+		if err := storage.CheckUserConnection(testCtx(), session.userID, utils.HashToken(session.token)); !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("%s: sessão deveria estar revogada, obtive %v", name, err)
+		}
+	}
+}
+
+func TestServerPasswordUnchangedPreservesSessions(t *testing.T) {
+	if err := cleanServers(testCtx()); err != nil {
+		t.Fatalf("cleanServers: %v", err)
+	}
+
+	owner, err := Register(testCtx(), newRandomUsername(), newRandomPassword(), newRandomIP())
+	if err != nil {
+		t.Fatalf("Register owner: %v", err)
+	}
+
+	password := newRandomPassword()
+	if _, err := CreateServerWithIcon(testCtx(), newRandomServerName(), "", "", false, &password, &owner.ID); err != nil {
+		t.Fatalf("CreateServerWithIcon: %v", err)
+	}
+
+	token, _, err := CreateSessionConnection(testCtx(), owner.ID)
+	if err != nil {
+		t.Fatalf("CreateSessionConnection: %v", err)
+	}
+
+	result, err := PatchServerWithResult(testCtx(), owner.ID, nil, nil, nil, nil, &password)
+	if err != nil {
+		t.Fatalf("PatchServerWithResult: %v", err)
+	}
+	if result.PasswordChanged {
+		t.Fatal("esperava PasswordChanged=false para a mesma senha")
+	}
+	if err := storage.CheckUserConnection(testCtx(), owner.ID, utils.HashToken(token)); err != nil {
+		t.Fatalf("sessão deveria continuar ativa, obtive %v", err)
+	}
+}
+
+// TestCustomEmbedAuthorIcon cobre author.icon_url do embed customizado: a
+// validação exige HTTPS (o backend baixa e re-serva a imagem) e buildCustomEmbed
+// guarda a URL declarada em author.media até resolveCustomEmbedMedia baixá-la.
+func TestCustomEmbedAuthorIcon(t *testing.T) {
+	if err := validateCustomEmbed(EmbedInput{
+		Title:  "cartão",
+		Author: &EmbedAuthorInput{Name: "Jenga", IconURL: "https://cdn.discordapp.com/avatars/1/a.png"},
+	}); err != nil {
+		t.Fatalf("icon_url HTTPS deveria ser aceito: %v", err)
+	}
+
+	err := validateCustomEmbed(EmbedInput{
+		Title:  "cartão",
+		Author: &EmbedAuthorInput{Name: "Jenga", IconURL: "http://cdn.example.com/a.png"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("esperava rejeição de icon_url sem HTTPS, obtive %v", err)
+	}
+
+	embed, _ := buildCustomEmbed(EmbedInput{
+		Title:  "cartão",
+		Author: &EmbedAuthorInput{Name: "Jenga", IconURL: " https://cdn.example.com/a.png "},
+	})
+	if embed.Author == nil || embed.Author.Media == nil || embed.Author.Media.URL == nil {
+		t.Fatalf("esperava author.media com a URL declarada, obtive %+v", embed.Author)
+	}
+	if *embed.Author.Media.URL != "https://cdn.example.com/a.png" {
+		t.Errorf("URL de author.media não normalizada: %q", *embed.Author.Media.URL)
+	}
+
+	// autor declarado só com ícone continua sendo um autor (não é descartado)
+	embed, _ = buildCustomEmbed(EmbedInput{
+		Title:  "cartão",
+		Author: &EmbedAuthorInput{IconURL: "https://cdn.example.com/a.png"},
+	})
+	if embed.Author == nil || embed.Author.Media == nil {
+		t.Fatalf("autor só com icon_url deveria ser preservado, obtive %+v", embed.Author)
+	}
+
+	// sem ícone nada é criado
+	embed, _ = buildCustomEmbed(EmbedInput{Title: "cartão", Author: &EmbedAuthorInput{Name: "Jenga"}})
+	if embed.Author == nil || embed.Author.Media != nil {
+		t.Fatalf("autor sem ícone não deveria ter author.media, obtive %+v", embed.Author)
+	}
+}

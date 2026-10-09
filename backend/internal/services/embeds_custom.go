@@ -40,10 +40,13 @@ type EmbedInput struct {
 	Fields      []EmbedFieldInput `json:"fields"`
 }
 
-// EmbedAuthorInput é o autor declarado do embed customizado.
+// EmbedAuthorInput é o autor declarado do embed customizado. IconURL é a imagem
+// do autor (HTTPS, MIME de imagem): o backend baixa e re-serva na tabela media,
+// igual à thumbnail — a URL original nunca é exposta ao cliente.
 type EmbedAuthorInput struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	IconURL string `json:"icon_url"`
 }
 
 // EmbedFooterInput é o rodapé do embed customizado.
@@ -121,6 +124,11 @@ func validateCustomEmbed(in EmbedInput) error {
 		}
 		if in.Author.URL != "" {
 			if _, err := validateEmbedURL(in.Author.URL); err != nil {
+				return err
+			}
+		}
+		if in.Author.IconURL != "" {
+			if _, err := validateEmbedMediaURL(in.Author.IconURL, ""); err != nil {
 				return err
 			}
 		}
@@ -266,7 +274,10 @@ func buildCustomEmbed(in EmbedInput) (models.Embed, []models.EmbedField) {
 				author.URL = &validated
 			}
 		}
-		if author.Name != nil || author.URL != nil {
+		// icon_url entra só como URL declarada; resolveCustomEmbedMedia baixa e
+		// substitui pela mídia persistida (author_media).
+		author.Media = declaredEmbedImage(&EmbedMediaInput{URL: in.Author.IconURL})
+		if author.Name != nil || author.URL != nil || author.Media != nil {
 			embed.Author = author
 		}
 	}
@@ -314,12 +325,15 @@ func declaredEmbedImage(in *EmbedMediaInput) *models.EmbedMedia {
 }
 
 // resolveCustomEmbedMedia baixa as mídias de imagem do embed customizado
-// (thumbnail e image) e as substitui pela mídia gravada na tabela media. Falha
-// de download é logada e o embed segue sem a mídia (a validação de entrada já
-// rejeitou esquema, MIME declarado e tamanho inválidos).
+// (thumbnail, image e ícone do autor) e as substitui pela mídia gravada na tabela
+// media. Falha de download é logada e o embed segue sem a mídia (a validação de
+// entrada já rejeitou esquema, MIME declarado e tamanho inválidos).
 func resolveCustomEmbedMedia(ctx context.Context, userID string, embed *models.Embed) {
 	embed.Thumbnail = resolveCustomEmbedImage(ctx, userID, embed.Thumbnail)
 	embed.Image = resolveCustomEmbedImage(ctx, userID, embed.Image)
+	if embed.Author != nil {
+		embed.Author.Media = resolveCustomEmbedImage(ctx, userID, embed.Author.Media)
+	}
 }
 
 func resolveCustomEmbedImage(ctx context.Context, userID string, declared *models.EmbedMedia) *models.EmbedMedia {
