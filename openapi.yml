@@ -3136,6 +3136,10 @@ components:
     Channel:
       type: object
       properties:
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
         id:
           type: string
           format: uuid
@@ -3325,9 +3329,19 @@ components:
             $ref: '#/components/schemas/ICEServer'
 
     CreateChannelRequest:
+      description: Cria categoria e acessos em uma transação.
       type: object
       required: [name]
       properties:
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        access_roles:
+          type: array
+          items:
+            type: string
+            format: uuid
         name:
           type: string
         type:
@@ -3358,6 +3372,10 @@ components:
       type: object
       required: [old_position, new_position]
       properties:
+        parent_id:
+          type: string
+          nullable: true
+          description: Omitido mantém categoria; vazio remove; UUID atribui.
         old_position:
           type: integer
         new_position:
@@ -4074,9 +4092,15 @@ components:
           type: boolean
 
     CreateRoleRequest:
+      description: Cria cargo com membros em uma transação.
       type: object
       required: [name]
       properties:
+        people:
+          type: array
+          items:
+            type: string
+            format: uuid
         name:
           type: string
         color:

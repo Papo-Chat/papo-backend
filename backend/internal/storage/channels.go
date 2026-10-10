@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,7 @@ import (
 	"papo/internal/models"
 )
 
-const channelColumns = "id, name, permissions, type, position, created_at, topic"
+const channelColumns = "id, name, permissions, type, position, created_at, topic, parent_id"
 
 // ErrPositionConflict indica que a posição atual do canal não corresponde
 // à posição informada na requisição.
@@ -20,6 +21,9 @@ var ErrPositionConflict = errors.New("posição do canal desatualizada")
 // ErrInvalidPosition indica que a posição informada está fora do intervalo
 // de posições válidas do servidor.
 var ErrInvalidPosition = errors.New("posição de canal inválida")
+
+var ErrCategoryNotFound = errors.New("categoria não encontrada")
+var ErrInitialChannelRoleNotFound = errors.New("cargo inicial do canal não encontrado")
 
 // channelPositionLockKey é a chave do advisory lock que serializa a
 // alocação de posições de canais (criação e mudança de posição), evitando
@@ -37,6 +41,7 @@ func scanChannel(row rowScanner) (models.Channel, error) {
 		&channel.Position,
 		&channel.CreatedAt,
 		&channel.Topic,
+		&channel.ParentID,
 	)
 	if err != nil {
 		return models.Channel{}, err
@@ -58,6 +63,12 @@ func scanChannel(row rowScanner) (models.Channel, error) {
 // Topic vazio é gravado como NULL; a validação (máx 512, apenas canais de
 // texto) é feita na camada de serviço.
 func CreateChannel(ctx context.Context, name, channelType, topic string) (models.Channel, error) {
+	return CreateChannelWithOptions(ctx, name, channelType, topic, nil, nil)
+}
+
+// CreateChannelWithOptions cria o canal e suas regras em uma única transação.
+// O canal nunca fica visível com permissões vazias enquanto as regras são aplicadas.
+func CreateChannelWithOptions(ctx context.Context, name, channelType, topic string, parentID *string, accessRoles []string) (models.Channel, error) {
 	tx, err := GetDB().BeginTx(ctx, nil)
 	if err != nil {
 		return models.Channel{}, fmt.Errorf("falha ao criar canal: %w", err)
@@ -71,17 +82,53 @@ func CreateChannel(ctx context.Context, name, channelType, topic string) (models
 		return models.Channel{}, fmt.Errorf("falha ao criar canal: %w", err)
 	}
 
+	// A categoria e os cargos devem existir até o commit (KEY SHARE impede
+	// exclusões concorrentes de deixarem referências inválidas).
+	var canonicalParent *string
+	if parentID != nil {
+		var id string
+		err := tx.QueryRowContext(ctx,
+			"SELECT id FROM channels WHERE id::text = $1 AND type = 'category' FOR KEY SHARE", *parentID,
+		).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.Channel{}, ErrCategoryNotFound
+		}
+		if err != nil {
+			return models.Channel{}, fmt.Errorf("falha ao validar categoria: %w", err)
+		}
+		canonicalParent = &id
+	}
+	permissions := make(map[string]models.ChannelPermission, len(accessRoles))
+	for _, roleID := range accessRoles {
+		var id string
+		err := tx.QueryRowContext(ctx,
+			"SELECT id FROM roles WHERE id::text = $1 FOR KEY SHARE", roleID,
+		).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.Channel{}, ErrInitialChannelRoleNotFound
+		}
+		if err != nil {
+			return models.Channel{}, fmt.Errorf("falha ao validar cargo do canal: %w", err)
+		}
+		permissions[id] = models.ChannelPermission{
+			ReadChannel: true, SendMessages: true, ConnectVoice: true,
+		}
+	}
+	permissionJSON, err := json.Marshal(permissions)
+	if err != nil {
+		return models.Channel{}, fmt.Errorf("falha ao codificar permissões: %w", err)
+	}
+
 	// topic vazio vira NULL (canal sem tópico)
 	var topicArg any
 	if topic != "" {
 		topicArg = topic
 	}
-
 	row := tx.QueryRowContext(ctx,
-		`INSERT INTO channels (name, type, position, topic)
-		 VALUES ($1, $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM channels), $3)
+		`INSERT INTO channels (name, type, position, topic, parent_id, permissions)
+		 VALUES ($1, $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM channels), $3, $4, $5)
 		 RETURNING `+channelColumns,
-		name, channelType, topicArg,
+		name, channelType, topicArg, canonicalParent, string(permissionJSON),
 	)
 
 	channel, err := scanChannel(row)
@@ -224,6 +271,12 @@ func DeleteChannelRolePermission(ctx context.Context, channelID, roleID string) 
 // o canal não está em oldPosition e ErrInvalidPosition quando newPosition
 // está fora do intervalo.
 func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, newPosition int) (models.Channel, error) {
+	return ChangeChannelPositionWithParent(ctx, channelID, oldPosition, newPosition, nil)
+}
+
+// ChangeChannelPositionWithParent também troca a categoria, se parentID for
+// informado. String vazia remove a categoria; nil mantém a categoria atual.
+func ChangeChannelPositionWithParent(ctx context.Context, channelID string, oldPosition, newPosition int, parentID *string) (models.Channel, error) {
 	tx, err := GetDB().BeginTx(ctx, nil)
 	if err != nil {
 		return models.Channel{}, fmt.Errorf("falha ao mudar posição do canal: %w", err)
@@ -238,11 +291,30 @@ func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, n
 	}
 
 	var current int
+	var channelType string
 	if err := tx.QueryRowContext(ctx,
-		"SELECT position FROM channels WHERE id = $1 FOR UPDATE",
+		"SELECT position, type FROM channels WHERE id = $1 FOR UPDATE",
 		channelID,
-	).Scan(&current); err != nil {
+	).Scan(&current, &channelType); err != nil {
 		return models.Channel{}, mapStorageError(err)
+	}
+
+	if parentID != nil && *parentID != "" && channelType != "text" && channelType != "voice" {
+		return models.Channel{}, ErrCategoryNotFound
+	}
+	var newParent any
+	if parentID != nil && *parentID != "" {
+		var id string
+		err := tx.QueryRowContext(ctx,
+			"SELECT id FROM channels WHERE id::text = $1 AND type = 'category' FOR KEY SHARE", *parentID,
+		).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.Channel{}, ErrCategoryNotFound
+		}
+		if err != nil {
+			return models.Channel{}, fmt.Errorf("falha ao validar categoria: %w", err)
+		}
+		newParent = id
 	}
 
 	if current != oldPosition {
@@ -278,8 +350,8 @@ func ChangeChannelPosition(ctx context.Context, channelID string, oldPosition, n
 	}
 
 	row := tx.QueryRowContext(ctx,
-		"UPDATE channels SET position = $2 WHERE id = $1 RETURNING "+channelColumns,
-		channelID, newPosition,
+		"UPDATE channels SET position = $2, parent_id = CASE WHEN $3::boolean THEN $4::uuid ELSE parent_id END WHERE id = $1 RETURNING "+channelColumns,
+		channelID, newPosition, parentID != nil, newParent,
 	)
 
 	channel, err := scanChannel(row)
@@ -314,7 +386,7 @@ func DeleteChannel(ctx context.Context, id string) error {
 // channelSummaryBaseColumns é a seleção base da visão ChannelSummary: dados
 // do canal, última mensagem (LATERAL, pode ser NULL) e o username do autor da
 // última mensagem (LEFT JOIN, pode ser NULL).
-const channelSummaryBaseColumns = `c.id, c.name, c.permissions, c.type, c.position, c.created_at, c.topic,
+const channelSummaryBaseColumns = `c.id, c.name, c.permissions, c.type, c.position, c.created_at, c.topic, c.parent_id,
 	lm.id, lm.content, lm.author_id, u.username, lm.created_at`
 
 // channelSummaryBaseJoins traz a última mensagem de cada canal (mesma ordem
@@ -375,6 +447,7 @@ func scanChannelSummary(row rowScanner, roleNames map[string]string) (models.Cha
 		&summary.Position,
 		&summary.CreatedAt,
 		&summary.Topic,
+		&summary.ParentID,
 		&lastMessageID,
 		&lastMessageContent,
 		&lastMessageAuthorID,

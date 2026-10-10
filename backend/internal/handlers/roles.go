@@ -32,6 +32,7 @@ func ListRolesHandler(baseURL string, c echo.Context) error {
 }
 
 type createRoleRequest struct {
+	People []string `json:"people"`
 	Name        string                 `json:"name"`
 	Color       *string                `json:"color"`
 	Permissions models.RolePermissions `json:"permissions"`
@@ -54,7 +55,8 @@ func CreateRoleHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	role, err := services.CreateRole(c.Request().Context(), userID, req.Name, req.Color, req.Permissions)
+	role, err := services.CreateRoleWithMembers(c.Request().Context(), userID, req.Name, req.Color, req.Permissions, req.People)
+	if errors.Is(err, services.ErrUserNotFound) { return utils.SendProblem(c, baseURL, http.StatusNotFound, "not-found", "Usuário não encontrado", "usuário inválido") }
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,

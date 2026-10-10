@@ -12,6 +12,7 @@ import (
 
 // ErrChannelNotFound indica que o canal não existe.
 var ErrChannelNotFound = errors.New("canal não encontrado")
+var ErrCategoryNotFound = errors.New("categoria não encontrada")
 
 // ErrChannelNameTaken indica que o nome do canal já está em uso.
 var ErrChannelNameTaken = errors.New("nome do canal já existe")
@@ -51,7 +52,8 @@ func ListChannels(ctx context.Context, userID string) ([]models.ChannelSummary, 
 // ou quando um canal category recebe topic, ErrChannelLimitReached quando o
 // limite de 500 canais já foi atingido e ErrChannelNameTaken quando o nome
 // já está em uso.
-func CreateChannel(ctx context.Context, actorID, name, channelType, topic string) (models.ChannelSummary, error) {
+func CreateChannel(ctx context.Context, actorID, name, channelType, topic string) (models.ChannelSummary, error) { return CreateChannelWithOptions(ctx, actorID, name, channelType, topic, nil, nil) }
+func CreateChannelWithOptions(ctx context.Context, actorID, name, channelType, topic string, parentID *string, accessRoles []string) (models.ChannelSummary, error) {
 	if channelType == "" {
 		channelType = "text"
 	}
@@ -64,10 +66,11 @@ func CreateChannel(ctx context.Context, actorID, name, channelType, topic string
 	if utf8.RuneCountInString(topic) > maxChannelTopicLength {
 		return models.ChannelSummary{}, ErrInvalidInput
 	}
-	if channelType == "category" && topic != "" {
+	if channelType == "category" && (topic != "" || parentID != nil || len(accessRoles) > 0) {
 		return models.ChannelSummary{}, ErrInvalidInput
 	}
 
+	if parentID != nil && channelType != "text" && channelType != "voice" { return models.ChannelSummary{}, ErrInvalidInput }
 	count, err := storage.CountChannels(ctx)
 	if err != nil {
 		return models.ChannelSummary{}, err
@@ -76,7 +79,9 @@ func CreateChannel(ctx context.Context, actorID, name, channelType, topic string
 		return models.ChannelSummary{}, ErrChannelLimitReached
 	}
 
-	channel, err := storage.CreateChannel(ctx, name, channelType, topic)
+	channel, err := storage.CreateChannelWithOptions(ctx, name, channelType, topic, parentID, accessRoles)
+	if errors.Is(err, storage.ErrCategoryNotFound) { return models.ChannelSummary{}, ErrCategoryNotFound }
+	if errors.Is(err, storage.ErrInitialChannelRoleNotFound) { return models.ChannelSummary{}, ErrRoleNotFound }
 	if errors.Is(err, storage.ErrUniqueViolation) {
 		return models.ChannelSummary{}, ErrChannelNameTaken
 	}
@@ -170,7 +175,8 @@ func UpdateChannel(ctx context.Context, actorID, id, name string, topic *string)
 // Retorna ErrInvalidInput quando as posições são inválidas,
 // ErrChannelNotFound quando o canal não existe e
 // ErrChannelPositionConflict quando o canal não está em old_position.
-func ChangeChannelPosition(ctx context.Context, actorID, channelID string, oldPosition, newPosition int) (models.ChannelSummary, error) {
+func ChangeChannelPosition(ctx context.Context, actorID, channelID string, oldPosition, newPosition int) (models.ChannelSummary, error) { return ChangeChannelPositionWithParent(ctx, actorID, channelID, oldPosition, newPosition, nil) }
+func ChangeChannelPositionWithParent(ctx context.Context, actorID, channelID string, oldPosition, newPosition int, parentID *string) (models.ChannelSummary, error) {
 	if channelID == "" {
 		return models.ChannelSummary{}, ErrChannelNotFound
 	}
@@ -185,12 +191,13 @@ func ChangeChannelPosition(ctx context.Context, actorID, channelID string, oldPo
 		return models.ChannelSummary{}, err
 	}
 
-	channel, err := storage.ChangeChannelPosition(ctx, channelID, oldPosition, newPosition)
+	channel, err := storage.ChangeChannelPositionWithParent(ctx, channelID, oldPosition, newPosition, parentID)
 	switch {
 	case errors.Is(err, storage.ErrNotFound):
 		return models.ChannelSummary{}, ErrChannelNotFound
 	case errors.Is(err, storage.ErrPositionConflict):
 		return models.ChannelSummary{}, ErrChannelPositionConflict
+	case errors.Is(err, storage.ErrCategoryNotFound): return models.ChannelSummary{}, ErrCategoryNotFound
 	case errors.Is(err, storage.ErrInvalidPosition):
 		return models.ChannelSummary{}, ErrInvalidInput
 	case err != nil:
