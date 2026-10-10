@@ -1097,7 +1097,7 @@ func TestResetRouteOwnerResetsUser(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if !strings.HasPrefix(resp.ResetURL, "papo-reset://passwordchange/") {
+	if !strings.HasPrefix(resp.ResetURL, "https://papo.cyberasilo.online/passwordchange/") {
 		t.Fatalf("link de reset inesperado: %q", resp.ResetURL)
 	}
 	if resp.ExpiresAt.IsZero() || !resp.ExpiresAt.After(time.Now()) {
@@ -6277,7 +6277,7 @@ func TestResetUserHandlerSuccess(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("falha ao decodificar resposta: %v", err)
 	}
-	if !strings.HasPrefix(resp.ResetURL, "papo-reset://passwordchange/") {
+	if !strings.HasPrefix(resp.ResetURL, "https://papo.cyberasilo.online/passwordchange/") {
 		t.Fatalf("link de reset inesperado: %q", resp.ResetURL)
 	}
 	if resp.ExpiresAt.IsZero() {
