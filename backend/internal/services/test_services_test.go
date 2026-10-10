@@ -5940,6 +5940,42 @@ func TestEditMessage(t *testing.T) {
 	}
 }
 
+// Text-only edits must not silently erase bridge-provided custom embeds.
+// An explicit empty embeds array, however, is an intentional removal.
+func TestEditMessagePreservesCustomEmbedsWhenOmitted(t *testing.T) {
+    cleanServers(testCtx())
+    owner := newTestMessageUser(t)
+    channel := newTestMessageChannel(t, &owner.ID)
+    created, err := CreateMessage(testCtx(), channel.ID, owner.ID, "original", "", nil,
+        []EmbedInput{{Title: "keep me", Description: "metadata"}})
+    if err != nil {
+        t.Fatalf("create message: %v", err)
+    }
+    if len(created.Embeds) != 1 {
+        t.Fatalf("expected one custom embed, got %d", len(created.Embeds))
+    }
+    id := created.Embeds[0].ID
+    edited, err := EditMessage(testCtx(), created.ID, owner.ID, "new text", nil)
+    if err != nil {
+        t.Fatalf("edit text only: %v", err)
+    }
+    if len(edited.Embeds) != 1 || edited.Embeds[0].ID != id {
+        t.Fatalf("text-only edit must retain original embed identity: %v", edited.Embeds)
+    }
+    stored, err := storage.ListEmbedsByMessageIDs(testCtx(), []string{created.ID})
+    if err != nil || len(stored[created.ID]) != 1 || stored[created.ID][0].ID != id {
+        t.Fatalf("custom embed lost from storage: %v, %v", stored, err)
+    }
+    empty := []EmbedInput{}
+    removed, err := EditMessage(testCtx(), created.ID, owner.ID, "without embed", empty)
+    if err != nil {
+        t.Fatalf("explicit removal: %v", err)
+    }
+    if len(removed.Embeds) != 0 {
+        t.Fatalf("explicit empty array must clear custom embeds: %v", removed.Embeds)
+    }
+}
+
 func TestEditMessageClearsContent(t *testing.T) {
 	cleanServers(testCtx())
 	owner := newTestMessageUser(t)
