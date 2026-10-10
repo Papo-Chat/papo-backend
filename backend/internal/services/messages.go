@@ -616,8 +616,9 @@ func EditMessage(ctx context.Context, messageID, authorID, content string, embed
 		return models.MessageWithAttachment{}, err
 	}
 
-	// Substitui os embeds customizados da mensagem (o array enviado é a lista
-	// completa, assim como o content). Os embeds de link ficam intactos aqui:
+	// Quando presentes, substitui os embeds customizados da mensagem; quando
+	// ausentes, conserva os embeds existentes (edição apenas do texto).
+	// Os embeds de link ficam intactos aqui:
 	// são substituídos pelo crawl em background.
 	oldEmbeds, err := storage.ListEmbedsByMessageIDs(ctx, []string{updated.ID})
 	if err != nil {
@@ -630,16 +631,29 @@ func EditMessage(ctx context.Context, messageID, authorID, content string, embed
 		}
 	}
 
-	messageEmbeds, err := CreateCustomEmbeds(ctx, authorID, embeds)
-	if err != nil {
-		return models.MessageWithAttachment{}, err
-	}
-	newCustomIDs := make([]string, 0, len(messageEmbeds))
-	for _, e := range messageEmbeds {
-		newCustomIDs = append(newCustomIDs, e.ID)
-	}
-	if err := storage.ReplaceMessageCustomEmbeds(ctx, updated.ID, newCustomIDs, oldCustomIDs); err != nil {
-		return models.MessageWithAttachment{}, err
+	// Omission of "embeds" means text-only edit: keep the existing custom
+	// embeds and their media/IDs. An explicit [] replaces them with none.
+	// Never recreate old embeds from their public presentation model: that
+	// would lose private media references and create orphan rows.
+	var messageEmbeds []models.Embed
+	if embeds == nil {
+		for _, existing := range oldEmbeds[updated.ID] {
+			if existing.SourceType == embedSourceCustom {
+				messageEmbeds = append(messageEmbeds, existing)
+			}
+		}
+	} else {
+		messageEmbeds, err = CreateCustomEmbeds(ctx, authorID, embeds)
+		if err != nil {
+			return models.MessageWithAttachment{}, err
+		}
+		newCustomIDs := make([]string, 0, len(messageEmbeds))
+		for _, e := range messageEmbeds {
+			newCustomIDs = append(newCustomIDs, e.ID)
+		}
+		if err := storage.ReplaceMessageCustomEmbeds(ctx, updated.ID, newCustomIDs, oldCustomIDs); err != nil {
+			return models.MessageWithAttachment{}, err
+		}
 	}
 
 	attachments, err := storage.ListAttachmentsByMessage(ctx, updated.ID)
