@@ -31,7 +31,8 @@ func ListRoles(ctx context.Context) ([]models.Role, error) {
 // Retorna ErrInvalidInput quando o nome está vazio ou acima de 32 caracteres ou
 // quando a cor não é um hexadecimal #RRGGBB e ErrRoleNameTaken quando o nome
 // já está em uso.
-func CreateRole(ctx context.Context, actorID, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
+func CreateRole(ctx context.Context, actorID, name string, color *string, permissions models.RolePermissions) (models.Role, error) { return CreateRoleWithMembers(ctx, actorID, name, color, permissions, nil) }
+func CreateRoleWithMembers(ctx context.Context, actorID, name string, color *string, permissions models.RolePermissions, people []string) (models.Role, error) {
 	if name == "" || utf8.RuneCountInString(name) > maxRoleNameLength {
 		return models.Role{}, ErrInvalidInput
 	}
@@ -40,7 +41,8 @@ func CreateRole(ctx context.Context, actorID, name string, color *string, permis
 		return models.Role{}, ErrInvalidInput
 	}
 
-	role, err := storage.CreateRole(ctx, name, color, permissions)
+	role, err := storage.CreateRoleWithMembers(ctx, name, color, permissions, people)
+	if errors.Is(err, storage.ErrNotFound) { return models.Role{}, ErrUserNotFound }
 	if errors.Is(err, storage.ErrUniqueViolation) {
 		return models.Role{}, ErrRoleNameTaken
 	}
