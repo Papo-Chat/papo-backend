@@ -25,7 +25,7 @@ var (
 
 const (
 	passwordResetExpiration = 24 * time.Hour
-	passwordResetFrontendBaseURL = "papo-reset://passwordchange/"
+	passwordResetFrontendBaseURL = "https://papo.cyberasilo.online/passwordchange/"
 )
 
 type PasswordResetLink struct {
