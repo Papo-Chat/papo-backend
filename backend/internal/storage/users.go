@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -298,6 +299,25 @@ func UpdateUserAvatar(ctx context.Context, avatarMedia *string, id string) error
 	}
 
 	return nil
+}
+
+// GetUserAvatarMedia retorna SOMENTE a referência do avatar do usuário
+// (media_sha_hash; nil quando o usuário não tem avatar). Retorna ErrNotFound
+// quando o usuário não existe.
+func GetUserAvatarMedia(ctx context.Context, id string) (*string, error) {
+	var avatarMedia sql.NullString
+	err := GetDB().QueryRowContext(ctx,
+		"SELECT avatar_media FROM users WHERE id = $1", id,
+	).Scan(&avatarMedia)
+	if err != nil {
+		return nil, mapStorageError(err)
+	}
+
+	if !avatarMedia.Valid {
+		return nil, nil
+	}
+
+	return &avatarMedia.String, nil
 }
 
 // UpdateUserBanner atualiza SOMENTE a referência do banner do usuário

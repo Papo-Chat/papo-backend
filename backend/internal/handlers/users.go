@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"net/http"
+	"os"
 	"time"
 
 	"papo/internal/config"
@@ -12,6 +13,7 @@ import (
 	"papo/internal/utils"
 	"papo/internal/websocket"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
 
@@ -418,6 +420,67 @@ func UpdateAvatarHandler(baseURL string, c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{
 		"response": "User avatar updated successfully",
 	})
+}
+
+// GetUserAvatarHandler implementa GET /users/:user_id/avatar (público, sem
+// JWT). Serve SOMENTE a imagem de avatar do usuário a partir do storage
+// content-addressable: é o endpoint de mídia do backend para consumidores
+// externos (bot bridge), que precisam de uma URL absoluta que o Discord
+// consiga buscar sem cookie de sessão. Outros mídia (attachments, banners)
+// continuam autenticadas em GET /media/:sha_hash.
+func GetUserAvatarHandler(baseURL string, c echo.Context) error {
+	userID := c.Param("user_id")
+	if _, err := uuid.Parse(userID); err != nil {
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "usuário não encontrado")
+	}
+
+	media, filePath, err := services.GetUserAvatar(c.Request().Context(), userID)
+	switch {
+	case errors.Is(err, services.ErrUserNotFound),
+		errors.Is(err, services.ErrAvatarNotFound),
+		errors.Is(err, services.ErrMediaNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "avatar não encontrado")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao buscar o avatar do usuário: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao buscar o avatar do usuário")
+	}
+
+	file, err := os.Open(filePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "avatar não encontrado")
+	}
+	if err != nil {
+		utils.Errorf("request_id=%s falha ao abrir o blob do avatar: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao buscar o avatar do usuário")
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		utils.Errorf("request_id=%s falha ao ler o blob do avatar: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao buscar o avatar do usuário")
+	}
+
+	resp := c.Response()
+	resp.Header().Set(echo.HeaderContentType, media.MimeType)
+	resp.Header().Set(echo.HeaderContentDisposition, "inline")
+	// A URL é por user_id (não por sha), então o cache precisa ser curto o
+	// suficiente para refletir trocas de avatar.
+	resp.Header().Set("Cache-Control", "public, max-age=3600")
+
+	// ServeContent trata Range requests e If-Modified-Since (304).
+	http.ServeContent(resp, c.Request(), userID, info.ModTime(), file)
+
+	return nil
 }
 
 type updateBannerRequest struct {

@@ -197,6 +197,61 @@ func MarkUserNotificationsRead(ctx context.Context, actorID, targetID string, id
 	return int(affected), nil
 }
 
+// MarkChannelRead registra a leitura do canal pelo ator até a mensagem
+// informada (PUT /channels/:channel_id/read): avança o last_read do usuário
+// (somente para frente) e marca como lidas as notificações do usuário nesse
+// canal até essa mensagem. Exige permissão de leitura no canal e que a
+// mensagem pertença ao canal. Retorna ErrChannelNotFound quando o canal não
+// existe, ErrMessageNotFound quando a mensagem não existe ou pertence a
+// outro canal e ErrPermissionDenied quando o ator não pode ler o canal.
+func MarkChannelRead(ctx context.Context, actorID, channelID, messageID string) error {
+	if actorID == "" || channelID == "" || messageID == "" {
+		return ErrInvalidInput
+	}
+
+	channel, err := storage.GetChannelByID(ctx, channelID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return ErrChannelNotFound
+	}
+	if err != nil {
+		return err
+	}
+
+	allowed, err := userHasChannelPermission(ctx, channel, actorID, true, func(p models.ChannelPermission) bool {
+		return p.ReadChannel
+	})
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return ErrPermissionDenied
+	}
+
+	message, err := storage.GetMessageByID(ctx, messageID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return ErrMessageNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if message.ChannelID != channelID {
+		return ErrMessageNotFound
+	}
+
+	if err := storage.TouchLastReadMessage(ctx, actorID, channelID, message); err != nil {
+		return err
+	}
+
+	// Best-effort: o read já foi registrado; falhar aqui não desfaz o avanço
+	// do last_read (as notificações ficam legíveis na próxima leitura).
+	if _, err := storage.MarkChannelNotificationsReadUpTo(ctx, actorID, channelID, message); err != nil {
+		utils.Errorf("falha ao marcar notificações como lidas do usuário %s no canal %s: %v",
+			actorID, channelID, err)
+	}
+
+	return nil
+}
+
 // NotificationDelivery é uma entrega de notificação via WebSocket
 // (new_notification): o usuário alvo, o id do evento (id da row de
 // notificação quando há row, UUID efêmero quando a configuração 'all' não

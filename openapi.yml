@@ -647,6 +647,34 @@ paths:
           $ref: '#/components/responses/InternalError'
 
   /users/{user_id}/avatar:
+    get:
+      tags: [Users]
+      summary: Serve a imagem do avatar do usuário (público, sem autenticação; consumido pelo bot bridge)
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Bytes do avatar (Content-Type do MIME registrado; Cache-Control public, max-age=3600)
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/gif:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
     put:
       tags: [Users]
       summary: Atualiza o avatar (base64, GIF/JPEG/JPG/PNG/WEBP, máx. 2MB, 512px)
@@ -835,8 +863,9 @@ paths:
       description: |
         Para o próprio usuário, marca `reset_password=true` para permitir a
         troca autenticada em `PUT /users/{user_id}/password`.
-        Para outro usuário, exige dono do servidor ou role `manage_server`
-        e gera um token aleatório de uso único; somente o SHA-256 é persistido.
+        Para outro usuário, exige dono do servidor (role `manage_server`
+        não autoriza) e gera um token aleatório de uso único; somente o
+        SHA-256 é persistido.
         Um novo link administrativo invalida links anteriores do usuário.
       parameters:
         - $ref: '#/components/parameters/UserId'
@@ -1559,6 +1588,50 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /channels/{channel_id}/read:
+    put:
+      tags: [Notifications]
+      summary: Registra a leitura do canal pelo usuário até uma mensagem
+      description: >
+        Permission Check: usuário com permissão de leitura no canal
+        (read_channel; canal aberto ou role com a permissão; dono do servidor
+        bypassa). Avança o last_read do usuário somente para frente e marca
+        como lidas as notificações do usuário nesse canal até a mensagem
+        informada. Listar mensagens NÃO avança o last_read; este endpoint é o
+        ponto de registro do read (chamado quando o usuário alcança a mensagem
+        mais nova do canal).
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message_id]
+              properties:
+                message_id:
+                  type: string
+                  format: uuid
+                  description: Mensagem até a qual o canal foi lido (deve pertencer ao canal)
+      responses:
+        '204':
+          description: Leitura registrada
+        '400':
+          description: Campo ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /voice/ice-servers:
     get:
       tags: [Voice]
@@ -1584,7 +1657,7 @@ paths:
   /channels/{channel_id}/messages:
     get:
       tags: [Messages]
-      summary: Lista mensagens do canal (Limite de 100; paginação por since + last_id; order asc/desc)
+      summary: Lista mensagens do canal (Limite de 100; página padrão de 30; paginação por since + last_id; order asc/desc)
       parameters:
         - $ref: '#/components/parameters/ChannelId'
         - name: since
@@ -1609,6 +1682,15 @@ paths:
             enum: [asc, desc]
             default: desc
           description: Direção da paginação e ordenação; has_more se refere a esta direção
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 30
+          description: Tamanho da página em mensagens (1 a 100); fora desse intervalo responde 400
       responses:
         '200':
           description: Mensagens do canal
@@ -1616,6 +1698,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MessageListResponse'
+        '400':
+          description: Parâmetro de query inválido (since, order ou limit)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

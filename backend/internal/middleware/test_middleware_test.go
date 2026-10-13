@@ -810,16 +810,21 @@ func TestCORSPreflightDeniesDisallowedOrigin(t *testing.T) {
 // TestCORSPreflightHidesUnconfiguredMethod garante que o preflight anuncia
 // apenas os métodos configurados: o navegador bloqueia a requisição real
 // quando o método pedido não está em Access-Control-Allow-Methods.
+// HEAD é usado como exemplo de método não configurado (PATCH é configurado:
+// PATCH /server existe).
 func TestCORSPreflightHidesUnconfiguredMethod(t *testing.T) {
 	mw := CORS(corsTestOrigins)
 
-	rec := doCORSRequest(t, mw, http.MethodOptions, "/api", "http://localhost:5173", http.MethodPatch)
+	rec := doCORSRequest(t, mw, http.MethodOptions, "/api", "http://localhost:5173", http.MethodHead)
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("esperava status 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get(echo.HeaderAccessControlAllowMethods); strings.Contains(got, http.MethodPatch) {
-		t.Errorf("não esperava %s em Access-Control-Allow-Methods, obtive %q", http.MethodPatch, got)
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowMethods); strings.Contains(got, http.MethodHead) {
+		t.Errorf("não esperava %s em Access-Control-Allow-Methods, obtive %q", http.MethodHead, got)
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowMethods); !strings.Contains(got, http.MethodPatch) {
+		t.Errorf("esperava %s em Access-Control-Allow-Methods, obtive %q", http.MethodPatch, got)
 	}
 }
 

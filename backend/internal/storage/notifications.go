@@ -244,3 +244,27 @@ func MarkUserNotificationsRead(ctx context.Context, userID string, ids []string)
 
 	return result.RowsAffected()
 }
+
+// MarkChannelNotificationsReadUpTo marca como lidas as notificações não lidas
+// do usuário cujas mensagens pertencem ao canal e estão na posição da mensagem
+// informada ou antes dela (ordem (created_at, id), a mesma da listagem de
+// mensagens). Usado quando o usuário registra a leitura do canal até uma
+// mensagem (PUT /channels/:channel_id/read). Retorna o número de linhas.
+func MarkChannelNotificationsReadUpTo(ctx context.Context, userID, channelID string, message models.Message) (int64, error) {
+	result, err := GetDB().ExecContext(ctx,
+		`UPDATE notifications n
+		 SET read = TRUE
+		 FROM messages m
+		 WHERE n.user_id = $1
+		   AND n.message_id = m.id
+		   AND m.channel_id = $2
+		   AND n.read = FALSE
+		   AND (m.created_at, m.id) <= ($3::timestamptz, $4::uuid)`,
+		userID, channelID, message.CreatedAt, message.ID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("falha ao marcar as notificações do canal como lidas: %w", err)
+	}
+
+	return result.RowsAffected()
+}

@@ -324,3 +324,59 @@ func TestMarkUserNotificationsRead(t *testing.T) {
 		t.Errorf("esperava 0 linhas afetadas, obtive %d", affected)
 	}
 }
+
+// TestMarkChannelNotificationsReadUpTo garante que registrar a leitura do
+// canal marca como lidas somente as notificações do usuário naquele canal até
+// a mensagem informada (ordem (created_at, id)), deixando intactas as
+// notificações mais novas e as de outros canais.
+func TestMarkChannelNotificationsReadUpTo(t *testing.T) {
+	user := newTestUser(t)
+	_ = newTestServer(t, nil)
+	channel := newTestChannel(t)
+	otherChannel := newTestChannel(t)
+
+	first := notificationTestMessage(t, channel.ID, user.ID, user.ID, "primeira")
+	time.Sleep(10 * time.Millisecond)
+	second := notificationTestMessage(t, channel.ID, user.ID, user.ID, "segunda")
+	time.Sleep(10 * time.Millisecond)
+	third := notificationTestMessage(t, channel.ID, user.ID, user.ID, "terceira")
+	foreign := notificationTestMessage(t, otherChannel.ID, user.ID, user.ID, "outro canal")
+
+	affected, err := MarkChannelNotificationsReadUpTo(testCtx(), user.ID, channel.ID, second)
+	if err != nil {
+		t.Fatalf("MarkChannelNotificationsReadUpTo retornou erro: %v", err)
+	}
+	if affected != 2 {
+		t.Errorf("esperava 2 notificações marcadas, obtive %d", affected)
+	}
+
+	list, err := ListUserNotifications(testCtx(), user.ID, nil, "", 0)
+	if err != nil {
+		t.Fatalf("ListUserNotifications retornou erro: %v", err)
+	}
+	readByMessage := make(map[string]bool, len(list))
+	for _, n := range list {
+		readByMessage[n.MessageID] = n.Read
+	}
+	if len(readByMessage) != 4 {
+		t.Fatalf("esperava 4 notificações, obtive %d", len(readByMessage))
+	}
+	if !readByMessage[first.ID] || !readByMessage[second.ID] {
+		t.Errorf("as notificações até a segunda mensagem deveriam estar lidas: %+v", readByMessage)
+	}
+	if readByMessage[third.ID] {
+		t.Errorf("a notificação da mensagem mais nova não deveria estar lida")
+	}
+	if readByMessage[foreign.ID] {
+		t.Errorf("a notificação de outro canal não deveria estar lida")
+	}
+
+	// Idempotente: repetir não marca novas linhas.
+	affected, err = MarkChannelNotificationsReadUpTo(testCtx(), user.ID, channel.ID, second)
+	if err != nil {
+		t.Fatalf("MarkChannelNotificationsReadUpTo (repetido) retornou erro: %v", err)
+	}
+	if affected != 0 {
+		t.Errorf("esperava 0 linhas na repetição, obtive %d", affected)
+	}
+}

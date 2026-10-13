@@ -70,6 +70,63 @@ func UpdateChannelUserSettingHandler(baseURL string, c echo.Context) error {
 	return c.JSON(http.StatusOK, setting)
 }
 
+// markChannelReadRequest é o corpo de PUT /channels/:channel_id/read.
+type markChannelReadRequest struct {
+	MessageID string `json:"message_id"`
+}
+
+// MarkChannelReadHandler implementa PUT /channels/:channel_id/read: registra
+// a leitura do canal pelo usuário até uma mensagem (avança o last_read e
+// marca como lidas as notificações do usuário nesse canal até essa mensagem).
+// Somente usuários com permissão de leitura no canal registram o próprio read.
+func MarkChannelReadHandler(baseURL string, c echo.Context) error {
+	userID, ok := c.Get(middleware.UserIDContextKey).(string)
+	if !ok || userID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusUnauthorized,
+			"unauthorized", "Token inválido ou expirado",
+			"token de autenticação ausente, inválido ou expirado")
+	}
+
+	channelID := c.Param("channel_id")
+	if channelID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "channel_id é obrigatório")
+	}
+
+	var req markChannelReadRequest
+	if err := c.Bind(&req); err != nil {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
+	}
+	if req.MessageID == "" {
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "message_id é obrigatório")
+	}
+
+	err := services.MarkChannelRead(c.Request().Context(), userID, channelID, req.MessageID)
+	switch {
+	case errors.Is(err, services.ErrPermissionDenied):
+		return utils.SendProblem(c, baseURL, http.StatusForbidden,
+			"forbidden", "Acesso negado", "você não pode ler este canal")
+	case errors.Is(err, services.ErrChannelNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "canal não encontrado")
+	case errors.Is(err, services.ErrMessageNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "mensagem não encontrada neste canal")
+	case errors.Is(err, services.ErrInvalidInput):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "message_id é obrigatório")
+	case err != nil:
+		utils.Errorf("request_id=%s falha ao registrar a leitura do canal: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+			"internal", "Erro interno", "falha ao registrar a leitura do canal")
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
 // ListUserNotificationsHandler implementa GET /users/:user_id/notifications:
 // lista as notificações do usuário (somente o próprio usuário), mais recentes
 // primeiro, limite de 100. O parâmetro de query since é opcional: timestamp

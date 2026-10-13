@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 // O parâmetro de query since é opcional: timestamp ISO 8601 para polling de
 // novas mensagens. last_id é opcional: id da última mensagem da página
 // anterior; usado com since como cursor exato (created_at, id).
+// limit é opcional: tamanho da página (1 a 100, padrão 30).
 func ListMessagesHandler(baseURL string, c echo.Context) error {
 	userID, ok := c.Get(middleware.UserIDContextKey).(string)
 	if !ok || userID == "" {
@@ -48,7 +50,18 @@ func ListMessagesHandler(baseURL string, c echo.Context) error {
 	}
 	lastID := c.QueryParam("last_id")
 
-	list, err := services.ListMessagesOrdered(c.Request().Context(), channelID, userID, since, lastID, c.QueryParam("order"))
+	limit := 0
+	if value := c.QueryParam("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > services.MaxMessageListLimit {
+			return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+				"invalid-param", "Parâmetro inválido",
+				"limit deve ser um inteiro entre 1 e 100")
+		}
+		limit = parsed
+	}
+
+	list, err := services.ListMessagesOrdered(c.Request().Context(), channelID, userID, since, lastID, c.QueryParam("order"), limit)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "order deve ser asc ou desc")

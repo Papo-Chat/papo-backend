@@ -500,6 +500,75 @@ func TestFxTwitterVideoURL(t *testing.T) {
 	}
 }
 
+// TestFxTwitterMediaSourceQuote garante que um quote tweet sem mídia no tweet
+// principal usa a mídia do tweet citado (profundidade 1), e que um tweet com
+// mídia própria não é substituído pelo quote.
+func TestFxTwitterMediaSourceQuote(t *testing.T) {
+	quotedPhoto := &fxTwitterStatus{Media: fxTwitterMedia{
+		Photos: []fxTwitterPhoto{{URL: "https://pbs.twimg.com/quoted.jpg"}},
+	}}
+
+	// Principal sem mídia: usa o quote.
+	main := &fxTwitterStatus{Text: "olha isso", Quote: quotedPhoto}
+	source := fxTwitterMediaSource(main)
+	if got := fxTwitterImageURL(source); got != "https://pbs.twimg.com/quoted.jpg" {
+		t.Fatalf("mídia do quote inesperada: %q", got)
+	}
+
+	// Principal com mídia própria: mantém a própria.
+	mainWithMedia := &fxTwitterStatus{
+		Media: fxTwitterMedia{Photos: []fxTwitterPhoto{{URL: "https://pbs.twimg.com/own.jpg"}}},
+		Quote: quotedPhoto,
+	}
+	if got := fxTwitterImageURL(fxTwitterMediaSource(mainWithMedia)); got != "https://pbs.twimg.com/own.jpg" {
+		t.Fatalf("mídia própria deveria ter prioridade, obtive %q", got)
+	}
+
+	// Quote sem mídia nenhuma: fonte continua sendo o principal (sem mídia).
+	plain := &fxTwitterStatus{Quote: &fxTwitterStatus{Text: "sem mídia"}}
+	if got := fxTwitterImageURL(fxTwitterMediaSource(plain)); got != "" {
+		t.Fatalf("esperava ausência de mídia, obtive %q", got)
+	}
+
+	// Quote de quote não é desdobrado (profundidade 1).
+	deep := &fxTwitterStatus{Quote: &fxTwitterStatus{Quote: quotedPhoto}}
+	if got := fxTwitterImageURL(fxTwitterMediaSource(deep)); got != "" {
+		t.Fatalf("quote de quote não deveria ser desdobrado, obtive %q", got)
+	}
+}
+
+// TestFxTwitterQuoteFields garante a field que exibe o tweet citado no embed
+// e a omissão quando não há quote/texto/autor.
+func TestFxTwitterQuoteFields(t *testing.T) {
+	fields := fxTwitterQuoteFields(&fxTwitterStatus{
+		Text:   "tweet citado",
+		Author: fxTwitterUser{Name: "Fulano", ScreenName: "fulano"},
+	})
+	if len(fields) != 1 {
+		t.Fatalf("esperava 1 field, obtive %d", len(fields))
+	}
+	if fields[0].Name != "Fulano (@fulano)" || fields[0].Value != "tweet citado" {
+		t.Errorf("field inesperada: %+v", fields[0])
+	}
+
+	// Só handle.
+	fields = fxTwitterQuoteFields(&fxTwitterStatus{Text: "x", Author: fxTwitterUser{ScreenName: "fulano"}})
+	if len(fields) != 1 || fields[0].Name != "@fulano" {
+		t.Errorf("autor sem nome deveria usar handle, obtive %+v", fields)
+	}
+
+	// Sem quote, sem texto e sem autor: nenhuma field.
+	if got := fxTwitterQuoteFields(nil); got != nil {
+		t.Errorf("sem quote deveria retornar nil, obtive %+v", got)
+	}
+	if got := fxTwitterQuoteFields(&fxTwitterStatus{Author: fxTwitterUser{Name: "Fulano"}}); got != nil {
+		t.Errorf("quote sem texto deveria retornar nil, obtive %+v", got)
+	}
+	if got := fxTwitterQuoteFields(&fxTwitterStatus{Text: "sem autor"}); got != nil {
+		t.Errorf("quote sem autor deveria retornar nil, obtive %+v", got)
+	}
+}
+
 func TestRegisterRejectsShortUsername(t *testing.T) {
 	_, err := Register(testCtx(), "ab", newRandomPassword(), newRandomIP())
 	if !errors.Is(err, ErrInvalidInput) {
@@ -5542,8 +5611,56 @@ func TestListMessagesHasMore(t *testing.T) {
 	if !list.HasMore {
 		t.Error("esperava has_more true com 101 mensagens")
 	}
-	if len(list.Messages) != 100 {
-		t.Errorf("esperava 100 mensagens, obtive %d", len(list.Messages))
+	if len(list.Messages) != defaultMessageListLimit {
+		t.Errorf("esperava %d mensagens (página padrão), obtive %d", defaultMessageListLimit, len(list.Messages))
+	}
+}
+
+// TestListMessagesLimit cobre o parâmetro limit da listagem: tamanho
+// explícito, padrão quando ausente e teto de MaxMessageListLimit.
+func TestListMessagesLimit(t *testing.T) {
+	cleanServers(testCtx())
+	owner := newTestMessageUser(t)
+	channel := newTestMessageChannel(t, &owner.ID)
+
+	const seeded = 40
+	for i := 0; i < seeded; i++ {
+		if _, err := CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem "+randHex(2), "", nil, nil); err != nil {
+			t.Fatalf("falha ao criar mensagem de apoio %d: %v", i, err)
+		}
+	}
+
+	list, err := ListMessagesOrdered(testCtx(), channel.ID, owner.ID, nil, "", "desc", 10)
+	if err != nil {
+		t.Fatalf("ListMessagesOrdered com limit 10 retornou erro: %v", err)
+	}
+	if len(list.Messages) != 10 {
+		t.Errorf("esperava 10 mensagens, obtive %d", len(list.Messages))
+	}
+	if !list.HasMore {
+		t.Error("esperava has_more true com limit 10 e 40 mensagens no canal")
+	}
+
+	// limit ausente (<= 0) usa a página padrão.
+	list, err = ListMessages(testCtx(), channel.ID, owner.ID, nil, "")
+	if err != nil {
+		t.Fatalf("ListMessages retornou erro: %v", err)
+	}
+	if len(list.Messages) != defaultMessageListLimit {
+		t.Errorf("esperava %d mensagens (página padrão), obtive %d", defaultMessageListLimit, len(list.Messages))
+	}
+
+	// limit acima do teto é reduzido a MaxMessageListLimit: as 40 mensagens
+	// cabem na página e has_more continua false.
+	list, err = ListMessagesOrdered(testCtx(), channel.ID, owner.ID, nil, "", "desc", MaxMessageListLimit+50)
+	if err != nil {
+		t.Fatalf("ListMessagesOrdered com limit acima do teto retornou erro: %v", err)
+	}
+	if len(list.Messages) != seeded {
+		t.Errorf("esperava %d mensagens, obtive %d", seeded, len(list.Messages))
+	}
+	if list.HasMore {
+		t.Error("esperava has_more false com todas as mensagens na página")
 	}
 }
 

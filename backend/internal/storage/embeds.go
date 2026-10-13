@@ -338,7 +338,13 @@ func GetEmbedByCacheKey(ctx context.Context, cacheKey string) (models.Embed, err
 func UpsertLinkEmbed(ctx context.Context, e models.Embed) (models.Embed, error) {
 	args := embedInsertArgs(e)
 
-	row := GetDB().QueryRowContext(ctx,
+	tx, err := GetDB().BeginTx(ctx, nil)
+	if err != nil {
+		return models.Embed{}, fmt.Errorf("falha ao iniciar o upsert de link embed: %w", err)
+	}
+	defer tx.Rollback()
+
+	row := tx.QueryRowContext(ctx,
 		`WITH upserted AS (
 		 INSERT INTO embeds `+embedInsertColumns+`
 		 VALUES `+embedInsertValues("COALESCE($26, NOW())")+`
@@ -394,6 +400,20 @@ func UpsertLinkEmbed(ctx context.Context, e models.Embed) (models.Embed, error) 
 	if err != nil {
 		return models.Embed{}, mapStorageError(err)
 	}
+
+	// Fields do link embed (ex.: tweet citado de um quote do X): substituídas
+	// a cada refetch para o cache refletir o estado atual do link.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM embed_fields WHERE embed_id = $1", r.ID); err != nil {
+		return models.Embed{}, fmt.Errorf("falha ao substituir as fields do link embed: %w", err)
+	}
+	if err := insertEmbedFields(ctx, tx, r.ID, e.Fields); err != nil {
+		return models.Embed{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return models.Embed{}, fmt.Errorf("falha ao confirmar o upsert de link embed: %w", err)
+	}
+
 	return embedFromRow(r), nil
 }
 

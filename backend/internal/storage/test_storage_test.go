@@ -3588,6 +3588,62 @@ func TestUpsertLinkEmbed(t *testing.T) {
 	}
 }
 
+// TestUpsertLinkEmbedFields garante que fields de link embed (ex.: tweet citado
+// de um quote do X) são persistidas e substituídas a cada refetch.
+func TestUpsertLinkEmbedFields(t *testing.T) {
+	linkEmbed := func(fields []models.EmbedField) models.Embed {
+		return models.Embed{
+			SourceType:  "link",
+			FetchMethod: "opengraph",
+			CacheKey:    strPtr("https://upsert.example.com/quote"),
+			URL:         strPtr("https://upsert.example.com/quote"),
+			Title:       strPtr("A"),
+			Fields:      fields,
+		}
+	}
+
+	embed, err := UpsertLinkEmbed(testCtx(), linkEmbed([]models.EmbedField{
+		{Name: "Fulano (@fulano)", Value: "tweet citado"},
+	}))
+	if err != nil {
+		t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
+	}
+
+	byID, err := GetEmbedByID(testCtx(), embed.ID)
+	if err != nil {
+		t.Fatalf("GetEmbedByID retornou erro: %v", err)
+	}
+	if len(byID.Fields) != 1 || byID.Fields[0].Name != "Fulano (@fulano)" || byID.Fields[0].Value != "tweet citado" {
+		t.Fatalf("field do link embed não persistiu: %+v", byID.Fields)
+	}
+
+	// Refetch substitui as fields (não duplica).
+	if _, err := UpsertLinkEmbed(testCtx(), linkEmbed([]models.EmbedField{
+		{Name: "Novo (@novo)", Value: "novo"},
+	})); err != nil {
+		t.Fatalf("UpsertLinkEmbed (refetch) retornou erro: %v", err)
+	}
+	byID2, err := GetEmbedByID(testCtx(), embed.ID)
+	if err != nil {
+		t.Fatalf("GetEmbedByID (refetch) retornou erro: %v", err)
+	}
+	if len(byID2.Fields) != 1 || byID2.Fields[0].Name != "Novo (@novo)" {
+		t.Errorf("refetch deveria substituir as fields, obtive %+v", byID2.Fields)
+	}
+
+	// Refetch sem fields limpa as antigas.
+	if _, err := UpsertLinkEmbed(testCtx(), linkEmbed(nil)); err != nil {
+		t.Fatalf("UpsertLinkEmbed (sem fields) retornou erro: %v", err)
+	}
+	byID3, err := GetEmbedByID(testCtx(), embed.ID)
+	if err != nil {
+		t.Fatalf("GetEmbedByID (sem fields) retornou erro: %v", err)
+	}
+	if len(byID3.Fields) != 0 {
+		t.Errorf("refetch sem fields deveria limpar as antigas, obtive %+v", byID3.Fields)
+	}
+}
+
 // TestCreateCustomEmbed cobre o registro próprio do embed customizado: cache_key
 // e fetched_at nulos (não participa do cache por URL) e fields na ordem enviada.
 func TestCreateCustomEmbed(t *testing.T) {

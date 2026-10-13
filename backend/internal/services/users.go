@@ -426,6 +426,28 @@ func UpdateAvatar(ctx context.Context, userID, avatar, avatarFormat string) erro
 	return nil
 }
 
+// ErrAvatarNotFound quando o usuário existe mas não tem avatar.
+var ErrAvatarNotFound = errors.New("avatar não encontrado")
+
+// GetUserAvatar resolve o avatar de um usuário para servir os bytes: retorna
+// o registro media (MIME para o Content-Type) e o caminho do blob no disco.
+// Retorna ErrUserNotFound quando o usuário não existe, ErrAvatarNotFound
+// quando ele não tem avatar e ErrMediaNotFound quando o blob sumiu do disco.
+func GetUserAvatar(ctx context.Context, userID string) (models.Media, string, error) {
+	sha, err := storage.GetUserAvatarMedia(ctx, userID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return models.Media{}, "", ErrUserNotFound
+	}
+	if err != nil {
+		return models.Media{}, "", err
+	}
+	if sha == nil {
+		return models.Media{}, "", ErrAvatarNotFound
+	}
+
+	return GetMedia(ctx, *sha)
+}
+
 // UpdateBanner valida e salva o banner do usuário (content-addressable,
 // como o avatar). Quando banner e banner_format são vazios, o banner é
 // removido (referência media NULL). Retorna ErrInvalidInput quando o banner

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -757,4 +758,128 @@ func notificationDeliveryCount(deliveries []NotificationDelivery, userID string)
 func dispatchMessageNotifications(t *testing.T, requestID string, message models.Message) []NotificationDelivery {
 	t.Helper()
 	return DispatchMessageNotifications(context.Background(), requestID, message)
+}
+
+// --- services.MarkChannelRead ---
+
+// TestMarkChannelReadOk garante que registrar a leitura até uma mensagem
+// avança o last_read e marca as notificações do canal até essa mensagem como
+// lidas, deixando a mais nova intacta.
+func TestMarkChannelReadOk(t *testing.T) {
+	cleanServers(testCtx())
+	owner := notificationTestUser(t)
+	channel := notificationTestChannel(t, owner.ID)
+
+	first := notificationTestMessage(t, channel.ID, owner.ID, owner.ID, "primeira")
+	time.Sleep(10 * time.Millisecond)
+	second := notificationTestMessage(t, channel.ID, owner.ID, owner.ID, "segunda")
+	time.Sleep(10 * time.Millisecond)
+	third := notificationTestMessage(t, channel.ID, owner.ID, owner.ID, "terceira")
+
+	if err := MarkChannelRead(testCtx(), owner.ID, channel.ID, second.ID); err != nil {
+		t.Fatalf("MarkChannelRead retornou erro: %v", err)
+	}
+
+	state, err := storage.GetLastReadMessage(testCtx(), owner.ID, channel.ID)
+	if err != nil {
+		t.Fatalf("GetLastReadMessage retornou erro: %v", err)
+	}
+	if state.LastReadMessageID != second.ID {
+		t.Errorf("esperava last_read %s, obtive %s", second.ID, state.LastReadMessageID)
+	}
+
+	list, err := ListUserNotifications(testCtx(), owner.ID, owner.ID, nil, "")
+	if err != nil {
+		t.Fatalf("ListUserNotifications retornou erro: %v", err)
+	}
+	readByMessage := make(map[string]bool, len(list.Notifications))
+	for _, n := range list.Notifications {
+		readByMessage[n.MessageID] = n.Read
+	}
+	if !readByMessage[first.ID] || !readByMessage[second.ID] {
+		t.Errorf("notificações até a segunda mensagem deveriam estar lidas: %+v", readByMessage)
+	}
+	if readByMessage[third.ID] {
+		t.Errorf("a notificação da mensagem mais nova não deveria estar lida")
+	}
+}
+
+// TestMarkChannelReadDoesNotRegress garante que um read mais antigo não
+// recua o last_read nem desmarca notificações.
+func TestMarkChannelReadDoesNotRegress(t *testing.T) {
+	cleanServers(testCtx())
+	owner := notificationTestUser(t)
+	channel := notificationTestChannel(t, owner.ID)
+
+	first := notificationTestMessage(t, channel.ID, owner.ID, owner.ID, "primeira")
+	time.Sleep(10 * time.Millisecond)
+	second := notificationTestMessage(t, channel.ID, owner.ID, owner.ID, "segunda")
+
+	if err := MarkChannelRead(testCtx(), owner.ID, channel.ID, second.ID); err != nil {
+		t.Fatalf("MarkChannelRead retornou erro: %v", err)
+	}
+	if err := MarkChannelRead(testCtx(), owner.ID, channel.ID, first.ID); err != nil {
+		t.Fatalf("MarkChannelRead (antigo) retornou erro: %v", err)
+	}
+
+	state, err := storage.GetLastReadMessage(testCtx(), owner.ID, channel.ID)
+	if err != nil {
+		t.Fatalf("GetLastReadMessage retornou erro: %v", err)
+	}
+	if state.LastReadMessageID != second.ID {
+		t.Errorf("esperava last_read %s (sem recuo), obtive %s", second.ID, state.LastReadMessageID)
+	}
+}
+
+// TestMarkChannelReadPermissionDenied garante que usuário sem permissão de
+// leitura não registra read em canal restrito.
+func TestMarkChannelReadPermissionDenied(t *testing.T) {
+	cleanServers(testCtx())
+	owner := notificationTestUser(t)
+	channel := notificationTestChannel(t, owner.ID)
+
+	role, err := storage.CreateRole(testCtx(), newRandomRoleName(), nil, models.RolePermissions{})
+	if err != nil {
+		t.Fatalf("falha ao criar role: %v", err)
+	}
+	permission := models.ChannelPermission{ReadChannel: true, SendMessages: true}
+	if _, err := UpdateChannelPermissions(testCtx(), owner.ID, channel.ID, role.ID, permission); err != nil {
+		t.Fatalf("falha ao atualizar permissões: %v", err)
+	}
+
+	outsider := notificationTestUser(t)
+	message := notificationTestMessage(t, channel.ID, owner.ID, owner.ID, "restrito")
+
+	if err := MarkChannelRead(testCtx(), outsider.ID, channel.ID, message.ID); !errors.Is(err, ErrPermissionDenied) {
+		t.Errorf("esperava ErrPermissionDenied, obtive %v", err)
+	}
+}
+
+// TestMarkChannelReadWrongChannel garante que mensagem de outro canal é
+// rejeitada (conhecer o id não autoriza marcar leitura em canal alheio).
+func TestMarkChannelReadWrongChannel(t *testing.T) {
+	cleanServers(testCtx())
+	owner := notificationTestUser(t)
+	channelA := notificationTestChannel(t, owner.ID)
+	// servidor singleton: o segundo canal é criado direto no mesmo servidor.
+	channelB, err := storage.CreateChannel(testCtx(), newRandomChannelName(), "text", "")
+	if err != nil {
+		t.Fatalf("falha ao criar canal: %v", err)
+	}
+
+	messageB := notificationTestMessage(t, channelB.ID, owner.ID, owner.ID, "no canal B")
+
+	if err := MarkChannelRead(testCtx(), owner.ID, channelA.ID, messageB.ID); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("esperava ErrMessageNotFound, obtive %v", err)
+	}
+
+	// canal inexistente
+	if err := MarkChannelRead(testCtx(), owner.ID, "00000000-0000-0000-0000-000000000000", messageB.ID); !errors.Is(err, ErrChannelNotFound) {
+		t.Errorf("esperava ErrChannelNotFound, obtive %v", err)
+	}
+
+	// message_id vazio
+	if err := MarkChannelRead(testCtx(), owner.ID, channelA.ID, ""); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("esperava ErrInvalidInput, obtive %v", err)
+	}
 }

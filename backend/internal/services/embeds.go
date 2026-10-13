@@ -341,6 +341,10 @@ type fxTwitterStatus struct {
 	Author fxTwitterUser  `json:"author"`
 	Media  fxTwitterMedia `json:"media"`
 	Card   *fxTwitterCard `json:"card"`
+	// Quote é o tweet citado em um quote tweet ("retweet com comentário").
+	// Quando o tweet principal não tem mídia, a mídia vem do citado
+	// (profundidade 1; o FxEmbed já desdobra retweet nativo no próprio status).
+	Quote *fxTwitterStatus `json:"quote"`
 }
 
 type fxTwitterUser struct {
@@ -426,6 +430,58 @@ func fxTwitterImageURL(status *fxTwitterStatus) string {
 	return ""
 }
 
+// fxTwitterAuthorLabel monta "Nome (@handle)" a partir do autor, tolerando
+// nome ou handle ausentes.
+func fxTwitterAuthorLabel(author fxTwitterUser) string {
+	name := strings.TrimSpace(author.Name)
+	handle := strings.TrimSpace(author.ScreenName)
+	switch {
+	case name != "" && handle != "":
+		return name + " (@" + handle + ")"
+	case name != "":
+		return name
+	case handle != "":
+		return "@" + handle
+	default:
+		return ""
+	}
+}
+
+// fxTwitterMediaSource escolhe de onde a mídia do embed vem: o próprio status
+// ou, quando ele não tem nenhuma mídia e há um tweet citado (quote), o citado.
+// Profundidade 1: não desdobra quote de quote.
+func fxTwitterMediaSource(status *fxTwitterStatus) *fxTwitterStatus {
+	if status == nil {
+		return nil
+	}
+	if fxTwitterVideoURL(status) != "" || fxTwitterImageURL(status) != "" {
+		return status
+	}
+	if status.Quote != nil {
+		return status.Quote
+	}
+	return status
+}
+
+// fxTwitterQuoteFields retorna a field que exibe o tweet citado no embed
+// (autor + texto). Sem quote, sem texto ou quote indisponível (tombstone):
+// nenhuma field.
+func fxTwitterQuoteFields(quote *fxTwitterStatus) []models.EmbedField {
+	if quote == nil {
+		return nil
+	}
+	text := strings.TrimSpace(quote.Text)
+	label := fxTwitterAuthorLabel(quote.Author)
+	if text == "" || label == "" {
+		return nil
+	}
+	return []models.EmbedField{{
+		Position: 0,
+		Name:     truncateRune(label, embedFieldNameMax),
+		Value:    truncateRune(text, embedFieldValueMax),
+	}}
+}
+
 // fetchFxTwitterEmbed obtém o embed de um status do X pela API JSON oficial do
 // FxEmbed (api.fxtwitter.com/2), a superfície estável documentada pelo próprio
 // projeto: os realms fxtwitter/fixupx alteram a resposta por User-Agent e
@@ -456,14 +512,7 @@ func fetchFxTwitterEmbed(ctx context.Context, cfg *config.Config, original *url.
 		return models.Embed{}, fmt.Errorf("FxTwitter: status indisponível (code=%d)", payload.Code)
 	}
 
-	title := strings.TrimSpace(payload.Status.Author.Name)
-	if handle := strings.TrimSpace(payload.Status.Author.ScreenName); handle != "" {
-		if title != "" {
-			title += " (@" + handle + ")"
-		} else {
-			title = "@" + handle
-		}
-	}
+	title := fxTwitterAuthorLabel(payload.Status.Author)
 	provider := "X"
 
 	cacheKey := original.String()
@@ -475,14 +524,17 @@ func fetchFxTwitterEmbed(ctx context.Context, cfg *config.Config, original *url.
 		Title:       nullableText(truncateRune(title, embedTitleMax)),
 		Description: nullableText(truncateRune(strings.TrimSpace(payload.Status.Text), embedDescriptionMax)),
 		Provider:    &provider,
+		Fields:      fxTwitterQuoteFields(payload.Status.Quote),
 	}
 
-	if videoURL := fxTwitterVideoURL(payload.Status); videoURL != "" {
+	// Mídia: o tweet principal; se não tiver nenhuma, o tweet citado (quote).
+	mediaSource := fxTwitterMediaSource(payload.Status)
+	if videoURL := fxTwitterVideoURL(mediaSource); videoURL != "" {
 		videoURLCopy := videoURL
 		videoType := "video/mp4"
 		embed.Video = &models.EmbedMedia{URL: &videoURLCopy, MimeType: &videoType}
 	}
-	if imageURL := fxTwitterImageURL(payload.Status); imageURL != "" {
+	if imageURL := fxTwitterImageURL(mediaSource); imageURL != "" {
 		if media, err := downloadEmbedImage(ctx, cfg, imageURL); err == nil {
 			embed.Thumbnail = media
 		}

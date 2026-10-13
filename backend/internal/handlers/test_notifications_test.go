@@ -438,6 +438,76 @@ func TestReadNotificationRouteInvalidBody(t *testing.T) {
 	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 }
 
+// --- PUT /channels/:channel_id/read ---
+
+// TestMarkChannelReadRouteUnauthenticated garante que a rota exige
+// autenticação.
+func TestMarkChannelReadRouteUnauthenticated(t *testing.T) {
+	e := newApp()
+
+	body, _ := json.Marshal(map[string]string{"message_id": randUUID()})
+	rec := do(t, e, http.MethodPut, "/channels/"+randUUID()+"/read", body, nil)
+
+	assertProblem(t, rec, http.StatusUnauthorized, "unauthorized", "Token inválido ou expirado",
+		"token de autenticação ausente, inválido ou expirado")
+}
+
+// TestMarkChannelReadRouteEmptyMessageID garante que message_id vazio
+// responde 400.
+func TestMarkChannelReadRouteEmptyMessageID(t *testing.T) {
+	e := newApp()
+	_, token := registerAndLogin(t, e)
+
+	body, _ := json.Marshal(map[string]string{"message_id": ""})
+	rec := do(t, e, http.MethodPut, "/channels/"+randUUID()+"/read", body, authCookie(token))
+
+	assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+		"message_id é obrigatório")
+}
+
+// TestMarkChannelReadRouteOk garante o fluxo feliz: 204 e last_read avançado.
+func TestMarkChannelReadRouteOk(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+
+	message, err := storage.CreateMessage(context.Background(), channel.ID, userID, "lida", "", nil)
+	if err != nil {
+		t.Fatalf("falha ao criar mensagem: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"message_id": message.ID})
+	rec := do(t, e, http.MethodPut, "/channels/"+channel.ID+"/read", body, authCookie(token))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava 204, obtive %d: %s", rec.Code, rec.Body.String())
+	}
+
+	state, err := storage.GetLastReadMessage(context.Background(), userID, channel.ID)
+	if err != nil {
+		t.Fatalf("GetLastReadMessage retornou erro: %v", err)
+	}
+	if state.LastReadMessageID != message.ID {
+		t.Errorf("esperava last_read %s, obtive %s", message.ID, state.LastReadMessageID)
+	}
+}
+
+// TestMarkChannelReadRouteMessageNotFound garante que mensagem inexistente
+// responde 404.
+func TestMarkChannelReadRouteMessageNotFound(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+	createServerFor(t, userID)
+	channel := createChannelFor(t, "chn_"+randHex(4))
+
+	body, _ := json.Marshal(map[string]string{"message_id": randUUID()})
+	rec := do(t, e, http.MethodPut, "/channels/"+channel.ID+"/read", body, authCookie(token))
+
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado",
+		"mensagem não encontrada neste canal")
+}
+
 // TestReadNotificationRouteNotFound garante que ids inexistentes respondem
 // 404.
 func TestReadNotificationRouteNotFound(t *testing.T) {

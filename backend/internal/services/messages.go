@@ -41,9 +41,13 @@ const maxMessageContentLength = 8192
 // README).
 const maxAttachmentsPerMessage = 10
 
-// messageListLimit é o limite de mensagens por requisição de listagem
+// MaxMessageListLimit é o teto de mensagens por requisição de listagem
 // (README: limite de 100 por requisição).
-const messageListLimit = 100
+const MaxMessageListLimit = 100
+
+// defaultMessageListLimit é o tamanho de página quando o cliente não envia
+// o parâmetro de query limit.
+const defaultMessageListLimit = 30
 
 // ListMessages lista as mensagens de um canal com seus attachments, em ordem
 // decrescente de criação (README: GET /channels/:channel_id/messages).
@@ -57,11 +61,20 @@ const messageListLimit = 100
 // precisa da permissão read_channel em ao menos uma das roles do servidor.
 // Retorna ErrChannelNotFound quando o canal não existe e
 // ErrPermissionDenied quando o usuário não pode ler o canal.
+// limit <= 0 usa defaultMessageListLimit; acima de MaxMessageListLimit o
+// tamanho é reduzido ao teto.
 func ListMessages(ctx context.Context, channelID, userID string, since *time.Time, lastID string) (models.MessageList, error) {
-	return ListMessagesOrdered(ctx, channelID, userID, since, lastID, "desc")
+	return ListMessagesOrdered(ctx, channelID, userID, since, lastID, "desc", 0)
 }
 
-func ListMessagesOrdered(ctx context.Context, channelID, userID string, since *time.Time, lastID, order string) (models.MessageList, error) {
+func ListMessagesOrdered(ctx context.Context, channelID, userID string, since *time.Time, lastID, order string, limit int) (models.MessageList, error) {
+	if limit <= 0 {
+		limit = defaultMessageListLimit
+	}
+	if limit > MaxMessageListLimit {
+		limit = MaxMessageListLimit
+	}
+
 	orderAsc := false
 	switch order {
 	case "", "desc":
@@ -92,14 +105,14 @@ func ListMessagesOrdered(ctx context.Context, channelID, userID string, since *t
 		return models.MessageList{}, ErrPermissionDenied
 	}
 
-	messages, err := storage.ListMessagesWithAttachmentsByChannelOrdered(ctx, channelID, since, lastID, orderAsc, messageListLimit)
+	messages, err := storage.ListMessagesWithAttachmentsByChannelOrdered(ctx, channelID, since, lastID, orderAsc, limit)
 	if err != nil {
 		return models.MessageList{}, err
 	}
 
-	hasMore := len(messages) > messageListLimit
+	hasMore := len(messages) > limit
 	if hasMore {
-		messages = messages[:messageListLimit]
+		messages = messages[:limit]
 	}
 
 	messageIDs := make([]string, 0, len(messages))
@@ -134,17 +147,12 @@ func ListMessagesOrdered(ctx context.Context, channelID, userID string, since *t
 		setAttachmentThumbnails(&messages[i].Attachments, thumbnails)
 	}
 
-	// Atualiza o último read do usuário no canal para a mensagem mais nova
-	// retornada (best-effort: uma falha não impede a listagem).
-	if len(messages) > 0 {
-		readIndex := 0
-		if orderAsc {
-			readIndex = len(messages) - 1
-		}
-		if err := storage.TouchLastReadMessage(ctx, userID, channelID, messages[readIndex].Message); err != nil {
-			utils.Errorf("falha ao atualizar o último read do usuário %s no canal %s: %v", userID, channelID, err)
-		}
-	}
+	// Listar mensagens NÃO avança o last_read do usuário: listar é leitura de
+	// dados, não confirmação de leitura (abrir o canal com não lidas, paginar
+	// histórico ou saltar para uma mensagem não devem marcar nada como lido).
+	// O read é registrado explicitamente por PUT /channels/:channel_id/read
+	// (services.MarkChannelRead), chamado pelo frontend quando o usuário
+	// alcança a mensagem mais nova do canal.
 
 	return models.MessageList{ChannelID: channelID, Messages: messages, HasMore: hasMore}, nil
 }

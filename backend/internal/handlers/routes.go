@@ -44,6 +44,12 @@ func RegisterAuthRoutes(e *echo.Echo, cfg *config.Config) {
 
 // RegisterUserRoutes registra as rotas de usuários.
 func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
+	// Avatar público (sem JWT): URL absoluta consumida por agentes externos
+	// (bot bridge → Discord busca a URL para exibir o ícone do autor). Serve
+	// somente avatares; mídia geral continua autenticada em /media/:sha_hash.
+	e.GET("/users/:user_id/avatar", func(c echo.Context) error {
+		return GetUserAvatarHandler(cfg.BaseURL, c)
+	})
 	e.GET("/users/blocks", func(c echo.Context) error {
 		return ListUserBlocksHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
@@ -100,9 +106,11 @@ func RegisterUserRoutes(e *echo.Echo, cfg *config.Config) {
 	e.PUT("/users/:user_id/ban", func(c echo.Context) error {
 		return BanUserHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware, middleware.RequireServerOwnerOrManageServer())
+	// Reset de senha: o próprio usuário ou somente o dono do servidor
+	// (manage_server não pode resetar senha de outras pessoas).
 	e.POST("/users/:user_id/reset", func(c echo.Context) error {
 		return ResetUserHandler(cfg.BaseURL, c)
-	}, middleware.JWTMiddleware, middleware.RequireSelfOrServerOwnerOrManageServer())
+	}, middleware.JWTMiddleware, middleware.RequireSelfOrServerOwner())
 }
 
 // RegisterServerRoutes registra as rotas do servidor (1 backend = 1
@@ -153,6 +161,9 @@ func RegisterChannelRoutes(e *echo.Echo, cfg *config.Config) {
 	}, middleware.JWTMiddleware, middleware.RequireManageChannels())
 	e.POST("/channels/:channel_id/user/:user_id/settings", func(c echo.Context) error {
 		return UpdateChannelUserSettingHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware)
+	e.PUT("/channels/:channel_id/read", func(c echo.Context) error {
+		return MarkChannelReadHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 }
 

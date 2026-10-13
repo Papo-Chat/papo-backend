@@ -880,6 +880,68 @@ func TestAvatarRouteWithAuth(t *testing.T) {
 	}
 }
 
+// --- GET /users/:user_id/avatar (público, sem autenticação) ---
+
+// TestGetUserAvatarRoutePublic garante que GET /users/:user_id/avatar serve o
+// blob do avatar sem autenticação (consumo por Discord/bot), com Content-Type
+// do MIME registrado e Content-Disposition inline.
+func TestGetUserAvatarRoutePublic(t *testing.T) {
+	e := newApp()
+	userID, token := registerAndLogin(t, e)
+
+	rec := do(t, e, http.MethodPut, "/users/"+userID+"/avatar", pngAvatarBody(), authCookie(token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload avatar: esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+
+	rec = do(t, e, http.MethodGet, "/users/"+userID+"/avatar", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(echo.HeaderContentType); got != "image/png" {
+		t.Errorf("esperava Content-Type image/png, obtive %q", got)
+	}
+	if got := rec.Header().Get(echo.HeaderContentDisposition); got != "inline" {
+		t.Errorf("esperava Content-Disposition inline, obtive %q", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=3600" {
+		t.Errorf("esperava Cache-Control public max-age=3600, obtive %q", got)
+	}
+
+	expected := append(pngAvatarBytes(100, 100), []byte("conteudo-teste")...)
+	if !bytes.Equal(rec.Body.Bytes(), expected) {
+		t.Error("corpo da resposta não confere com o blob do avatar")
+	}
+}
+
+// TestGetUserAvatarRouteNoAvatar garante 404 quando o usuário existe mas não
+// tem avatar.
+func TestGetUserAvatarRouteNoAvatar(t *testing.T) {
+	e := newApp()
+	userID, _ := registerAndLogin(t, e)
+
+	rec := do(t, e, http.MethodGet, "/users/"+userID+"/avatar", nil, nil)
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "avatar não encontrado")
+}
+
+// TestGetUserAvatarRouteUnknownUser garante 404 para user_id válido que não
+// existe.
+func TestGetUserAvatarRouteUnknownUser(t *testing.T) {
+	e := newApp()
+
+	rec := do(t, e, http.MethodGet, "/users/"+uuid.NewString()+"/avatar", nil, nil)
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "avatar não encontrado")
+}
+
+// TestGetUserAvatarRouteInvalidUser garante 404 (sem query no banco) para
+// user_id que não é UUID.
+func TestGetUserAvatarRouteInvalidUser(t *testing.T) {
+	e := newApp()
+
+	rec := do(t, e, http.MethodGet, "/users/nao-e-uuid/avatar", nil, nil)
+	assertProblem(t, rec, http.StatusNotFound, "not-found", "Recurso não encontrado", "usuário não encontrado")
+}
+
 // --- PUT /users/:user_id/ban ---
 
 // newBanBody monta o corpo do endpoint de banimento.
@@ -1130,6 +1192,25 @@ func TestResetRouteForbiddenWithoutPermission(t *testing.T) {
 	e := newApp()
 	_, actorToken := registerAndLogin(t, e)
 	targetID, _ := registerAndLogin(t, e)
+
+	rec := do(t, e, http.MethodPost, "/users/"+targetID+"/reset", nil, authCookie(actorToken))
+
+	assertProblem(t, rec, http.StatusForbidden, "forbidden", "Acesso negado",
+		"usuário não possui a permissão necessária para esta operação")
+}
+
+// TestResetRouteManageServerForbidden garante que um usuário com a permissão
+// manage_server, mas sem ser dono do servidor, NÃO pode resetar a senha de
+// outra pessoa (reset de outros é exclusivo do dono do servidor).
+func TestResetRouteManageServerForbidden(t *testing.T) {
+	e := newApp()
+	ownerID, _ := registerAndLogin(t, e)
+	actorID, actorToken := registerAndLogin(t, e)
+	targetID, _ := registerAndLogin(t, e)
+
+	createServerFor(t, ownerID)
+	role := createRoleFor(t, models.RolePermissions{ManageServer: true})
+	assignRoleToUser(t, actorID, role.ID)
 
 	rec := do(t, e, http.MethodPost, "/users/"+targetID+"/reset", nil, authCookie(actorToken))
 
@@ -9665,6 +9746,59 @@ func TestListMessagesHandlerSince(t *testing.T) {
 	// apenas a mensagem criada após o since
 	if len(resp.Messages) != 1 || resp.Messages[0].Content == nil || *resp.Messages[0].Content != "segunda" {
 		t.Fatalf("esperava apenas a segunda mensagem, obtive %+v", resp.Messages)
+	}
+}
+
+// limit explícito: página do tamanho pedido e has_more true para o resto.
+func TestListMessagesHandlerLimit(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+	for i := 0; i < 5; i++ {
+		if _, err := storage.CreateMessage(testCtx(), channel.ID, owner.ID, "mensagem "+randHex(2), "", nil); err != nil {
+			t.Fatalf("falha ao criar mensagem de apoio %d: %v", i, err)
+		}
+	}
+
+	c := newContext(t, http.MethodGet, "/channels/"+channel.ID+"/messages?limit=2", nil, "")
+	c.Set(middleware.UserIDContextKey, owner.ID)
+	c.SetParamNames("channel_id")
+	c.SetParamValues(channel.ID)
+	rec := recorder(c)
+
+	if err := ListMessagesHandler(testBaseURL, c); err != nil {
+		t.Fatalf("ListMessagesHandler retornou erro: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	var resp models.MessageList
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("falha ao decodificar resposta: %v", err)
+	}
+	if len(resp.Messages) != 2 {
+		t.Fatalf("esperava 2 mensagens, obtive %d", len(resp.Messages))
+	}
+	if !resp.HasMore {
+		t.Error("esperava has_more true com limit 2 e 5 mensagens no canal")
+	}
+}
+
+func TestListMessagesHandlerInvalidLimit(t *testing.T) {
+	owner := newTestMessageUser(t)
+	_, channel := createServerAndChannelTest(t, owner.ID)
+
+	for _, raw := range []string{"0", "-1", "101", "abc"} {
+		c := newContext(t, http.MethodGet, "/channels/"+channel.ID+"/messages?limit="+raw, nil, "")
+		c.Set(middleware.UserIDContextKey, owner.ID)
+		c.SetParamNames("channel_id")
+		c.SetParamValues(channel.ID)
+		rec := recorder(c)
+
+		if err := ListMessagesHandler(testBaseURL, c); err != nil {
+			t.Fatalf("ListMessagesHandler com limit=%q retornou erro: %v", raw, err)
+		}
+		assertProblem(t, rec, http.StatusBadRequest, "invalid-param", "Parâmetro inválido",
+			"limit deve ser um inteiro entre 1 e 100")
 	}
 }
 
