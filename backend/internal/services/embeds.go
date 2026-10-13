@@ -306,7 +306,9 @@ func twitterStatusID(u *url.URL) (string, bool) {
 	case "twitter.com", "www.twitter.com", "mobile.twitter.com",
 		"x.com", "www.x.com",
 		"fxtwitter.com", "www.fxtwitter.com",
-		"fixupx.com", "www.fixupx.com", "girlcockx.com",
+		"fixupx.com", "www.fixupx.com",
+		"vxtwitter.com", "www.vxtwitter.com",
+		"fixvx.com", "www.fixvx.com", "girlcockx.com",
 		"www.girlcockx.com":
 	default:
 		return "", false
@@ -547,6 +549,8 @@ func embedRobotsAllowed(ctx context.Context, u *url.URL) bool {
 	switch strings.ToLower(u.Hostname()) {
 	case "fxtwitter.com", "www.fxtwitter.com", "api.fxtwitter.com",
 		"fixupx.com", "www.fixupx.com",
+		"vxtwitter.com", "www.vxtwitter.com",
+		"fixvx.com", "www.fixvx.com",
 		"pbs.twimg.com", "video.twimg.com", "girlcockx.com",
 		"www.girlcockx.com":
 		return true
