@@ -52,21 +52,51 @@ func scanUserRole(row rowScanner) (models.UserRole, error) {
 
 // CreateRole cria uma nova role e retorna o registro criado.
 func CreateRole(ctx context.Context, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
+	return CreateRoleWithMembers(ctx, name, color, permissions, nil)
+}
+
+// CreateRoleWithMembers cria o cargo já atribuído a todos os usuários informados.
+// Se uma atribuição for inválida, a transação toda é revertida.
+func CreateRoleWithMembers(ctx context.Context, name string, color *string, permissions models.RolePermissions, people []string) (models.Role, error) {
 	permissionJSON, err := json.Marshal(permissions)
 	if err != nil {
 		return models.Role{}, fmt.Errorf("falha ao codificar permissões da role: %w", err)
 	}
 
-	row := GetDB().QueryRowContext(ctx,
+	tx, err := GetDB().BeginTx(ctx, nil)
+	if err != nil {
+		return models.Role{}, fmt.Errorf("falha ao criar cargo: %w", err)
+	}
+	defer tx.Rollback()
+
+	row := tx.QueryRowContext(ctx,
 		"INSERT INTO roles (name, color, permissions) VALUES ($1, $2, $3) RETURNING "+roleColumns,
 		name, color, string(permissionJSON),
 	)
-
 	role, err := scanRole(row)
 	if err != nil {
 		return models.Role{}, mapStorageError(err)
 	}
-
+	seen := make(map[string]bool, len(people))
+	for _, userID := range people {
+		if seen[userID] {
+			continue
+		}
+		seen[userID] = true
+		result, err := tx.ExecContext(ctx,
+			"INSERT INTO user_roles (user_id, role_id) SELECT id, $2::uuid FROM users WHERE id::text = $1",
+			userID, role.ID,
+		)
+		if err != nil {
+			return models.Role{}, fmt.Errorf("falha ao atribuir cargo inicial: %w", err)
+		}
+		if n, _ := result.RowsAffected(); n != 1 {
+			return models.Role{}, ErrNotFound
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return models.Role{}, fmt.Errorf("falha ao criar cargo: %w", err)
+	}
 	return role, nil
 }
 

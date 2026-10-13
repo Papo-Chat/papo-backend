@@ -26,6 +26,7 @@ type Channel struct {
 	Position    int                          `db:"position" json:"position"`
 	CreatedAt   time.Time                    `db:"created_at" json:"created_at"`
 	Topic       *string                      `db:"topic" json:"topic"`
+	ParentID    *string                      `db:"parent_id" json:"parent_id"`
 }
 
 // ChannelPermissionEntry é uma entrada da lista de permissões de um canal:
@@ -59,6 +60,7 @@ type ChannelSummary struct {
 	Type                 string                   `json:"type"`
 	Position             int                      `json:"position"`
 	Topic                *string                  `json:"topic"`
+	ParentID             *string                  `json:"parent_id"`
 	Permissions          []ChannelPermissionEntry `json:"permissions"`
 	CreatedAt            time.Time                `json:"created_at"`
 	LastMessage          *ChannelLastMessage      `json:"last_message"`
