@@ -307,3 +307,17 @@ func RegisterWebSocketRoutes(e *echo.Echo, cfg *config.Config) {
 		return WebSocketHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 }
+
+// RegisterWebhookRoutes provides the management (JWT) and execution (Bearer
+// scoped token) endpoints. Management follows the same role middleware as
+// channel administration. No session cookie is accepted when executing.
+func RegisterWebhookRoutes(e *echo.Echo,cfg *config.Config) {
+    e.POST("/webhooks",func(c echo.Context)error{return CreateWebhookHandler(cfg.BaseURL,c)},
+        middleware.JWTMiddleware,middleware.RequireManageChannels())
+    e.GET("/webhooks",func(c echo.Context)error{return ListWebhooksHandler(cfg.BaseURL,c)},
+        middleware.JWTMiddleware,middleware.RequireManageChannels())
+    e.DELETE("/webhooks/:webhook_id",func(c echo.Context)error{return DeleteWebhookHandler(cfg.BaseURL,c)},
+        middleware.JWTMiddleware,middleware.RequireManageChannels())
+    e.POST("/webhooks/:webhook_id/messages",func(c echo.Context)error{return ExecuteWebhookHandler(cfg.BaseURL,c)},
+        middleware.BodyLimit(middleware.MaxUploadBodySize,nil))
+}

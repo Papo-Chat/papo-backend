@@ -238,7 +238,7 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 	if channelID == "" {
 		return models.MessageWithAttachment{},false, ErrChannelNotFound
 	}
-	if authorID == "" || utf8.RuneCountInString(content) > maxMessageContentLength {
+	if utf8.RuneCountInString(content) > maxMessageContentLength {
 		return models.MessageWithAttachment{},false, ErrInvalidInput
 	}
 	if content == "" && len(attachments) == 0 && len(embeds) == 0 {
