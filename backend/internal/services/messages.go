@@ -273,7 +273,7 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 	if channel.Type != "text" && channel.Type != "voice" && channel.Type != "dm" {
 		return models.MessageWithAttachment{},false, ErrPermissionDenied
 	}
-	if webhookID!="" && channel.ID!=channelID {return models.MessageWithAttachment{},false,ErrPermissionDenied}
+	if webhookID!="" && channel.Type=="dm" {return models.MessageWithAttachment{},false,ErrPermissionDenied}
     if channel.Type == "dm" && webhookID!="" {return models.MessageWithAttachment{},false,ErrPermissionDenied}
     if channel.Type == "dm" {
 		member, blocked, err := storage.DirectConversationAccess(ctx, channel.ID, authorID)

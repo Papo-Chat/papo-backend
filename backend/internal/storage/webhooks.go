@@ -2,7 +2,6 @@ package storage
 
 import (
     "context"
-    "database/sql"
     "fmt"
     "papo/internal/models"
 )
@@ -53,5 +52,4 @@ func GetWebhookMessage(ctx context.Context,webhookID,sourceID string) (models.Me
         "SELECT "+messageColumns+" FROM messages WHERE webhook_id=$1 AND external_message_id=$2",webhookID,sourceID))
 }
 
-// The token hash is deliberately never returned from the public webhook model.
-var _ *sql.DB
+

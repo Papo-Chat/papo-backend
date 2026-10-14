@@ -621,8 +621,6 @@ func publishCreatedMessage(c echo.Context,message models.MessageWithAttachment,a
 		AuthorID:    derefString(message.AuthorID),
         WebhookID: message.WebhookID,
         ExternalAuthor: message.ExternalAuthor,
-        WebhookID:message.WebhookID,
-        ExternalAuthor:message.ExternalAuthor,
 		Content:     derefString(message.Content),
 		CreatedAt:   message.CreatedAt,
 		ReplyTo:     message.ReplyTo,

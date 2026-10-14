@@ -9,9 +9,7 @@ import (
     "papo/internal/middleware"
     "papo/internal/models"
     "papo/internal/services"
-    "papo/internal/storage"
     "papo/internal/utils"
-    "papo/internal/websocket"
 
     "github.com/labstack/echo/v4"
 )
@@ -99,6 +97,4 @@ func ExecuteWebhookHandler(baseURL string,c echo.Context) error {
     return c.JSON(status,message)
 }
 
-// No need to expose the secret to end users again after creation.
-var _ = storage.ErrNotFound
-var _ = websocket.EventTypeMessage
+
