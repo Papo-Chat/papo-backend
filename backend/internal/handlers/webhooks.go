@@ -2,6 +2,8 @@ package handlers
 
 import (
     "encoding/json"
+ "context"
+ "papo/internal/websocket"
     "errors"
     "net/http"
     "strings"
@@ -44,7 +46,7 @@ func webhookProblem(c echo.Context,baseURL string,err error) error {
     switch {
     case errors.Is(err,services.ErrWebhookUnauthorized):
         return utils.SendProblem(c,baseURL,http.StatusUnauthorized,"unauthorized","Não autorizado","webhook inválido")
-    case errors.Is(err,services.ErrWebhookNotFound),errors.Is(err,services.ErrChannelNotFound):
+    case errors.Is(err,services.ErrWebhookNotFound),errors.Is(err,services.ErrChannelNotFound),errors.Is(err,services.ErrMessageNotFound):
         return utils.SendProblem(c,baseURL,http.StatusNotFound,"not-found","Não encontrado","recurso inexistente")
     case errors.Is(err,services.ErrPermissionDenied),errors.Is(err,services.ErrDirectMessageBlocked):
         return utils.SendProblem(c,baseURL,http.StatusForbidden,"forbidden","Acesso negado","operação não permitida")
@@ -98,3 +100,39 @@ func ExecuteWebhookHandler(baseURL string,c echo.Context) error {
 }
 
 
+
+type webhookEditRequest struct {
+    Content string `json:"content"`
+    Embeds []services.EmbedInput `json:"embeds"`
+}
+func webhookFromRequest(baseURL string,c echo.Context)(models.Webhook,error){
+    raw:=c.Request().Header.Get("Authorization")
+    if !strings.HasPrefix(raw,"Bearer ") {return models.Webhook{},services.ErrWebhookUnauthorized}
+    return services.AuthenticateWebhook(c.Request().Context(),c.Param("webhook_id"),strings.TrimPrefix(raw,"Bearer "))
+}
+func EditWebhookMessageHandler(baseURL string,c echo.Context)error {
+    w,err:=webhookFromRequest(baseURL,c)
+    if err!=nil{return webhookProblem(c,baseURL,err)}
+    var req webhookEditRequest
+    if err:=c.Bind(&req);err!=nil{return utils.SendProblem(c,baseURL,http.StatusBadRequest,"invalid-param","Parâmetro inválido","JSON inválido")}
+    message,err:=services.EditWebhookMessage(c.Request().Context(),w,c.Param("message_id"),req.Content,req.Embeds)
+    if err!=nil{return webhookProblem(c,baseURL,err)}
+    broadcastChannelEvent(c,message.ChannelID,websocket.MessageEditOutbound{
+        Type:websocket.EventTypeMessageEdit,ID:message.ID,ChannelID:message.ChannelID,
+        Content:derefString(message.Content),EditedAt:derefTime(message.EditedAt),
+    })
+    requestID:=c.Request().Header.Get(echo.HeaderXRequestID)
+    broadcastMessageEmbedsUpdate(c.Request().Context(),requestID,message.ChannelID,message.ID)
+    go processEditedMessageEmbeds(context.Background(),requestID,message.ChannelID,message.ID,w.CreatedBy,derefString(message.Content),message.Embeds)
+    return c.JSON(http.StatusOK,message)
+}
+func DeleteWebhookMessageHandler(baseURL string,c echo.Context)error {
+    w,err:=webhookFromRequest(baseURL,c)
+    if err!=nil{return webhookProblem(c,baseURL,err)}
+    channelID,err:=services.DeleteWebhookMessage(c.Request().Context(),w,c.Param("message_id"))
+    if err!=nil{return webhookProblem(c,baseURL,err)}
+    broadcastChannelEvent(c,channelID,websocket.MessageDeleteOutbound{
+        Type:websocket.EventTypeMessageDelete,ID:c.Param("message_id"),ChannelID:channelID,
+    })
+    return c.NoContent(http.StatusNoContent)
+}

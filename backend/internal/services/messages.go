@@ -328,10 +328,16 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 		}
 	}
 
-	createdAttachments := make([]models.Attachments, 0, len(attachments))
+	mediaOwner:=authorID
+    if webhookID!="" {
+        hook,_,err:=storage.GetActiveWebhookWithHash(ctx,webhookID)
+        if err!=nil {return models.MessageWithAttachment{},false,ErrPermissionDenied}
+        mediaOwner=hook.CreatedBy
+    }
+    createdAttachments := make([]models.Attachments, 0, len(attachments))
 	attachmentIDs := make([]string, 0, len(attachments))
 	for _, att := range attachments {
-		created, err := storeAttachment(ctx, att, authorID)
+		created, err := storeAttachment(ctx, att, mediaOwner)
 		if err != nil {
 			return models.MessageWithAttachment{},false, err
 		}
@@ -363,7 +369,7 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 		setAttachmentThumbnails(&messageAttachments, thumbnails)
 	}
 
-	messageEmbeds, err := CreateCustomEmbeds(ctx, authorID, embeds)
+	messageEmbeds, err := CreateCustomEmbeds(ctx, mediaOwner, embeds)
 	if err != nil {
 		return models.MessageWithAttachment{},false, err
 	}
@@ -601,10 +607,16 @@ func ListMessageEmbeds(ctx context.Context, messageIDs []string) (map[string][]m
 // customizado viola os limites de embed e ErrPermissionDenied quando o
 // usuário não é o autor.
 func EditMessage(ctx context.Context, messageID, authorID, content string, embeds []EmbedInput) (models.MessageWithAttachment, error) {
+    return editMessageAs(ctx,messageID,authorID,"",content,embeds)
+}
+func EditWebhookMessage(ctx context.Context,w models.Webhook,messageID,content string,embeds []EmbedInput) (models.MessageWithAttachment,error) {
+    return editMessageAs(ctx,messageID,"",w.ID,content,embeds)
+}
+func editMessageAs(ctx context.Context,messageID,authorID,webhookID,content string,embeds []EmbedInput) (models.MessageWithAttachment,error) {
 	if messageID == "" {
 		return models.MessageWithAttachment{}, ErrMessageNotFound
 	}
-	if authorID == "" || utf8.RuneCountInString(content) > maxMessageContentLength {
+	if (authorID=="" && webhookID=="") || utf8.RuneCountInString(content) > maxMessageContentLength {
 		return models.MessageWithAttachment{}, ErrInvalidInput
 	}
 	if err := validateCustomEmbeds(embeds); err != nil {
@@ -619,7 +631,8 @@ func EditMessage(ctx context.Context, messageID, authorID, content string, embed
 		return models.MessageWithAttachment{}, err
 	}
 
-	if message.AuthorID == nil || *message.AuthorID != authorID {
+	if (webhookID=="" && (message.AuthorID == nil || *message.AuthorID != authorID)) ||
+       (webhookID!="" && (message.WebhookID==nil || *message.WebhookID!=webhookID)) {
 		return models.MessageWithAttachment{}, ErrPermissionDenied
 	}
 	if channel, err := storage.GetChannelByID(ctx, message.ChannelID); err != nil {
@@ -681,7 +694,13 @@ func EditMessage(ctx context.Context, messageID, authorID, content string, embed
 			}
 		}
 	} else {
-		messageEmbeds, err = CreateCustomEmbeds(ctx, authorID, embeds)
+		mediaOwner:=authorID
+        if webhookID!="" {
+            hook,_,err:=storage.GetActiveWebhookWithHash(ctx,webhookID)
+            if err!=nil {return models.MessageWithAttachment{},ErrPermissionDenied}
+            mediaOwner=hook.CreatedBy
+        }
+        messageEmbeds, err = CreateCustomEmbeds(ctx, mediaOwner, embeds)
 		if err != nil {
 			return models.MessageWithAttachment{}, err
 		}
@@ -723,16 +742,17 @@ func EditMessage(ctx context.Context, messageID, authorID, content string, embed
 		return models.MessageWithAttachment{}, err
 	}
 
-	RecordAudit(ctx, AuditEntry{
-		ActorID:    authorID,
+	if webhookID=="" {RecordAudit(ctx, AuditEntry{
+        ActorID: authorID,
 		Action:     ActionMessageEdit,
 		EntityType: EntityMessage,
 		EntityID:   &updated.ID,
 		Metadata:   map[string]any{"channel_id": updated.ChannelID},
 	})
 
-	return models.MessageWithAttachment{
-		Message:       updated,
+    }
+    return models.MessageWithAttachment{
+        Message: updated,
 		Attachments:   messageAttachments,
 		Embeds:        messageEmbeds,
 		Reactions:     reactionCounts[updated.ID],
@@ -765,6 +785,16 @@ func toMessageAttachments(attachments []models.Attachments) []models.MessageAtta
 // Retorna o channel_id da mensagem excluída (para o evento WebSocket de
 // exclusão) e ErrMessageNotFound quando a mensagem não existe ou
 // ErrPermissionDenied quando o usuário não pode excluí-la.
+// DeleteWebhookMessage deletes only messages originally sent using this webhook.
+func DeleteWebhookMessage(ctx context.Context,w models.Webhook,messageID string)(string,error) {
+    message,err:=storage.GetMessageByID(ctx,messageID)
+    if errors.Is(err,storage.ErrNotFound){return "",ErrMessageNotFound}
+    if err!=nil{return "",err}
+    if message.WebhookID==nil || *message.WebhookID!=w.ID || message.ChannelID!=w.ChannelID {return "",ErrPermissionDenied}
+    if err:=deleteMessage(ctx,messageID);err!=nil{return "",err}
+    return message.ChannelID,nil
+}
+
 func DeleteMessage(ctx context.Context, messageID, authorID string) (string, error) {
 	if messageID == "" {
 		return "", ErrMessageNotFound

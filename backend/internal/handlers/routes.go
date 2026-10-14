@@ -320,4 +320,6 @@ func RegisterWebhookRoutes(e *echo.Echo,cfg *config.Config) {
         middleware.JWTMiddleware,middleware.RequireManageChannels())
     e.POST("/webhooks/:webhook_id/messages",func(c echo.Context)error{return ExecuteWebhookHandler(cfg.BaseURL,c)},
         middleware.BodyLimit(middleware.MaxUploadBodySize,nil))
+    e.PUT("/webhooks/:webhook_id/messages/:message_id",func(c echo.Context)error{return EditWebhookMessageHandler(cfg.BaseURL,c)})
+    e.DELETE("/webhooks/:webhook_id/messages/:message_id",func(c echo.Context)error{return DeleteWebhookMessageHandler(cfg.BaseURL,c)})
 }

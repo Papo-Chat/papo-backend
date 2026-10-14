@@ -48,8 +48,10 @@ func RevokeWebhook(ctx context.Context,id string) error {
 }
 
 func GetWebhookMessage(ctx context.Context,webhookID,sourceID string) (models.Message,error) {
-    return scanMessage(GetDB().QueryRowContext(ctx,
+    message,err:=scanMessage(GetDB().QueryRowContext(ctx,
         "SELECT "+messageColumns+" FROM messages WHERE webhook_id=$1 AND external_message_id=$2",webhookID,sourceID))
+    if err!=nil {return models.Message{},mapStorageError(err)}
+    return message,nil
 }
 
 
