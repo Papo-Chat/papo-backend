@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+ "database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,7 +81,7 @@ func CreateMessageAs(ctx context.Context,channelID,authorID,webhookID string,ext
 	if len(attachmentIDs) == 0 {
 		message, err := scanMessage(GetDB().QueryRowContext(ctx, insertMessage,
             channelID, authorArg, webhookArg, externalArg, sourceArg, contentArg, replyToArg))
-        if errors.Is(err,ErrNotFound) && webhookID!="" && sourceID!="" {
+        if errors.Is(err,sql.ErrNoRows) && webhookID!="" && sourceID!="" {
             existing,readErr:=GetWebhookMessage(ctx,webhookID,sourceID)
             return existing,false,readErr
         }
@@ -98,7 +99,7 @@ func CreateMessageAs(ctx context.Context,channelID,authorID,webhookID string,ext
 
 	message, err := scanMessage(tx.QueryRowContext(ctx, insertMessage,
         channelID, authorArg, webhookArg, externalArg, sourceArg, contentArg, replyToArg))
-    if errors.Is(err,ErrNotFound) && webhookID!="" && sourceID!="" {
+    if errors.Is(err,sql.ErrNoRows) && webhookID!="" && sourceID!="" {
         _=tx.Rollback()
         existing,readErr:=GetWebhookMessage(ctx,webhookID,sourceID)
         return existing,false,readErr

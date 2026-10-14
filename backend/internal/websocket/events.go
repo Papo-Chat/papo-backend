@@ -181,6 +181,8 @@ type MessageOutbound struct {
 	ID          string                     `json:"id"`
 	ChannelID   string                     `json:"channel_id"`
 	AuthorID    string                     `json:"author_id"`
+	WebhookID *string `json:"webhook_id,omitempty"`
+	ExternalAuthor *models.ExternalAuthor `json:"external_author,omitempty"`
 	Content     string                     `json:"content"`
 	CreatedAt   time.Time                  `json:"created_at"`
 	ReplyTo     *string                    `json:"reply_to"`

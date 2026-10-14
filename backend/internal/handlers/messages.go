@@ -180,6 +180,8 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 		ID:          message.ID,
 		ChannelID:   message.ChannelID,
 		AuthorID:    derefString(message.AuthorID),
+        WebhookID:message.WebhookID,
+        ExternalAuthor:message.ExternalAuthor,
 		Content:     derefString(message.Content),
 		CreatedAt:   message.CreatedAt,
 		ReplyTo:     message.ReplyTo,
