@@ -29,6 +29,10 @@ func CreateWebhook(ctx context.Context,actorID,channelID,name string) (models.We
     secret:=hex.EncodeToString(tokenBytes)
     hash:=sha256.Sum256([]byte(secret))
     webhook,err:=storage.CreateWebhook(ctx,channelID,name,actorID,hex.EncodeToString(hash[:]))
+    if err==nil {
+        RecordAudit(ctx,AuditEntry{ActorID:actorID,Action:"webhook.create",EntityType:"webhook",EntityID:&webhook.ID,
+            Metadata:map[string]any{"channel_id":channelID,"name":name}})
+    }
     return webhook,secret,err
 }
 

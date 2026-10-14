@@ -406,7 +406,14 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 		})
 	}
 
-	    } // Human audit attribution; webhook identity stays in the message row.
+	    } else {
+        // Webhook calls are machine actions, never actions of the credential's
+        // creator. Audit metadata binds them to the authenticated webhook.
+        RecordAudit(ctx, AuditEntry{
+            Action:ActionMessageCreate,EntityType:EntityMessage,EntityID:&message.ID,
+            Metadata:map[string]any{"channel_id":channelID,"webhook_id":webhookID},
+        })
+    } // Human audit attribution; webhook identity stays in the message row.
 // A mensagem acabou de ser criada: ninguém pode ter reagido a ela ainda.
 	return models.MessageWithAttachment{
 		Message:       message,
@@ -751,6 +758,11 @@ func editMessageAs(ctx context.Context,messageID,authorID,webhookID,content stri
 		Metadata:   map[string]any{"channel_id": updated.ChannelID},
 	})
 
+    } else {
+        RecordAudit(ctx,AuditEntry{
+            Action:ActionMessageEdit,EntityType:EntityMessage,EntityID:&updated.ID,
+            Metadata:map[string]any{"channel_id":updated.ChannelID,"webhook_id":webhookID},
+        })
     }
     return models.MessageWithAttachment{
         Message: updated,
@@ -793,6 +805,10 @@ func DeleteWebhookMessage(ctx context.Context,w models.Webhook,messageID string)
     if err!=nil{return "",err}
     if message.WebhookID==nil || *message.WebhookID!=w.ID || message.ChannelID!=w.ChannelID {return "",ErrPermissionDenied}
     if err:=deleteMessage(ctx,messageID);err!=nil{return "",err}
+    RecordAudit(ctx,AuditEntry{
+        Action:ActionMessageDelete,EntityType:EntityMessage,EntityID:&messageID,
+        Metadata:map[string]any{"channel_id":message.ChannelID,"webhook_id":w.ID},
+    })
     return message.ChannelID,nil
 }
 
