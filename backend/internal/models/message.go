@@ -14,6 +14,9 @@ type Message struct {
 	CreatedAt time.Time  `db:"created_at" json:"created_at"`
 	EditedAt  *time.Time `db:"edited_at" json:"edited_at"`
 	ReplyTo   *string    `db:"reply_to" json:"reply_to"`
+	WebhookID *string `db:"webhook_id" json:"webhook_id,omitempty"`
+	ExternalAuthor *ExternalAuthor `json:"external_author,omitempty"`
+	ExternalMessageID *string `json:"-"`
 }
 
 // PinnedMessage representa a tabela pinned_messages: uma mensagem fixada em um

@@ -2,16 +2,19 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"papo/internal/models"
 )
 
-const messageColumns = "id, channel_id, author_id, content, created_at, edited_at, reply_to"
+const messageColumns = "id, channel_id, author_id, content, created_at, edited_at, reply_to, webhook_id, external_author, external_message_id"
 
 func scanMessage(row rowScanner) (models.Message, error) {
 	var message models.Message
+	var extJSON []byte
 	err := row.Scan(
 		&message.ID,
 		&message.ChannelID,
@@ -20,11 +23,15 @@ func scanMessage(row rowScanner) (models.Message, error) {
 		&message.CreatedAt,
 		&message.EditedAt,
 		&message.ReplyTo,
+		&message.WebhookID,
+		&extJSON,
+		&message.ExternalMessageID,
 	)
 	if err != nil {
 		return models.Message{}, err
 	}
 
+	if len(extJSON)>0 { var a models.ExternalAuthor; if err:=json.Unmarshal(extJSON,&a);err!=nil {return models.Message{},err}; message.ExternalAuthor=&a }
 	return message, nil
 }
 
@@ -37,7 +44,26 @@ func scanMessage(row rowScanner) (models.Message, error) {
 // anterior do fluxo de criação de mensagem) são vinculados à mensagem na
 // mesma transação do INSERT.
 func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo string, attachmentIDs []string) (models.Message, error) {
-	const insertMessage = "INSERT INTO messages (channel_id, author_id, content, reply_to) VALUES ($1, $2, $3, $4) RETURNING " + messageColumns
+	returned, _, err := CreateMessageAs(ctx,channelID,authorID,"",nil,"",content,replyTo,attachmentIDs)
+    return returned,err
+}
+
+// CreateMessageAs is the common INSERT for people and webhooks. The source key
+// makes a webhook POST safe to retry after a lost response.
+func CreateMessageAs(ctx context.Context,channelID,authorID,webhookID string,external *models.ExternalAuthor,sourceID,content,replyTo string,attachmentIDs []string) (models.Message,bool,error) {
+    const insertMessage = `INSERT INTO messages(channel_id,author_id,webhook_id,external_author,external_message_id,content,reply_to)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        ON CONFLICT (webhook_id,external_message_id)
+        WHERE webhook_id IS NOT NULL AND external_message_id IS NOT NULL
+        DO NOTHING RETURNING ` + messageColumns
+    var webhookArg,authorArg,externalArg,sourceArg any
+    if webhookID!="" {webhookArg=webhookID} else if authorID!="" {authorArg=authorID}
+    if external!=nil {
+        data,err:=json.Marshal(external)
+        if err!=nil { return models.Message{},false,err }
+        externalArg=string(data)
+    }
+    if sourceID!="" {sourceArg=sourceID}
 
 	// content vazio vira NULL na coluna (nullable)
 	var contentArg any
@@ -52,36 +78,47 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 	}
 
 	if len(attachmentIDs) == 0 {
-		message, err := scanMessage(GetDB().QueryRowContext(ctx, insertMessage, channelID, authorID, contentArg, replyToArg))
+		message, err := scanMessage(GetDB().QueryRowContext(ctx, insertMessage,
+            channelID, authorArg, webhookArg, externalArg, sourceArg, contentArg, replyToArg))
+        if errors.Is(err,ErrNotFound) && webhookID!="" && sourceID!="" {
+            existing,readErr:=GetWebhookMessage(ctx,webhookID,sourceID)
+            return existing,false,readErr
+        }
 		if err != nil {
-			return models.Message{}, mapStorageError(err)
+			return models.Message{},false, mapStorageError(err)
 		}
-		return message, nil
+		return message,true,nil
 	}
 
 	tx, err := GetDB().BeginTx(ctx, nil)
 	if err != nil {
-		return models.Message{}, fmt.Errorf("falha ao criar mensagem: %w", err)
+		return models.Message{},false, fmt.Errorf("falha ao criar mensagem: %w", err)
 	}
 	defer tx.Rollback()
 
-	message, err := scanMessage(tx.QueryRowContext(ctx, insertMessage, channelID, authorID, contentArg, replyToArg))
+	message, err := scanMessage(tx.QueryRowContext(ctx, insertMessage,
+        channelID, authorArg, webhookArg, externalArg, sourceArg, contentArg, replyToArg))
+    if errors.Is(err,ErrNotFound) && webhookID!="" && sourceID!="" {
+        _=tx.Rollback()
+        existing,readErr:=GetWebhookMessage(ctx,webhookID,sourceID)
+        return existing,false,readErr
+    }
 	if err != nil {
-		return models.Message{}, mapStorageError(err)
+		return models.Message{},false, mapStorageError(err)
 	}
 
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE attachments SET messages_id = $1 WHERE id = ANY($2)",
 		message.ID, attachmentIDs,
 	); err != nil {
-		return models.Message{}, fmt.Errorf("falha ao vincular attachments à mensagem: %w", err)
+		return models.Message{},false,fmt.Errorf("falha ao vincular attachments à mensagem: %w",err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return models.Message{}, fmt.Errorf("falha ao criar mensagem: %w", err)
+		return models.Message{},false,fmt.Errorf("falha ao criar mensagem: %w",err)
 	}
 
-	return message, nil
+	return message,true,nil
 }
 
 // GetMessageByID busca uma mensagem pelo id.
@@ -174,7 +211,7 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 	}
 	fetch := limit + 1
 
-	query := "SELECT p.id, p.channel_id, p.author_id, p.content, p.created_at, p.edited_at, p.reply_to, " +
+	query := "SELECT p.id, p.channel_id, p.author_id, p.content, p.created_at, p.edited_at, p.reply_to, p.webhook_id, p.external_author, p.external_message_id, " +
 		"a.id, m.mime_type, a.original_file_name, m.size_bytes, a.created_at " +
 		"FROM (SELECT " + messageColumns + " FROM messages WHERE channel_id = $1"
 	args := []any{channelID}
@@ -218,6 +255,7 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 			fileName     *string
 			sizeBytes    *int64
 			attachmentAt *time.Time
+			extJSON []byte
 		)
 		err := rows.Scan(
 			&message.ID,
@@ -227,6 +265,9 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 			&message.CreatedAt,
 			&message.EditedAt,
 			&message.ReplyTo,
+			&message.WebhookID,
+			&extJSON,
+			&message.ExternalMessageID,
 			&attachmentID,
 			&mimeType,
 			&fileName,
@@ -237,6 +278,7 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 			return nil, fmt.Errorf("falha ao ler mensagem: %w", err)
 		}
 
+		if len(extJSON)>0 { var a models.ExternalAuthor; if err:=json.Unmarshal(extJSON,&a);err!=nil{return nil,err}; message.ExternalAuthor=&a }
 		if !hasCurrent || current.Message.ID != message.ID {
 			if hasCurrent {
 				messages = append(messages, current)
