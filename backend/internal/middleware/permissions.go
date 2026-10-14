@@ -170,3 +170,9 @@ func RequireManageChannels() echo.MiddlewareFunc {
 func RequireManageRoles() echo.MiddlewareFunc {
 	return RequireRolePermission(func(p models.RolePermissions) bool { return p.ManageRoles })
 }
+
+// RequireManageWebhooks autoriza operações que exigem a permissão
+// manage_webhooks (criar, listar, atualizar identidade e revogar webhooks).
+func RequireManageWebhooks() echo.MiddlewareFunc {
+	return RequireRolePermission(func(p models.RolePermissions) bool { return p.ManageWebhooks })
+}

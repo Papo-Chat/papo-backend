@@ -32,13 +32,17 @@ var (
 // fallback para @username, apenas no preview enviado ao push.
 func translatePushMentions(ctx context.Context, content string) string {
 	matches := notificationMentionRegex.FindAllStringSubmatch(content, -1)
-	if len(matches) == 0 { return content }
+	if len(matches) == 0 {
+		return content
+	}
 
 	seen := make(map[string]struct{}, len(matches))
 	ids := make([]string, 0, len(matches))
 	for _, match := range matches {
 		id := match[1]
-		if _, ok := seen[id]; ok { continue }
+		if _, ok := seen[id]; ok {
+			continue
+		}
 		seen[id] = struct{}{}
 		ids = append(ids, id)
 	}
@@ -51,14 +55,20 @@ func translatePushMentions(ctx context.Context, content string) string {
 	names := make(map[string]string, len(users))
 	for _, user := range users {
 		name := user.Username
-		if user.Nickname != nil && *user.Nickname != "" { name = *user.Nickname }
+		if user.Nickname != nil && *user.Nickname != "" {
+			name = *user.Nickname
+		}
 		names[user.ID] = name
 	}
 
 	return notificationMentionRegex.ReplaceAllStringFunc(content, func(raw string) string {
 		match := notificationMentionRegex.FindStringSubmatch(raw)
-		if len(match) != 2 { return raw }
-		if name, ok := names[match[1]]; ok { return "@" + name }
+		if len(match) != 2 {
+			return raw
+		}
+		if name, ok := names[match[1]]; ok {
+			return "@" + name
+		}
 		return raw
 	})
 }
@@ -312,6 +322,10 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 	}
 
 	hasEveryone := false
+	// @everyone exige a permissão everyone_message do autor, que é uma regra de
+	// usuário: mensagens de webhook (authorID vazio) nunca disparam @everyone,
+	// por design (remetentes máquina não podem pingar o servidor inteiro).
+	// Menções diretas @mention(<@id>) continuam funcionando para webhooks.
 	if authorID != "" && notificationEveryoneRegex.MatchString(content) {
 		allowed, err := userHasRolePermission(ctx, authorID, func(p models.RolePermissions) bool {
 			return p.EveryoneMessage
@@ -343,12 +357,14 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 		}
 	}
 
-	// An incoming webhook has no Papo user_id. Push notifications nevertheless
-    // show its supplied display identity rather than a blank sender name.
-    if authorID=="" && message.ExternalAuthor!=nil {
-        authorUsername=message.ExternalAuthor.Name
-    }
-    // Filtra os candidatos pelos leitores do canal (mesma regra do
+	// Um webhook não tem user_id no Papo. A notificação push mostra a
+	// identidade de exibição informada (nome do autor externo ou nickname do
+	// webhook) em vez de um remetente vazio.
+	if authorID == "" && message.ExternalAuthor != nil {
+		authorUsername = message.ExternalAuthor.Name
+	}
+
+	// Filtra os candidatos pelos leitores do canal (mesma regra do
 	// broadcast): canal aberto permite todos; canal com permissões permite
 	// o dono do servidor e os usuários de roles com ReadChannel.
 	if len(candidates) > 0 {

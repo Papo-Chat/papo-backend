@@ -173,7 +173,7 @@ func CreateMessageHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao criar a mensagem")
 	}
 
-	publishCreatedMessage(c,message,userID)
+	publishCreatedMessage(c, message, userID)
 
 	return c.JSON(http.StatusCreated, message)
 }
@@ -609,22 +609,23 @@ func broadcastDirectConversationUpdates(ctx context.Context, channelID string) {
 	}
 }
 
-// publishCreatedMessage is shared by user and webhook sends. All clients see
-// the same message, embeds, moderation and notification event flow.
-func publishCreatedMessage(c echo.Context,message models.MessageWithAttachment,actorID string) {
+// publishCreatedMessage distribui uma mensagem recém-criada (humana ou de
+// webhook). Todos os clientes veem o mesmo fluxo de eventos: message,
+// embeds, moderação de attachments e notificações.
+func publishCreatedMessage(c echo.Context, message models.MessageWithAttachment, actorID string) {
 	// Distribui a nova mensagem aos clientes autorizados a ler o canal
 	// (evento message).
 	broadcastChannelEvent(c, message.ChannelID, websocket.MessageOutbound{
-		Type:        websocket.EventTypeMessage,
-		ID:          message.ID,
-		ChannelID:   message.ChannelID,
-		AuthorID:    derefString(message.AuthorID),
-        WebhookID: message.WebhookID,
-        ExternalAuthor: message.ExternalAuthor,
-		Content:     derefString(message.Content),
-		CreatedAt:   message.CreatedAt,
-		ReplyTo:     message.ReplyTo,
-		Attachments: message.Attachments,
+		Type:           websocket.EventTypeMessage,
+		ID:             message.ID,
+		ChannelID:      message.ChannelID,
+		AuthorID:       derefString(message.AuthorID),
+		WebhookID:      message.WebhookID,
+		ExternalAuthor: message.ExternalAuthor,
+		Content:        derefString(message.Content),
+		CreatedAt:      message.CreatedAt,
+		ReplyTo:        message.ReplyTo,
+		Attachments:    message.Attachments,
 	})
 	broadcastDirectConversationUpdates(c.Request().Context(), message.ChannelID)
 

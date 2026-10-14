@@ -25,8 +25,8 @@ import (
 	"papo/internal/storage"
 	"papo/internal/utils"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/labstack/echo/v4"
 )
 
@@ -701,6 +701,38 @@ func TestPermissionHelpersMapToCorrectPermission(t *testing.T) {
 		"usuário não possui a permissão necessária para esta operação", "")
 	assertProblem(t, doPermissionRequest(t, RequireManageRoles(),
 		newPermissionContext(t, http.MethodPost, "/roles", nil, names, values, userID)),
+		http.StatusForbidden, "forbidden", "Acesso negado",
+		"usuário não possui a permissão necessária para esta operação", "")
+	// manage_channels não concede manage_webhooks: são permissões independentes.
+	assertProblem(t, doPermissionRequest(t, RequireManageWebhooks(),
+		newPermissionContext(t, http.MethodPost, "/webhooks", nil, names, values, userID)),
+		http.StatusForbidden, "forbidden", "Acesso negado",
+		"usuário não possui a permissão necessária para esta operação", "")
+}
+
+// TestRequireManageWebhooksPermission garante que a role manage_webhooks
+// autoriza a gestão de webhooks e que o dono do servidor sempre pode.
+func TestRequireManageWebhooksPermission(t *testing.T) {
+	ownerID := newUser(t)
+	userID := newUser(t)
+	server := newServer(t, &ownerID)
+	role := newRole(t, models.RolePermissions{ManageWebhooks: true})
+	assignRole(t, userID, role.ID)
+
+	names := []string{"server_id"}
+	values := []string{server.ID}
+
+	if rec := doPermissionRequest(t, RequireManageWebhooks(),
+		newPermissionContext(t, http.MethodPost, "/webhooks", nil, names, values, userID)); rec.Code != http.StatusOK {
+		t.Fatalf("RequireManageWebhooks: esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	if rec := doPermissionRequest(t, RequireManageWebhooks(),
+		newPermissionContext(t, http.MethodPost, "/webhooks", nil, names, values, ownerID)); rec.Code != http.StatusOK {
+		t.Fatalf("RequireManageWebhooks (dono do servidor): esperava status 200, obtive %d", rec.Code)
+	}
+	// manage_webhooks não concede manage_channels.
+	assertProblem(t, doPermissionRequest(t, RequireManageChannels(),
+		newPermissionContext(t, http.MethodPost, "/channels", nil, names, values, userID)),
 		http.StatusForbidden, "forbidden", "Acesso negado",
 		"usuário não possui a permissão necessária para esta operação", "")
 }

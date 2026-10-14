@@ -2,7 +2,7 @@ package storage
 
 import (
 	"context"
- "database/sql"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,8 +11,13 @@ import (
 	"papo/internal/models"
 )
 
+// messageColumns são as colunas lidas por scanMessage. webhook_id,
+// external_author e external_message_id identificam mensagens de webhook
+// (NULL para mensagens humanas).
 const messageColumns = "id, channel_id, author_id, content, created_at, edited_at, reply_to, webhook_id, external_author, external_message_id"
 
+// scanMessage lê uma row de messages na ordem de messageColumns,
+// desserializando o JSONB external_author.
 func scanMessage(row rowScanner) (models.Message, error) {
 	var message models.Message
 	var extJSON []byte
@@ -32,7 +37,13 @@ func scanMessage(row rowScanner) (models.Message, error) {
 		return models.Message{}, err
 	}
 
-	if len(extJSON)>0 { var a models.ExternalAuthor; if err:=json.Unmarshal(extJSON,&a);err!=nil {return models.Message{},err}; message.ExternalAuthor=&a }
+	if len(extJSON) > 0 {
+		var author models.ExternalAuthor
+		if err := json.Unmarshal(extJSON, &author); err != nil {
+			return models.Message{}, err
+		}
+		message.ExternalAuthor = &author
+	}
 	return message, nil
 }
 
@@ -45,26 +56,41 @@ func scanMessage(row rowScanner) (models.Message, error) {
 // anterior do fluxo de criação de mensagem) são vinculados à mensagem na
 // mesma transação do INSERT.
 func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo string, attachmentIDs []string) (models.Message, error) {
-	returned, _, err := CreateMessageAs(ctx,channelID,authorID,"",nil,"",content,replyTo,attachmentIDs)
-    return returned,err
+	returned, _, err := CreateMessageAs(ctx, channelID, authorID, "", nil, "", content, replyTo, attachmentIDs)
+	return returned, err
 }
 
-// CreateMessageAs is the common INSERT for people and webhooks. The source key
-// makes a webhook POST safe to retry after a lost response.
-func CreateMessageAs(ctx context.Context,channelID,authorID,webhookID string,external *models.ExternalAuthor,sourceID,content,replyTo string,attachmentIDs []string) (models.Message,bool,error) {
-    const insertMessage = `INSERT INTO messages(channel_id,author_id,webhook_id,external_author,external_message_id,content,reply_to)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
-        ON CONFLICT (webhook_id,external_message_id)
-        WHERE webhook_id IS NOT NULL AND external_message_id IS NOT NULL
-        DO NOTHING RETURNING ` + messageColumns
-    var webhookArg,authorArg,externalArg,sourceArg any
-    if webhookID!="" {webhookArg=webhookID} else if authorID!="" {authorArg=authorID}
-    if external!=nil {
-        data,err:=json.Marshal(external)
-        if err!=nil { return models.Message{},false,err }
-        externalArg=string(data)
-    }
-    if sourceID!="" {sourceArg=sourceID}
+// CreateMessageAs é o INSERT comum de mensagens humanas e de webhook. Para
+// webhook, webhook_id/external_author/external_message_id preenchem a
+// atribuição externa; a chave única parcial (webhook_id, external_message_id)
+// torna o INSERT seguro a retry: em conflito, nenhum INSERT acontece e o
+// retorno é (mensagem existente, inserted=false) — o chamador devolve a
+// mensagem anterior em vez de duplicar.
+func CreateMessageAs(ctx context.Context, channelID, authorID, webhookID string, external *models.ExternalAuthor, sourceID, content, replyTo string, attachmentIDs []string) (models.Message, bool, error) {
+	const insertMessage = `INSERT INTO messages(channel_id,author_id,webhook_id,external_author,external_message_id,content,reply_to)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (webhook_id,external_message_id)
+		WHERE webhook_id IS NOT NULL AND external_message_id IS NOT NULL
+		DO NOTHING RETURNING ` + messageColumns
+
+	// NULL explícito por coluna: humano preenche author_id, webhook preenche
+	// webhook_id/external_author/external_message_id.
+	var authorArg, webhookArg, externalArg, sourceArg any
+	if webhookID != "" {
+		webhookArg = webhookID
+	} else if authorID != "" {
+		authorArg = authorID
+	}
+	if external != nil {
+		data, err := json.Marshal(external)
+		if err != nil {
+			return models.Message{}, false, err
+		}
+		externalArg = string(data)
+	}
+	if sourceID != "" {
+		sourceArg = sourceID
+	}
 
 	// content vazio vira NULL na coluna (nullable)
 	var contentArg any
@@ -80,46 +106,48 @@ func CreateMessageAs(ctx context.Context,channelID,authorID,webhookID string,ext
 
 	if len(attachmentIDs) == 0 {
 		message, err := scanMessage(GetDB().QueryRowContext(ctx, insertMessage,
-            channelID, authorArg, webhookArg, externalArg, sourceArg, contentArg, replyToArg))
-        if errors.Is(err,sql.ErrNoRows) && webhookID!="" && sourceID!="" {
-            existing,readErr:=GetWebhookMessage(ctx,webhookID,sourceID)
-            return existing,false,readErr
-        }
-		if err != nil {
-			return models.Message{},false, mapStorageError(err)
+			channelID, authorArg, webhookArg, externalArg, sourceArg, contentArg, replyToArg))
+		if errors.Is(err, sql.ErrNoRows) && webhookID != "" && sourceID != "" {
+			// Conflito na chave de idempotência: devolve a mensagem existente.
+			existing, readErr := GetWebhookMessage(ctx, webhookID, sourceID)
+			return existing, false, readErr
 		}
-		return message,true,nil
+		if err != nil {
+			return models.Message{}, false, mapStorageError(err)
+		}
+		return message, true, nil
 	}
 
 	tx, err := GetDB().BeginTx(ctx, nil)
 	if err != nil {
-		return models.Message{},false, fmt.Errorf("falha ao criar mensagem: %w", err)
+		return models.Message{}, false, fmt.Errorf("falha ao criar mensagem: %w", err)
 	}
 	defer tx.Rollback()
 
 	message, err := scanMessage(tx.QueryRowContext(ctx, insertMessage,
-        channelID, authorArg, webhookArg, externalArg, sourceArg, contentArg, replyToArg))
-    if errors.Is(err,sql.ErrNoRows) && webhookID!="" && sourceID!="" {
-        _=tx.Rollback()
-        existing,readErr:=GetWebhookMessage(ctx,webhookID,sourceID)
-        return existing,false,readErr
-    }
+		channelID, authorArg, webhookArg, externalArg, sourceArg, contentArg, replyToArg))
+	if errors.Is(err, sql.ErrNoRows) && webhookID != "" && sourceID != "" {
+		// Conflito na chave de idempotência: devolve a mensagem existente.
+		_ = tx.Rollback()
+		existing, readErr := GetWebhookMessage(ctx, webhookID, sourceID)
+		return existing, false, readErr
+	}
 	if err != nil {
-		return models.Message{},false, mapStorageError(err)
+		return models.Message{}, false, mapStorageError(err)
 	}
 
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE attachments SET messages_id = $1 WHERE id = ANY($2)",
 		message.ID, attachmentIDs,
 	); err != nil {
-		return models.Message{},false,fmt.Errorf("falha ao vincular attachments à mensagem: %w",err)
+		return models.Message{}, false, fmt.Errorf("falha ao vincular attachments à mensagem: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return models.Message{},false,fmt.Errorf("falha ao criar mensagem: %w",err)
+		return models.Message{}, false, fmt.Errorf("falha ao criar mensagem: %w", err)
 	}
 
-	return message,true,nil
+	return message, true, nil
 }
 
 // GetMessageByID busca uma mensagem pelo id.
@@ -217,7 +245,9 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 		"FROM (SELECT " + messageColumns + " FROM messages WHERE channel_id = $1"
 	args := []any{channelID}
 	op, order := "<", "DESC"
-	if orderAsc { op, order = ">", "ASC" }
+	if orderAsc {
+		op, order = ">", "ASC"
+	}
 
 	if since != nil {
 		if lastID != "" {
@@ -256,7 +286,7 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 			fileName     *string
 			sizeBytes    *int64
 			attachmentAt *time.Time
-			extJSON []byte
+			extJSON      []byte
 		)
 		err := rows.Scan(
 			&message.ID,
@@ -279,7 +309,13 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 			return nil, fmt.Errorf("falha ao ler mensagem: %w", err)
 		}
 
-		if len(extJSON)>0 { var a models.ExternalAuthor; if err:=json.Unmarshal(extJSON,&a);err!=nil{return nil,err}; message.ExternalAuthor=&a }
+		if len(extJSON) > 0 {
+			var author models.ExternalAuthor
+			if err := json.Unmarshal(extJSON, &author); err != nil {
+				return nil, err
+			}
+			message.ExternalAuthor = &author
+		}
 		if !hasCurrent || current.Message.ID != message.ID {
 			if hasCurrent {
 				messages = append(messages, current)

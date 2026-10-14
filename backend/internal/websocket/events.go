@@ -177,16 +177,18 @@ type ScreenShareStopInbound struct {
 // ReplyTo é a mensagem referenciada (null quando a mensagem não é uma
 // resposta); pode apontar para uma mensagem já excluída (apontador pendente).
 type MessageOutbound struct {
-	Type        EventType                  `json:"type"`
-	ID          string                     `json:"id"`
-	ChannelID   string                     `json:"channel_id"`
-	AuthorID    string                     `json:"author_id"`
-	WebhookID *string `json:"webhook_id,omitempty"`
-	ExternalAuthor *models.ExternalAuthor `json:"external_author,omitempty"`
-	Content     string                     `json:"content"`
-	CreatedAt   time.Time                  `json:"created_at"`
-	ReplyTo     *string                    `json:"reply_to"`
-	Attachments []models.MessageAttachment `json:"attachments,omitempty"`
+	Type      EventType `json:"type"`
+	ID        string    `json:"id"`
+	ChannelID string    `json:"channel_id"`
+	AuthorID  string    `json:"author_id"`
+	// WebhookID/ExternalAuthor estão presentes somente em mensagens enviadas
+	// por webhook (author_id vazio nesse caso).
+	WebhookID      *string                    `json:"webhook_id,omitempty"`
+	ExternalAuthor *models.ExternalAuthor     `json:"external_author,omitempty"`
+	Content        string                     `json:"content"`
+	CreatedAt      time.Time                  `json:"created_at"`
+	ReplyTo        *string                    `json:"reply_to"`
+	Attachments    []models.MessageAttachment `json:"attachments,omitempty"`
 }
 
 // MessageEditOutbound é o evento de edição de mensagem distribuído aos clientes.

@@ -215,102 +215,137 @@ func setAttachmentThumbnails(attachments *[]models.MessageAttachment, thumbnails
 // enviar attachments no servidor e ErrAttachmentTooLarge quando um arquivo
 // excede 100MB.
 func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo string, attachments []AttachmentInput, embeds []EmbedInput) (models.MessageWithAttachment, error) {
-    message,_,err:=createMessageAs(ctx,channelID,authorID,"",nil,"",content,replyTo,attachments,embeds)
-    return message,err
+	message, _, err := createMessageAs(ctx, channelID, authorID, "", nil, "", content, replyTo, attachments, embeds)
+	return message, err
 }
 
-// CreateWebhookMessage uses the same validation, persistence and attachment/embed
-// machinery as human messages. Its authority is the scoped webhook credential.
-func CreateWebhookMessage(ctx context.Context,w models.Webhook,external *models.ExternalAuthor,sourceID,content,replyTo string,attachments []AttachmentInput,embeds []EmbedInput) (models.MessageWithAttachment,bool,error) {
-    if err:=validateExternalAuthor(external);err!=nil{return models.MessageWithAttachment{},false,err}
-    if external==nil {external=&models.ExternalAuthor{Source:"webhook",ID:w.ID,Name:w.Name}}
-    if sourceID==""||len(sourceID)>200{return models.MessageWithAttachment{},false,ErrInvalidInput}
-    return createMessageAs(ctx,w.ChannelID,"",w.ID,external,sourceID,content,replyTo,attachments,embeds)
+// CreateWebhookMessage envia uma mensagem usando a credencial escopada de um
+// webhook: mesma validação, persistência e machinery de attachments/embeds das
+// mensagens humanas. A autoridade é o token do webhook (já autenticado pelo
+// handler), não um usuário.
+//
+// external é a autoria de exibição temporária da mensagem (nil usa a
+// identidade persistente do webhook — ver resolveWebhookAuthor). sourceID é a
+// chave de idempotência opcional (external_message_id): quando informada, um
+// retry do mesmo webhook com a mesma chave devolve a mensagem existente sem
+// duplicar (created = false); sem chave, cada envio cria uma mensagem nova.
+//
+// Retorna ErrInvalidExternalAuthor quando a autoria externa viola as regras,
+// ErrInvalidInput quando sourceID excede 200 caracteres ou content é longo
+// demais, e os mesmos erros de CreateMessage para canal/reply/attachments.
+func CreateWebhookMessage(ctx context.Context, w models.Webhook, external *models.ExternalAuthor, sourceID, content, replyTo string, attachments []AttachmentInput, embeds []EmbedInput) (models.MessageWithAttachment, bool, error) {
+	if err := validateExternalAuthor(external); err != nil {
+		return models.MessageWithAttachment{}, false, err
+	}
+	if len(sourceID) > 200 {
+		return models.MessageWithAttachment{}, false, ErrInvalidInput
+	}
+	external = resolveWebhookAuthor(w, external)
+	return createMessageAs(ctx, w.ChannelID, "", w.ID, external, sourceID, content, replyTo, attachments, embeds)
 }
 
-func createMessageAs(ctx context.Context, channelID, authorID, webhookID string, external *models.ExternalAuthor,sourceID,content,replyTo string, attachments []AttachmentInput, embeds []EmbedInput) (models.MessageWithAttachment,bool,error) {
-    if webhookID=="" && authorID=="" {return models.MessageWithAttachment{},false,ErrInvalidInput}
-    if webhookID!="" {
-        if existing,err:=storage.GetWebhookMessage(ctx,webhookID,sourceID);err==nil {
-            // Deliberately return existing on retries. Do not re-upload attachments.
-            return models.MessageWithAttachment{Message:existing},false,nil
-        }else if !errors.Is(err,storage.ErrNotFound) {return models.MessageWithAttachment{},false,err}
-    }
+// createMessageAs é o INSERT comum de mensagens humanas e de webhook. Para
+// webhook com sourceID, a chave única parcial (webhook_id, external_message_id)
+// torna o POST seguro a retry: a leitura antecipada devolve a mensagem
+// existente e o ON CONFLICT cobre a corrida entre dois retries simultâneos
+// (os attachments do retry perdedor ficam órfãos e são limpos pela manutenção).
+func createMessageAs(ctx context.Context, channelID, authorID, webhookID string, external *models.ExternalAuthor, sourceID, content, replyTo string, attachments []AttachmentInput, embeds []EmbedInput) (models.MessageWithAttachment, bool, error) {
+	if webhookID == "" && authorID == "" {
+		return models.MessageWithAttachment{}, false, ErrInvalidInput
+	}
+	if webhookID != "" && sourceID != "" {
+		if existing, err := storage.GetWebhookMessage(ctx, webhookID, sourceID); err == nil {
+			// Retry do mesmo envio: devolve a mensagem existente completa
+			// (attachments e embeds inclusos) sem regravar nada.
+			full, err := messageWithRelations(ctx, existing)
+			return full, false, err
+		} else if !errors.Is(err, storage.ErrNotFound) {
+			return models.MessageWithAttachment{}, false, err
+		}
+	}
+
 	if channelID == "" {
-		return models.MessageWithAttachment{},false, ErrChannelNotFound
+		return models.MessageWithAttachment{}, false, ErrChannelNotFound
 	}
 	if utf8.RuneCountInString(content) > maxMessageContentLength {
-		return models.MessageWithAttachment{},false, ErrInvalidInput
+		return models.MessageWithAttachment{}, false, ErrInvalidInput
 	}
 	if content == "" && len(attachments) == 0 && len(embeds) == 0 {
-		return models.MessageWithAttachment{},false, ErrInvalidInput
+		return models.MessageWithAttachment{}, false, ErrInvalidInput
 	}
 	if len(attachments) > maxAttachmentsPerMessage {
-		return models.MessageWithAttachment{},false, ErrTooManyAttachments
+		return models.MessageWithAttachment{}, false, ErrTooManyAttachments
 	}
 	if len(embeds) > maxEmbedsPerMessage {
-		return models.MessageWithAttachment{},false, ErrTooManyEmbeds
+		return models.MessageWithAttachment{}, false, ErrTooManyEmbeds
 	}
 
 	for _, att := range attachments {
 		fileName := utils.SanitizeFileName(att.OriginalFileName)
 		if fileName == "" || utf8.RuneCountInString(fileName) > maxAttachmentNameLength {
-			return models.MessageWithAttachment{},false, ErrInvalidInput
+			return models.MessageWithAttachment{}, false, ErrInvalidInput
 		}
 	}
 	// Embeds são validados antes de qualquer gravação: uma mensagem não pode
 	// ser criada com embeds que depois seriam rejeitados.
 	if err := validateCustomEmbeds(embeds); err != nil {
-		return models.MessageWithAttachment{},false, err
+		return models.MessageWithAttachment{}, false, err
 	}
 
 	channel, err := storage.GetChannelByID(ctx, channelID)
 	if errors.Is(err, storage.ErrNotFound) {
-		return models.MessageWithAttachment{},false, ErrChannelNotFound
+		return models.MessageWithAttachment{}, false, ErrChannelNotFound
 	}
 	if err != nil {
-		return models.MessageWithAttachment{},false, err
+		return models.MessageWithAttachment{}, false, err
 	}
 	if channel.Type != "text" && channel.Type != "voice" && channel.Type != "dm" {
-		return models.MessageWithAttachment{},false, ErrPermissionDenied
+		return models.MessageWithAttachment{}, false, ErrPermissionDenied
 	}
-	if webhookID!="" && channel.Type=="dm" {return models.MessageWithAttachment{},false,ErrPermissionDenied}
-    if channel.Type == "dm" && webhookID!="" {return models.MessageWithAttachment{},false,ErrPermissionDenied}
-    if channel.Type == "dm" {
+	// Webhooks não existem em DMs (a criação já restringe a canais text/voice;
+	// a checagem aqui protege contra inconsistência de dados).
+	if webhookID != "" && channel.Type == "dm" {
+		return models.MessageWithAttachment{}, false, ErrPermissionDenied
+	}
+	if channel.Type == "dm" {
 		member, blocked, err := storage.DirectConversationAccess(ctx, channel.ID, authorID)
 		if errors.Is(err, storage.ErrNotFound) || !member {
-			return models.MessageWithAttachment{},false, ErrPermissionDenied
+			return models.MessageWithAttachment{}, false, ErrPermissionDenied
 		}
 		if err != nil {
-			return models.MessageWithAttachment{},false, err
+			return models.MessageWithAttachment{}, false, err
 		}
 		if blocked {
-			return models.MessageWithAttachment{},false, ErrDirectMessageBlocked
+			return models.MessageWithAttachment{}, false, ErrDirectMessageBlocked
 		}
 	}
 
-	allowed:=true
-    if webhookID=="" {
-        allowed, err = userHasChannelPermission(ctx, channel, authorID, true, func(p models.ChannelPermission) bool {
-            return p.SendMessages
-        })
-    }
+	// A permissão send_messages é uma regra de usuário: o webhook já carregou
+	// a própria autorização (token escopado ao canal) no handler.
+	allowed := true
+	if webhookID == "" {
+		allowed, err = userHasChannelPermission(ctx, channel, authorID, true, func(p models.ChannelPermission) bool {
+			return p.SendMessages
+		})
+	}
 	if err != nil {
-		return models.MessageWithAttachment{},false, err
+		return models.MessageWithAttachment{}, false, err
 	}
 	if !allowed {
-		return models.MessageWithAttachment{},false, ErrPermissionDenied
+		return models.MessageWithAttachment{}, false, ErrPermissionDenied
 	}
 
-	if len(attachments) > 0 && channel.Type != "dm" && webhookID=="" {
+	// send_attachment é uma regra de usuário; attachments de webhook pertencem
+	// ao criador da credencial (gestão), não a um remetente humano.
+	if len(attachments) > 0 && channel.Type != "dm" && webhookID == "" {
 		allowed, err := userHasRolePermission(ctx, authorID, func(p models.RolePermissions) bool {
 			return p.SendAttachment
 		})
 		if err != nil {
-			return models.MessageWithAttachment{},false, err
+			return models.MessageWithAttachment{}, false, err
 		}
 		if !allowed {
-			return models.MessageWithAttachment{},false, ErrPermissionDenied
+			return models.MessageWithAttachment{}, false, ErrPermissionDenied
 		}
 	}
 
@@ -319,41 +354,51 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 	if replyTo != "" {
 		referenced, err := storage.GetMessageByID(ctx, replyTo)
 		if errors.Is(err, storage.ErrNotFound) {
-			return models.MessageWithAttachment{},false, ErrMessageNotFound
+			return models.MessageWithAttachment{}, false, ErrMessageNotFound
 		}
 		if err != nil {
-			return models.MessageWithAttachment{},false, err
+			return models.MessageWithAttachment{}, false, err
 		}
 		if referenced.ChannelID != channelID {
-			return models.MessageWithAttachment{},false, ErrInvalidInput
+			return models.MessageWithAttachment{}, false, ErrInvalidInput
 		}
 	}
 
-	mediaOwner:=authorID
-    if webhookID!="" {
-        hook,_,err:=storage.GetActiveWebhookWithHash(ctx,webhookID)
-        if err!=nil {return models.MessageWithAttachment{},false,ErrPermissionDenied}
-        mediaOwner=hook.CreatedBy
-    }
-    createdAttachments := make([]models.Attachments, 0, len(attachments))
+	// Mídia de webhook (attachments e embeds customizados) é propriedade do
+	// criador humano da credencial: ele responde pela referência media.
+	mediaOwner := authorID
+	if webhookID != "" {
+		hook, _, err := storage.GetActiveWebhookWithHash(ctx, webhookID)
+		if err != nil {
+			return models.MessageWithAttachment{}, false, ErrPermissionDenied
+		}
+		mediaOwner = hook.CreatedBy
+	}
+
+	createdAttachments := make([]models.Attachments, 0, len(attachments))
 	attachmentIDs := make([]string, 0, len(attachments))
 	for _, att := range attachments {
 		created, err := storeAttachment(ctx, att, mediaOwner)
 		if err != nil {
-			return models.MessageWithAttachment{},false, err
+			return models.MessageWithAttachment{}, false, err
 		}
 		createdAttachments = append(createdAttachments, created)
 		attachmentIDs = append(attachmentIDs, created.ID)
 	}
 
-	message,inserted,err := storage.CreateMessageAs(ctx, channelID, authorID, webhookID, external, sourceID, content, replyTo, attachmentIDs)
+	message, inserted, err := storage.CreateMessageAs(ctx, channelID, authorID, webhookID, external, sourceID, content, replyTo, attachmentIDs)
 	if err != nil {
-        return models.MessageWithAttachment{},false,err
-    }
-    if !inserted {
-        return models.MessageWithAttachment{Message:message},false,nil
-    }
-    if channel.Type == "dm" {
+		return models.MessageWithAttachment{}, false, err
+	}
+	if !inserted {
+		// Corrida entre retries: outro request inseriu primeiro. Devolve a
+		// mensagem existente completa; os attachments deste retry ficam órfãos
+		// (messages_id NULL) e são removidos pela manutenção periódica.
+		full, err := messageWithRelations(ctx, message)
+		return full, false, err
+	}
+
+	if channel.Type == "dm" {
 		if err := storage.ShowDirectConversationForMembers(ctx, channelID); err != nil {
 			// A mensagem já foi persistida. Não transforme uma falha auxiliar de
 			// visibilidade da rail em 500, pois o cliente poderia repetir o envio.
@@ -365,14 +410,14 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 	if len(attachmentIDs) > 0 {
 		thumbnails, err := storage.ListThumbnailsByAttachmentIDs(ctx, attachmentIDs)
 		if err != nil {
-			return models.MessageWithAttachment{},false, err
+			return models.MessageWithAttachment{}, false, err
 		}
 		setAttachmentThumbnails(&messageAttachments, thumbnails)
 	}
 
 	messageEmbeds, err := CreateCustomEmbeds(ctx, mediaOwner, embeds)
 	if err != nil {
-		return models.MessageWithAttachment{},false, err
+		return models.MessageWithAttachment{}, false, err
 	}
 	if len(messageEmbeds) > 0 {
 		embedIDs := make([]string, 0, len(messageEmbeds))
@@ -381,46 +426,82 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 		}
 		if err := storage.AddMessageEmbeds(ctx, message.ID, embedIDs); err != nil {
 			utils.Errorf("falha ao vincular embeds à mensagem %s: %v", message.ID, err)
-			return models.MessageWithAttachment{},false, err
+			return models.MessageWithAttachment{}, false, err
 		}
 	}
 
-	if webhookID=="" {
-    RecordAudit(ctx, AuditEntry{
-        ActorID:    authorID,
-		Action:     ActionMessageCreate,
-		EntityType: EntityMessage,
-		EntityID:   &message.ID,
-		Metadata:   map[string]any{"channel_id": channelID},
-	})
-	for _, att := range createdAttachments {
+	if webhookID == "" {
 		RecordAudit(ctx, AuditEntry{
 			ActorID:    authorID,
-			Action:     ActionMediaUpload,
-			EntityType: EntityAttachment,
-			EntityID:   &att.ID,
-			Metadata: map[string]any{
-				"filename":  att.OriginalFileName,
-				"mime_type": att.MimeType,
-			},
+			Action:     ActionMessageCreate,
+			EntityType: EntityMessage,
+			EntityID:   &message.ID,
+			Metadata:   map[string]any{"channel_id": channelID},
+		})
+		for _, att := range createdAttachments {
+			RecordAudit(ctx, AuditEntry{
+				ActorID:    authorID,
+				Action:     ActionMediaUpload,
+				EntityType: EntityAttachment,
+				EntityID:   &att.ID,
+				Metadata: map[string]any{
+					"filename":  att.OriginalFileName,
+					"mime_type": att.MimeType,
+				},
+			})
+		}
+	} else {
+		// Ação de máquina, nunca do criador da credencial: actor_id NULL e
+		// metadata vinculam o evento ao webhook autenticado.
+		RecordAudit(ctx, AuditEntry{
+			Action:     ActionMessageCreate,
+			EntityType: EntityMessage,
+			EntityID:   &message.ID,
+			Metadata:   map[string]any{"channel_id": channelID, "webhook_id": webhookID},
 		})
 	}
 
-	    } else {
-        // Webhook calls are machine actions, never actions of the credential's
-        // creator. Audit metadata binds them to the authenticated webhook.
-        RecordAudit(ctx, AuditEntry{
-            Action:ActionMessageCreate,EntityType:EntityMessage,EntityID:&message.ID,
-            Metadata:map[string]any{"channel_id":channelID,"webhook_id":webhookID},
-        })
-    } // Human audit attribution; webhook identity stays in the message row.
-// A mensagem acabou de ser criada: ninguém pode ter reagido a ela ainda.
+	// A mensagem acabou de ser criada: ninguém pode ter reagido a ela ainda.
 	return models.MessageWithAttachment{
 		Message:       message,
 		Attachments:   messageAttachments,
 		Embeds:        messageEmbeds,
 		UserReactions: []models.MessageUserReaction{},
-    },true,nil
+	}, true, nil
+}
+
+// messageWithRelations monta a visão completa de uma mensagem já persistida
+// (attachments com thumbnails e embeds atuais), usada nas respostas de retry
+// idempotente de webhook para ter o mesmo shape da resposta de criação.
+func messageWithRelations(ctx context.Context, message models.Message) (models.MessageWithAttachment, error) {
+	attachments, err := storage.ListAttachmentsByMessage(ctx, message.ID)
+	if err != nil {
+		return models.MessageWithAttachment{}, err
+	}
+	messageAttachments := toMessageAttachments(attachments)
+	if len(messageAttachments) > 0 {
+		ids := make([]string, 0, len(messageAttachments))
+		for _, a := range messageAttachments {
+			ids = append(ids, a.ID)
+		}
+		thumbnails, err := storage.ListThumbnailsByAttachmentIDs(ctx, ids)
+		if err != nil {
+			return models.MessageWithAttachment{}, err
+		}
+		setAttachmentThumbnails(&messageAttachments, thumbnails)
+	}
+
+	embedsByMessage, err := ListMessageEmbeds(ctx, []string{message.ID})
+	if err != nil {
+		return models.MessageWithAttachment{}, err
+	}
+
+	return models.MessageWithAttachment{
+		Message:       message,
+		Attachments:   messageAttachments,
+		Embeds:        embedsByMessage[message.ID],
+		UserReactions: []models.MessageUserReaction{},
+	}, nil
 }
 
 // EmbedUpdate é um link embed refetchado (cache expirado ou URL nova com upsert)
@@ -614,17 +695,27 @@ func ListMessageEmbeds(ctx context.Context, messageIDs []string) (map[string][]m
 // quando content excede 8192 caracteres, ErrInvalidEmbed quando um embed
 // customizado viola os limites de embed e ErrPermissionDenied quando o
 // usuário não é o autor.
+// EditMessage edita uma mensagem humana: o autor deve ser o autor da mensagem.
 func EditMessage(ctx context.Context, messageID, authorID, content string, embeds []EmbedInput) (models.MessageWithAttachment, error) {
-    return editMessageAs(ctx,messageID,authorID,"",content,embeds)
+	return editMessageAs(ctx, messageID, authorID, "", content, embeds)
 }
-func EditWebhookMessage(ctx context.Context,w models.Webhook,messageID,content string,embeds []EmbedInput) (models.MessageWithAttachment,error) {
-    return editMessageAs(ctx,messageID,"",w.ID,content,embeds)
+
+// EditWebhookMessage edita uma mensagem enviada por webhook: somente o mesmo
+// webhook pode editar suas próprias mensagens (ver editMessageAs).
+func EditWebhookMessage(ctx context.Context, w models.Webhook, messageID, content string, embeds []EmbedInput) (models.MessageWithAttachment, error) {
+	return editMessageAs(ctx, messageID, "", w.ID, content, embeds)
 }
-func editMessageAs(ctx context.Context,messageID,authorID,webhookID,content string,embeds []EmbedInput) (models.MessageWithAttachment,error) {
+
+// editMessageAs é a edição comum de mensagens humanas e de webhook. A
+// autorização é por posse: mensagem humana exige authorID igual ao autor;
+// mensagem de webhook exige webhook_id igual ao do webhook que a enviou.
+// Isso também impede um humano de editar mensagem de webhook (AuthorID é NULL)
+// e um webhook de editar mensagem humana.
+func editMessageAs(ctx context.Context, messageID, authorID, webhookID, content string, embeds []EmbedInput) (models.MessageWithAttachment, error) {
 	if messageID == "" {
 		return models.MessageWithAttachment{}, ErrMessageNotFound
 	}
-	if (authorID=="" && webhookID=="") || utf8.RuneCountInString(content) > maxMessageContentLength {
+	if (authorID == "" && webhookID == "") || utf8.RuneCountInString(content) > maxMessageContentLength {
 		return models.MessageWithAttachment{}, ErrInvalidInput
 	}
 	if err := validateCustomEmbeds(embeds); err != nil {
@@ -639,8 +730,8 @@ func editMessageAs(ctx context.Context,messageID,authorID,webhookID,content stri
 		return models.MessageWithAttachment{}, err
 	}
 
-	if (webhookID=="" && (message.AuthorID == nil || *message.AuthorID != authorID)) ||
-       (webhookID!="" && (message.WebhookID==nil || *message.WebhookID!=webhookID)) {
+	if (webhookID == "" && (message.AuthorID == nil || *message.AuthorID != authorID)) ||
+		(webhookID != "" && (message.WebhookID == nil || *message.WebhookID != webhookID)) {
 		return models.MessageWithAttachment{}, ErrPermissionDenied
 	}
 	if channel, err := storage.GetChannelByID(ctx, message.ChannelID); err != nil {
@@ -702,15 +793,22 @@ func editMessageAs(ctx context.Context,messageID,authorID,webhookID,content stri
 			}
 		}
 	} else {
-		mediaOwner:=authorID
-        if webhookID!="" {
-            hook,_,err:=storage.GetActiveWebhookWithHash(ctx,webhookID)
-            if err!=nil {return models.MessageWithAttachment{},ErrPermissionDenied}
-            mediaOwner=hook.CreatedBy
-        }
-        messageEmbeds, err = CreateCustomEmbeds(ctx, mediaOwner, embeds)
-		if err != nil {
-			return models.MessageWithAttachment{}, err
+		if webhookID == "" {
+			mediaOwner := authorID
+			messageEmbeds, err = CreateCustomEmbeds(ctx, mediaOwner, embeds)
+			if err != nil {
+				return models.MessageWithAttachment{}, err
+			}
+		} else {
+			// Embeds customizados de webhook pertencem ao criador da credencial.
+			hook, _, err := storage.GetActiveWebhookWithHash(ctx, webhookID)
+			if err != nil {
+				return models.MessageWithAttachment{}, ErrPermissionDenied
+			}
+			messageEmbeds, err = CreateCustomEmbeds(ctx, hook.CreatedBy, embeds)
+			if err != nil {
+				return models.MessageWithAttachment{}, err
+			}
 		}
 		newCustomIDs := make([]string, 0, len(messageEmbeds))
 		for _, e := range messageEmbeds {
@@ -745,27 +843,36 @@ func editMessageAs(ctx context.Context,messageID,authorID,webhookID,content stri
 	if err != nil {
 		return models.MessageWithAttachment{}, err
 	}
-	userReactions, err := storage.UserReactionsByMessages(ctx, []string{updated.ID}, authorID)
-	if err != nil {
-		return models.MessageWithAttachment{}, err
+	// Reações do "autor" só fazem sentido para mensagem humana: webhook não é
+	// usuário, então a resposta de edição carrega userReactions vazio.
+	userReactions := map[string][]models.MessageUserReaction{}
+	if authorID != "" {
+		userReactions, err = storage.UserReactionsByMessages(ctx, []string{updated.ID}, authorID)
+		if err != nil {
+			return models.MessageWithAttachment{}, err
+		}
 	}
 
-	if webhookID=="" {RecordAudit(ctx, AuditEntry{
-        ActorID: authorID,
-		Action:     ActionMessageEdit,
-		EntityType: EntityMessage,
-		EntityID:   &updated.ID,
-		Metadata:   map[string]any{"channel_id": updated.ChannelID},
-	})
+	if webhookID == "" {
+		RecordAudit(ctx, AuditEntry{
+			ActorID:    authorID,
+			Action:     ActionMessageEdit,
+			EntityType: EntityMessage,
+			EntityID:   &updated.ID,
+			Metadata:   map[string]any{"channel_id": updated.ChannelID},
+		})
+	} else {
+		// Ação de máquina vinculada ao webhook autenticado (actor_id NULL).
+		RecordAudit(ctx, AuditEntry{
+			Action:     ActionMessageEdit,
+			EntityType: EntityMessage,
+			EntityID:   &updated.ID,
+			Metadata:   map[string]any{"channel_id": updated.ChannelID, "webhook_id": webhookID},
+		})
+	}
 
-    } else {
-        RecordAudit(ctx,AuditEntry{
-            Action:ActionMessageEdit,EntityType:EntityMessage,EntityID:&updated.ID,
-            Metadata:map[string]any{"channel_id":updated.ChannelID,"webhook_id":webhookID},
-        })
-    }
-    return models.MessageWithAttachment{
-        Message: updated,
+	return models.MessageWithAttachment{
+		Message:       updated,
 		Attachments:   messageAttachments,
 		Embeds:        messageEmbeds,
 		Reactions:     reactionCounts[updated.ID],
@@ -798,18 +905,35 @@ func toMessageAttachments(attachments []models.Attachments) []models.MessageAtta
 // Retorna o channel_id da mensagem excluída (para o evento WebSocket de
 // exclusão) e ErrMessageNotFound quando a mensagem não existe ou
 // ErrPermissionDenied quando o usuário não pode excluí-la.
-// DeleteWebhookMessage deletes only messages originally sent using this webhook.
-func DeleteWebhookMessage(ctx context.Context,w models.Webhook,messageID string)(string,error) {
-    message,err:=storage.GetMessageByID(ctx,messageID)
-    if errors.Is(err,storage.ErrNotFound){return "",ErrMessageNotFound}
-    if err!=nil{return "",err}
-    if message.WebhookID==nil || *message.WebhookID!=w.ID || message.ChannelID!=w.ChannelID {return "",ErrPermissionDenied}
-    if err:=deleteMessage(ctx,messageID);err!=nil{return "",err}
-    RecordAudit(ctx,AuditEntry{
-        Action:ActionMessageDelete,EntityType:EntityMessage,EntityID:&messageID,
-        Metadata:map[string]any{"channel_id":message.ChannelID,"webhook_id":w.ID},
-    })
-    return message.ChannelID,nil
+// DeleteWebhookMessage exclui somente mensagens enviadas por este webhook:
+// a mensagem deve existir, ter webhook_id igual ao do webhook e estar no
+// canal do webhook. Retorna o channel_id excluído (evento WebSocket) e
+// ErrMessageNotFound quando a mensagem não existe ou ErrPermissionDenied
+// quando pertence a outro remetente/canal.
+func DeleteWebhookMessage(ctx context.Context, w models.Webhook, messageID string) (string, error) {
+	message, err := storage.GetMessageByID(ctx, messageID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return "", ErrMessageNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if message.WebhookID == nil || *message.WebhookID != w.ID || message.ChannelID != w.ChannelID {
+		return "", ErrPermissionDenied
+	}
+
+	if err := deleteMessage(ctx, messageID); err != nil {
+		return "", err
+	}
+
+	// Ação de máquina vinculada ao webhook autenticado (actor_id NULL).
+	RecordAudit(ctx, AuditEntry{
+		Action:     ActionMessageDelete,
+		EntityType: EntityMessage,
+		EntityID:   &messageID,
+		Metadata:   map[string]any{"channel_id": message.ChannelID, "webhook_id": w.ID},
+	})
+	return message.ChannelID, nil
 }
 
 func DeleteMessage(ctx context.Context, messageID, authorID string) (string, error) {

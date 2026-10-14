@@ -9,6 +9,7 @@ CREATE TABLE webhooks (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     revoked_at TIMESTAMPTZ
 );
+
 CREATE INDEX idx_webhooks_channel ON webhooks (channel_id);
 ALTER TABLE messages
     ADD COLUMN webhook_id UUID REFERENCES webhooks(id),

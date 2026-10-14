@@ -116,10 +116,10 @@ func newApp() *echo.Echo {
 	e.Use(echoMiddleware.RequestID())
 	e.Use(echoMiddleware.Recover())
 	e.Use(middleware.AuditContext)
-	// Mesma política de main.go: limite global JSON, /messages com limite de
-	// upload próprio (registrado na rota).
+	// Mesma política de main.go: limite global JSON, /messages e o upload de
+	// webhook com limite de upload próprio (registrado na rota).
 	e.Use(middleware.BodyLimit(middleware.MaxJSONBodySize, func(c echo.Context) bool {
-		return c.Path() == "/messages"
+		return c.Path() == "/messages" || c.Path() == "/webhooks/:webhook_id/messages"
 	}))
 
 	cfg := config.LoadConfig()
@@ -136,6 +136,7 @@ func newApp() *echo.Echo {
 	RegisterRoleRoutes(e, cfg)
 	RegisterSearchRoutes(e, cfg)
 	RegisterWebSocketRoutes(e, cfg)
+	RegisterWebhookRoutes(e, cfg)
 	return e
 }
 
