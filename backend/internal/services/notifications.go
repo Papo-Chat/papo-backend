@@ -343,7 +343,12 @@ func DispatchMessageNotifications(ctx context.Context, requestID string, message
 		}
 	}
 
-	// Filtra os candidatos pelos leitores do canal (mesma regra do
+	// An incoming webhook has no Papo user_id. Push notifications nevertheless
+    // show its supplied display identity rather than a blank sender name.
+    if authorID=="" && message.ExternalAuthor!=nil {
+        authorUsername=message.ExternalAuthor.Name
+    }
+    // Filtra os candidatos pelos leitores do canal (mesma regra do
 	// broadcast): canal aberto permite todos; canal com permissões permite
 	// o dono do servidor e os usuários de roles com ReadChannel.
 	if len(candidates) > 0 {
