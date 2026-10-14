@@ -189,7 +189,7 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 		"c.id, " +
 		"c.name, " +
 		"m.author_id, " +
-		"u.username, " +
+		"COALESCE(u.username, m.external_author->>'name'), " +
 		scoreExpr + " AS score " +
 		"FROM messages m " +
 		"JOIN channels c ON c.id = m.channel_id " +

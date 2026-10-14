@@ -223,6 +223,7 @@ func CreateMessage(ctx context.Context, channelID, authorID, content, replyTo st
 // machinery as human messages. Its authority is the scoped webhook credential.
 func CreateWebhookMessage(ctx context.Context,w models.Webhook,external *models.ExternalAuthor,sourceID,content,replyTo string,attachments []AttachmentInput,embeds []EmbedInput) (models.MessageWithAttachment,bool,error) {
     if err:=validateExternalAuthor(external);err!=nil{return models.MessageWithAttachment{},false,err}
+    if external==nil {external=&models.ExternalAuthor{Source:"webhook",ID:w.ID,Name:w.Name}}
     if sourceID==""||len(sourceID)>200{return models.MessageWithAttachment{},false,ErrInvalidInput}
     return createMessageAs(ctx,w.ChannelID,"",w.ID,external,sourceID,content,replyTo,attachments,embeds)
 }
