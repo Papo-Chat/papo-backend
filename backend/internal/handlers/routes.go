@@ -307,3 +307,37 @@ func RegisterWebSocketRoutes(e *echo.Echo, cfg *config.Config) {
 		return WebSocketHandler(cfg.BaseURL, c)
 	}, middleware.JWTMiddleware)
 }
+
+// RegisterWebhookRoutes registra a gestão (JWT + manage_webhooks) e a execução
+// (Bearer do token escopado do webhook) dos webhooks. A execução não aceita
+// cookie de sessão nem JWT: a única credencial é o token do webhook. O upload
+// usa o mesmo limite de corpo de POST /messages (110MB), dispensando o limite
+// global de JSON (ver o skip em main.go).
+func RegisterWebhookRoutes(e *echo.Echo, cfg *config.Config) {
+	e.POST("/webhooks", func(c echo.Context) error {
+		return CreateWebhookHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware, middleware.RequireManageWebhooks())
+	e.GET("/webhooks", func(c echo.Context) error {
+		return ListWebhooksHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware, middleware.RequireManageWebhooks())
+	e.PATCH("/webhooks/:webhook_id", func(c echo.Context) error {
+		return UpdateWebhookHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware, middleware.RequireManageWebhooks())
+	e.DELETE("/webhooks/:webhook_id", func(c echo.Context) error {
+		return DeleteWebhookHandler(cfg.BaseURL, c)
+	}, middleware.JWTMiddleware, middleware.RequireManageWebhooks())
+	// Avatar público do webhook (mesma regra do avatar de usuário): consumidores
+	// externos buscam a imagem sem cookie de sessão.
+	e.GET("/webhooks/:webhook_id/avatar", func(c echo.Context) error {
+		return GetWebhookAvatarHandler(cfg.BaseURL, c)
+	})
+	e.POST("/webhooks/:webhook_id/messages", func(c echo.Context) error {
+		return ExecuteWebhookHandler(cfg.BaseURL, c)
+	}, middleware.BodyLimit(middleware.MaxUploadBodySize, nil))
+	e.PUT("/webhooks/:webhook_id/messages/:message_id", func(c echo.Context) error {
+		return EditWebhookMessageHandler(cfg.BaseURL, c)
+	})
+	e.DELETE("/webhooks/:webhook_id/messages/:message_id", func(c echo.Context) error {
+		return DeleteWebhookMessageHandler(cfg.BaseURL, c)
+	})
+}

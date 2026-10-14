@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -120,11 +121,14 @@ func UnpinMessage(ctx context.Context, channelID, messageID string) (bool, error
 // ListPinnedMessagesWithAttachmentsByChannel lista as mensagens pinadas de um
 // canal com a informação mínima dos seus attachments, na ordem em que foram
 // fixadas (pinned_at crescente; o desempate por id torna a ordem estável).
-// Mensagens sem attachments aparecem com Attachments vazia.
+// Mensagens sem attachments aparecem com Attachments vazia. Mensagens de
+// webhook carregam a atribuição externa (webhook_id/external_author), como na
+// listagem normal do canal.
 func ListPinnedMessagesWithAttachmentsByChannel(ctx context.Context, channelID string) ([]models.MessageWithAttachment, error) {
-	query := "SELECT p.id, p.channel_id, p.author_id, p.content, p.created_at, p.edited_at, p.reply_to, " +
+	query := "SELECT p.id, p.channel_id, p.author_id, p.content, p.created_at, p.edited_at, p.reply_to, p.webhook_id, p.external_author, p.external_message_id, " +
 		"a.id, m.mime_type, a.original_file_name, m.size_bytes, a.created_at " +
-		"FROM (SELECT msg.id, msg.channel_id, msg.author_id, msg.content, msg.created_at, msg.edited_at, msg.reply_to, pm.pinned_at " +
+		"FROM (SELECT msg.id, msg.channel_id, msg.author_id, msg.content, msg.created_at, msg.edited_at, msg.reply_to, " +
+		"msg.webhook_id, msg.external_author, msg.external_message_id, pm.pinned_at " +
 		"FROM messages msg " +
 		"JOIN pinned_messages pm ON pm.message_id = msg.id AND pm.channel_id = msg.channel_id " +
 		"WHERE msg.channel_id = $1) p " +
@@ -149,6 +153,7 @@ func ListPinnedMessagesWithAttachmentsByChannel(ctx context.Context, channelID s
 			fileName     *string
 			sizeBytes    *int64
 			attachmentAt *time.Time
+			extJSON      []byte
 		)
 		err := rows.Scan(
 			&message.ID,
@@ -158,6 +163,9 @@ func ListPinnedMessagesWithAttachmentsByChannel(ctx context.Context, channelID s
 			&message.CreatedAt,
 			&message.EditedAt,
 			&message.ReplyTo,
+			&message.WebhookID,
+			&extJSON,
+			&message.ExternalMessageID,
 			&attachmentID,
 			&mimeType,
 			&fileName,
@@ -166,6 +174,14 @@ func ListPinnedMessagesWithAttachmentsByChannel(ctx context.Context, channelID s
 		)
 		if err != nil {
 			return nil, fmt.Errorf("falha ao ler mensagem pinada: %w", err)
+		}
+
+		if len(extJSON) > 0 {
+			var author models.ExternalAuthor
+			if err := json.Unmarshal(extJSON, &author); err != nil {
+				return nil, err
+			}
+			message.ExternalAuthor = &author
 		}
 
 		if !hasCurrent || current.Message.ID != message.ID {

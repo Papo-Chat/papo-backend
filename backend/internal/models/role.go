@@ -7,6 +7,7 @@ type RolePermissions struct {
 	ManageServer    bool `json:"manage_server"`
 	ManageChannels  bool `json:"manage_channels"`
 	ManageRoles     bool `json:"manage_roles"`
+	ManageWebhooks  bool `json:"manage_webhooks"`
 	BanMembers      bool `json:"ban_members"`
 	PinMessage      bool `json:"pin_message"`
 	EveryoneMessage bool `json:"everyone_message"`

@@ -31,6 +31,7 @@ tags:
   - name: Admin
   - name: Voice
   - name: WebSocket
+  - name: Webhooks
 
 security:
   - cookieAuth: []
@@ -2442,6 +2443,279 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /webhooks:
+    post:
+      tags: [Webhooks]
+      summary: Cria webhook
+      description: "Permission Check: `manage_webhooks`"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhookRequest'
+      responses:
+        '201':
+          description: >
+            Webhook criado. O campo `token` é retornado somente aqui (única vez
+            em que existe em texto puro; a tabela guarda apenas o hash).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Webhook'
+                  - type: object
+                    properties:
+                      token:
+                        type: string
+        '400':
+          description: Nome ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      tags: [Webhooks]
+      summary: Lista webhooks ativos
+      description: "Permission Check: `manage_webhooks`"
+      responses:
+        '200':
+          description: Webhooks não revogados de todos os canais
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhooks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Webhook'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /webhooks/{webhook_id}:
+    patch:
+      tags: [Webhooks]
+      summary: Atualiza identidade persistente do webhook (nickname/avatar)
+      description: "Permission Check: `manage_webhooks`. Campos ausentes preservam o valor atual; `avatar` vazio remove o avatar; `display_name` vazio remove o nickname (volta a usar o name)."
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWebhookIdentityRequest'
+      responses:
+        '200':
+          description: Webhook atualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Webhook'
+        '400':
+          description: Nickname ou avatar inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Webhooks]
+      summary: Revoga webhook (soft delete)
+      description: "Permission Check: `manage_webhooks`. O token deixa de autenticar; mensagens já enviadas mantêm a atribuição."
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+      responses:
+        '204':
+          description: Webhook revogado
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /webhooks/{webhook_id}/avatar:
+    get:
+      tags: [Webhooks]
+      summary: Avatar persistente do webhook
+      security: []
+      description: >
+        Público (sem cookie): serve a imagem do avatar do webhook, como
+        GET /users/{user_id}/avatar. 404 quando o webhook não tem avatar.
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+      responses:
+        '200':
+          description: Imagem do avatar
+          content:
+            image/png: {}
+            image/jpeg: {}
+            image/gif: {}
+            image/webp: {}
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /webhooks/{webhook_id}/messages:
+    post:
+      tags: [Webhooks]
+      summary: Envia mensagem via webhook
+      security: []
+      description: |
+        Autenticação: header `Authorization: Bearer <token>` do webhook (nunca
+        cookie de sessão). Mesma validação/attachments/embeds de POST /messages.
+        `external_message_id` é a chave de idempotência opcional: retry com a
+        mesma chave devolve 200 com a mensagem existente (sem duplicar).
+        `external_author` (JSON) sobrescreve a identidade persistente do
+        webhook somente nesta mensagem.
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                external_message_id:
+                  type: string
+                  maxLength: 200
+                external_author:
+                  type: string
+                  description: JSON de ExternalAuthor (autoria temporária)
+                reply_to:
+                  type: string
+                  format: uuid
+                embeds:
+                  type: string
+                  description: JSON array de embeds customizados
+                attachments:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '201':
+          description: Mensagem criada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '200':
+          description: Retry idempotente (mensagem existente, mesmo shape da criação)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '400':
+          description: Corpo não-multipart, external_author/embeds inválidos ou limite excedido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Token de webhook ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /webhooks/{webhook_id}/messages/{message_id}:
+    put:
+      tags: [Webhooks]
+      summary: Edita mensagem enviada pelo webhook
+      security: []
+      description: "Autenticação: `Authorization: Bearer <token>`. Somente o webhook autor da mensagem pode editá-la."
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMessageRequest'
+      responses:
+        '200':
+          description: Mensagem editada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '400':
+          description: Corpo inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Token de webhook ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Webhooks]
+      summary: Remove mensagem enviada pelo webhook
+      security: []
+      description: "Autenticação: `Authorization: Bearer <token>`. Somente o webhook autor da mensagem pode excluí-la."
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '204':
+          description: Mensagem removida
+        '401':
+          description: Token de webhook ausente ou inválido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /ws:
     get:
       tags: [WebSocket]
@@ -2459,7 +2733,7 @@ paths:
 
         | Event            | Direction | Payload                                                                           |
         | ---------        | --------- | ---------------------------------------------------------------------             |
-        | `message`        | outbound  | `{ type: "message", id, channel_id, author_id, content, reply_to?, attachments?, created_at }` (reply_to: null quando não é resposta; sem reactions/embeds/user_reactions) |
+        | `message`        | outbound  | `{ type: "message", id, channel_id, author_id, webhook_id?, external_author?, content, reply_to?, attachments?, created_at }` (reply_to: null quando não é resposta; sem reactions/embeds/user_reactions; webhook_id/external_author presentes somente em mensagens de webhook) |
         | `message_edit`   | outbound  | `{ type: "message_edit", id, channel_id, content, edited_at }`                          |
         | `message_delete` | outbound  | `{ type: "message_delete", id, channel_id }`                                            |
         | `attachment_moderation_update` | outbound  | `{ type: "attachment_moderation_update", channel_id, message_id, attachment_id, status }` (status: sensitive; o blocked exclui a mensagem e chega como `message_delete`) |
@@ -2540,6 +2814,13 @@ components:
         format: uuid
     MessageId:
       name: message_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    WebhookId:
+      name: webhook_id
       in: path
       required: true
       schema:
@@ -3489,6 +3770,21 @@ components:
             Id da mensagem respondida (sempre do mesmo canal). Null quando a
             mensagem não é uma resposta. Sem FK: pode apontar para uma mensagem
             já excluída (o cliente exibe "mensagem não disponível").
+        webhook_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Presente somente em mensagens enviadas por webhook (POST
+            /webhooks/{webhook_id}/messages). Null em mensagens humanas.
+        external_author:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ExternalAuthor'
+          description: >
+            Identidade de exibição da mensagem de webhook (nunca um usuário do
+            Papo): nickname/avatar do webhook ou autoria temporária informada
+            no envio. Null em mensagens humanas.
         attachments:
           type: array
           items:
@@ -3520,6 +3816,91 @@ components:
           description: >
             Reações do usuário autenticado à mensagem (indica com quais emojis
             ele já reagiu). Vazio quando o usuário não reagiu.
+
+    Webhook:
+      type: object
+      description: >
+        Webhook de canal (tabela webhooks). O secret_hash jamais é exposto;
+        o token em texto puro aparece somente na resposta de criação.
+        `display_name` é o nickname persistente de exibição (null = usa o
+        name); o avatar persistente é servido por GET /webhooks/{webhook_id}/avatar.
+      properties:
+        id:
+          type: string
+          format: uuid
+        channel_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        display_name:
+          type: string
+          nullable: true
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreateWebhookRequest:
+      type: object
+      required: [channel_id, name]
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 80
+
+    UpdateWebhookIdentityRequest:
+      type: object
+      description: >
+        Identidade persistente do webhook. Campos ausentes preservam o valor
+        atual; display_name "" remove o nickname; avatar "" remove o avatar.
+        Avatar: base64 de GIF, JPEG/JPG, PNG ou WEBP de até 2MB (mesmas regras
+        do avatar de usuário), com avatar_format correspondente.
+      properties:
+        display_name:
+          type: string
+          nullable: true
+          maxLength: 100
+        avatar:
+          type: string
+          nullable: true
+        avatar_format:
+          type: string
+          enum: [gif, jpg, jpeg, png, webp]
+
+    ExternalAuthor:
+      type: object
+      description: >
+        Identidade de exibição de mensagem de webhook. Não é um usuário do
+        Papo e nunca determina autorização. avatar_url pode ser URL absoluta
+        externa ou caminho do backend (avatar persistente do webhook).
+      properties:
+        source:
+          type: string
+          maxLength: 40
+          description: Identificador da máquina de origem (minúsculas, dígitos, _ e -)
+        id:
+          type: string
+          maxLength: 200
+          description: Id do remetente na origem
+        name:
+          type: string
+          maxLength: 100
+        avatar_url:
+          type: string
+          nullable: true
+        profile_url:
+          type: string
+          nullable: true
 
     ChannelLastMessage:
       type: object
@@ -4151,6 +4532,8 @@ components:
         manage_channels:
           type: boolean
         manage_roles:
+          type: boolean
+        manage_webhooks:
           type: boolean
         ban_members:
           type: boolean

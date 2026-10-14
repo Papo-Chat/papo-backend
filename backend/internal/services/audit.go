@@ -47,6 +47,9 @@ const (
 	ActionUserRoleRemove           = "user_role.remove"
 	ActionEmojiCreate              = "emoji.create"
 	ActionEmojiDelete              = "emoji.delete"
+	ActionWebhookCreate            = "webhook.create"
+	ActionWebhookUpdate            = "webhook.update"
+	ActionWebhookRevoke            = "webhook.revoke"
 )
 
 // Tipos de entidade auditáveis (valor da coluna entity_type).
@@ -59,6 +62,7 @@ const (
 	EntityRole       = "role"
 	EntityUserRole   = "user_role"
 	EntityEmoji      = "emoji"
+	EntityWebhook    = "webhook"
 )
 
 // AuditEntry descreve um evento de auditoria a registrar.

@@ -315,13 +315,13 @@ func DeleteChannel(ctx context.Context, id string) error {
 // do canal, última mensagem (LATERAL, pode ser NULL) e o username do autor da
 // última mensagem (LEFT JOIN, pode ser NULL).
 const channelSummaryBaseColumns = `c.id, c.name, c.permissions, c.type, c.position, c.created_at, c.topic,
-	lm.id, lm.content, lm.author_id, u.username, lm.created_at`
+	lm.id, lm.content, lm.author_id, COALESCE(u.username, lm.external_author->>'name'), lm.created_at`
 
 // channelSummaryBaseJoins traz a última mensagem de cada canal (mesma ordem
 // de ListMessagesByChannel) e o username do autor.
 const channelSummaryBaseJoins = `FROM channels c
 	LEFT JOIN LATERAL (
-		SELECT m.id, m.content, m.author_id, m.created_at
+		SELECT m.id, m.content, m.author_id, m.external_author, m.created_at
 		FROM messages m
 		WHERE m.channel_id = c.id
 		ORDER BY m.created_at DESC, m.id DESC
