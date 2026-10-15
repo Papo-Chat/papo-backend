@@ -56,3 +56,10 @@ Validar a soma total antes de gravar; não basta validar campo a campo. Contar c
 ## 6. Testes e conclusão
 
 Adicionar testes de cache por URL, autorização de `GET /embeds/:id`, limites de campos e total, edição/substituição de embeds, eventos WebSocket, parsing de OpenGraph e `og:video` (URL segura, MIME inválido, redirect inseguro e `Range`). Atualizar testes de API, store e renderização para `embeds` e executar a suíte Go e os testes frontend antes de remover os nomes antigos.
+
+
+## 7. Links de GIFs KLIPY
+
+Links de páginas `klipy.com/gifs/{slug}` podem ser resolvidos pela API oficial de itens de GIFs. O embed registra o título, provedor, dimensões e URL de mídia retornada; o GIF é carregado diretamente pelo cliente, com todos os parâmetros da URL preservados. O backend não baixa, transforma, re-hospeda nem mantém cópia dos bytes do GIF.
+
+A integração fica desativada por padrão. Configurar `KLIPY_API_KEY` não basta: chamadas à API a partir do backend só podem ser ativadas depois de obter aprovação prévia por escrito da KLIPY, definindo também `KLIPY_SERVER_SIDE_APPROVED=true`. Sem aprovação, manter essa flag como `false`. Criar uma chave no Partner Panel e solicitar orientação em developers@klipy.com; passar para produção também requer o acesso de produção concedido pela KLIPY.
