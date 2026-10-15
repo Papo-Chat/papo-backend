@@ -61,6 +61,7 @@ const (
 	embedFetchOpenGraph = "opengraph"
 	embedFetchOEmbed    = "oembed"
 	embedFetchManual    = "manual"
+	embedFetchGIF       = "gif"
 )
 
 // maxEmbedHTMLBytes é o teto do corpo HTML (pós-descompressão) do fetch de
@@ -615,19 +616,29 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 		return embed, err == nil, err
 	}
 
-	// 5. oEmbed first (host allowlistado) — falha → fallback para OpenGraph.
+	// 5. GIF providers (tenor/giphy/klipy): resolvedor dedicado
+	// (embeds_gif.go). A deduplicação por URL é a mesma dos link embeds: o
+	// cache do passo 2 (cache_key = URL normalizada) já devolve o embed
+	// gravado por um scrape anterior sem tocar na rede; aqui só entra quem
+	// ainda não tem embed para esta URL exata.
+	if provider := gifProviderHost(u.Hostname()); provider != "" {
+		embed, err := fetchGIFEmbed(ctx, cfg, u, provider)
+		return embed, err == nil, err
+	}
+
+	// 6. oEmbed first (host allowlistado) — falha → fallback para OpenGraph.
 	if oembedProviderHost(u.Hostname()) != "" {
 		if embed, err := fetchOEmbedLinkEmbed(ctx, cfg, u); err == nil {
 			return embed, true, nil
 		}
 	}
 
-	// 6. robots.txt da origem.
+	// 7. robots.txt da origem.
 	if !embedRobotsAllowed(ctx, u) {
 		return models.Embed{}, false, errors.New("origem não permitida pelo robots.txt")
 	}
 
-	// 7. Fetch HTML (teto 5MB pós-descompressão).
+	// 8. Fetch HTML (teto 5MB pós-descompressão).
 	if !acquireOutboundSlot() {
 		return models.Embed{}, false, errors.New("semáforo outbound cheio")
 	}
@@ -637,7 +648,7 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 		return models.Embed{}, false, err
 	}
 
-	// 7. Parse OpenGraph (og > twitter > fallbacks). URL relativa é resolvida
+	// 8. Parse OpenGraph (og > twitter > fallbacks). URL relativa é resolvida
 	// contra a URL final pós-redirects.
 	metadata := parseOpenGraph(body, finalURL)
 
@@ -662,7 +673,7 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 		embed.URL = &normalizedCopy
 	}
 
-	// 8. Imagem (og:image): robots na origem da imagem + thumbnail na media.
+	// 9. Imagem (og:image): robots na origem da imagem + thumbnail na media.
 	if metadata.imageURL != "" {
 		if media, err := downloadEmbedImage(ctx, cfg, metadata.imageURL); err == nil {
 			if metadata.imageWidth > 0 {
@@ -676,7 +687,7 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 		// sem imagem → embed só com title/description (aceitável, §6.2 passo 9)
 	}
 
-	// 9. Vídeo direto (og:video): HTTPS + MIME type de vídeo permitido. O relay
+	// 10. Vídeo direto (og:video): HTTPS + MIME type de vídeo permitido. O relay
 	// autenticado (GET /embeds/:embed_id/video) é o único caminho de playback.
 	if metadata.videoURL != "" && allowedVideoMIMEs[metadata.videoType] {
 		if validated, err := normalizeEmbedVideoURL(metadata.videoURL); err == nil {

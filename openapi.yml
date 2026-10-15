@@ -4196,7 +4196,9 @@ components:
         obtido por fetch e reutilizado pelo cache por URL normalizada) ou
         'custom' (embed enviado pela mensagem, dono do próprio registro).
         fetch_method: 'opengraph' (parser OpenGraph), 'oembed' (provedor
-        allowlistado) ou 'manual' (embed customizado).
+        allowlistado), 'gif' (resolvedor tenor/giphy/klipy: título + thumbnail
+        GIF animada linkando ao page URL original) ou 'manual' (embed
+        customizado).
 
         A mídia é referenciada internamente: a imagem da thumbnail é servida
         por GET /embeds/{embed_id} (image_data) e o vídeo por
@@ -4218,7 +4220,7 @@ components:
           enum: [link, custom]
         fetch_method:
           type: string
-          enum: [opengraph, oembed, manual]
+          enum: [opengraph, oembed, manual, gif]
         provider:
           type: string
           nullable: true
