@@ -33,4 +33,11 @@ func TestEmbedFromRowPreservesDirectKlipyThumbnailURL(t *testing.T) {
 	if got := args[len(args)-1]; got != &raw {
 		t.Fatalf("last INSERT arg = %v, want pointer to direct thumbnail URL", got)
 	}
+	ordinaryArgs := embedInsertArgs(models.Embed{
+		FetchMethod: "manual",
+		Thumbnail: &models.EmbedMedia{URL: &raw},
+	})
+	if got := ordinaryArgs[len(ordinaryArgs)-1]; got != nil {
+		t.Fatalf("non-Klipy INSERT must not persist a direct URL, got %v", got)
+	}
 }
