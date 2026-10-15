@@ -50,6 +50,9 @@ type Config struct {
 	PreviewFetchRateGlob int
 	PreviewFetchRateUser int
 
+	// Klipy app key for resolving shared GIF links. Empty disables the API integration.
+	KlipyAPIKey string
+
 	// Retenção dos logs de auditoria (dias). A exclusão por retenção é feita
 	// pela rotina de manutenção (services.RunMaintenance), que roda no boot e
 	// a cada 12h.
@@ -169,6 +172,7 @@ func LoadConfig() *Config {
 		RobotsCacheTTL:       time.Duration(getEnvInt("ROBOTS_CACHE_TTL", 3600)) * time.Second,
 		PreviewFetchRateGlob: getEnvInt("PREVIEW_FETCH_RATE_GLOBAL", 30),
 		PreviewFetchRateUser: getEnvInt("PREVIEW_FETCH_RATE_PER_USER", 10),
+		KlipyAPIKey:          strings.TrimSpace(getEnv("KLIPY_API_KEY", "")),
 
 		LogDuration: time.Duration(getEnvInt("LOG_DURATION", 90)) * 24 * time.Hour,
 
