@@ -52,6 +52,8 @@ type Config struct {
 
 	// Klipy app key for resolving shared GIF links. Empty disables the API integration.
 	KlipyAPIKey string
+	// Server-side Klipy API calls require explicit approval from Klipy.
+	KlipyServerSideApproved bool
 
 	// Retenção dos logs de auditoria (dias). A exclusão por retenção é feita
 	// pela rotina de manutenção (services.RunMaintenance), que roda no boot e
@@ -173,6 +175,7 @@ func LoadConfig() *Config {
 		PreviewFetchRateGlob: getEnvInt("PREVIEW_FETCH_RATE_GLOBAL", 30),
 		PreviewFetchRateUser: getEnvInt("PREVIEW_FETCH_RATE_PER_USER", 10),
 		KlipyAPIKey:          strings.TrimSpace(getEnv("KLIPY_API_KEY", "")),
+		KlipyServerSideApproved: getEnvBool("KLIPY_SERVER_SIDE_APPROVED", false),
 
 		LogDuration: time.Duration(getEnvInt("LOG_DURATION", 90)) * 24 * time.Hour,
 
