@@ -27,7 +27,7 @@ func embedColumns(alias string) string {
 		alias + ".author_media, am.mime_type, am.size_bytes, " +
 		alias + ".thumbnail_media, " +
 		alias + ".thumbnail_url, " +
-		alias + ".thumbnail_width, "
+		alias + ".thumbnail_width, " +
 		alias + ".thumbnail_height, tm.mime_type, tm.size_bytes, " +
 		alias + ".image_media, " +
 		alias + ".image_width, " +
