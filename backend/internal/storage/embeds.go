@@ -294,13 +294,18 @@ func embedInsertArgs(e models.Embed) []any {
 		videoURL, videoType, videoWidth, videoHeight = e.Video.URL, e.Video.MimeType, e.Video.Width, e.Video.Height
 	}
 
+	var thumbnailURL any
+	if e.FetchMethod == "klipy" {
+		thumbnailURL = mediaURLArg(e.Thumbnail)
+	}
+
 	return []any{
 		e.SourceType, e.FetchMethod, e.CacheKey, e.URL, e.Provider, e.SiteName,
 		e.Title, e.Description, e.Color, authorName, authorURL, authorHash,
 		mediaHashArg(e.Thumbnail), mediaWidthArg(e.Thumbnail), mediaHeightArg(e.Thumbnail),
 		mediaHashArg(e.Image), mediaWidthArg(e.Image), mediaHeightArg(e.Image),
 		videoURL, videoType, videoWidth, videoHeight,
-		e.EmbedURL, footerText, footerIcon, fetchedAt, mediaURLArg(e.Thumbnail),
+		e.EmbedURL, footerText, footerIcon, fetchedAt, thumbnailURL,
 	}
 }
 
