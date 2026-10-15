@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"net/url"
 	"testing"
 )
@@ -50,5 +51,20 @@ func TestIsKlipyGIFAssetURL(t *testing.T) {
 		if got := isKlipyGIFAssetURL(tc.raw); got != tc.want {
 			t.Errorf("isKlipyGIFAssetURL(%q) = %v, want %v", tc.raw, got, tc.want)
 		}
+	}
+}
+
+func TestKlipyGIFResponseShape(t *testing.T) {
+	body := []byte(`{"result":true,"data":{"data":[{"slug":"cute-cat","title":"Cute cat","file":{"hd":{"gif":{"url":"https://static.klipy.com/ii/x.gif","width":120,"height":80,"size":3456}}}}]}}`)
+	var payload klipyGIFResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if !payload.Result || len(payload.Data.Data) != 1 {
+		t.Fatalf("unexpected response envelope: %+v", payload)
+	}
+	item := payload.Data.Data[0]
+	if item.Slug != "cute-cat" || item.File.HD.GIF.URL != "https://static.klipy.com/ii/x.gif" {
+		t.Fatalf("unexpected GIF item: %+v", item)
 	}
 }
