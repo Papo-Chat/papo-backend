@@ -61,6 +61,7 @@ const (
 	embedFetchOpenGraph = "opengraph"
 	embedFetchOEmbed    = "oembed"
 	embedFetchManual    = "manual"
+	embedFetchKlipy     = "klipy"
 )
 
 // maxEmbedHTMLBytes é o teto do corpo HTML (pós-descompressão) do fetch de
@@ -545,6 +546,711 @@ func fetchFxTwitterEmbed(ctx context.Context, cfg *config.Config, original *url.
 	return storage.UpsertLinkEmbed(ctx, embed)
 }
 
+
+var klipySlugPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,199}package services
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"papo/internal/config"
+	"papo/internal/models"
+	"papo/internal/storage"
+	"papo/internal/utils"
+
+	"golang.org/x/net/html"
+)
+
+// ErrEmbedNotFound indica que o embed não existe, não tem a mídia pedida ou não
+// está vinculado a mensagem acessível (o endpoint responde 404 nos três casos —
+// não vazar a existência do embed).
+var ErrEmbedNotFound = errors.New("embed não encontrado")
+
+// Limites de embed (IMPLEMENTACAO_EMBEDS.md §5). Aplicados aos embeds
+// customizados na validação e aos metadados externos antes de persistir.
+//
+// Contagem de caracteres: runes (pontos de código Unicode). É a mesma contagem
+// usada pelo frontend ([...str].length em TypeScript), que mantém os limites
+// consistentes entre Go e TypeScript.
+const (
+	maxEmbedsPerMessage = 10
+
+	embedTitleMax       = 256
+	embedDescriptionMax = 4192
+	embedFieldsMax      = 25
+	embedFieldNameMax   = 256
+	embedFieldValueMax  = 1024
+	embedAuthorNameMax  = 256
+	embedFooterTextMax  = 2048
+	embedTotalTextMax   = 6000
+	embedURLMax         = 2048
+
+	// site_name e provider não têm limite próprio na tabela de limites; usam o
+	// mesmo teto do nome do autor para não deixar texto externo sem teto.
+	embedSiteNameMax = embedAuthorNameMax
+	embedProviderMax = embedAuthorNameMax
+)
+
+// Valores de source_type e fetch_method da tabela embeds.
+const (
+	embedSourceLink   = "link"
+	embedSourceCustom = "custom"
+
+	embedFetchOpenGraph = "opengraph"
+	embedFetchOEmbed    = "oembed"
+	embedFetchManual    = "manual"
+	embedFetchKlipy     = "klipy"
+)
+
+// maxEmbedHTMLBytes é o teto do corpo HTML (pós-descompressão) do fetch de
+// embed (§6.2 passo 6).
+const maxEmbedHTMLBytes = 5 << 20
+
+// maxEmbedImageBytes é o teto do download da imagem do embed (§6.2 passo 8).
+const maxEmbedImageBytes = 5 << 20
+
+// allowedVideoMIMEs é o allowlist de MIME type de vídeo direto (og:video e
+// vídeo de embed customizado). Formato de página (text/html,
+// application/x-shockwave-flash) não é vídeo: iframe só é renderizado para
+// provedor allowlistado (embed_url derivado por padrão hardcoded).
+var allowedVideoMIMEs = map[string]bool{
+	"video/mp4":  true,
+	"video/webm": true,
+	"video/ogg":  true,
+}
+
+// Client SSRF-safe e semáforo de concorrência outbound (HTML, imagem, oEmbed e
+// robots.txt contam no mesmo teto, §6.4).
+var (
+	outboundClientOnce sync.Once
+	outboundClient     *http.Client
+	outboundSem        chan struct{}
+
+	embedVideoClientOnce sync.Once
+	embedVideoClient     *http.Client
+	embedVideoSem        chan struct{}
+)
+
+func initOutbound() {
+	outboundClientOnce.Do(func() {
+		cfg := config.LoadConfig()
+		timeout := cfg.LinkPreviewTimeout
+		if timeout <= 0 {
+			timeout = 8 * time.Second
+		}
+		outboundClient = utils.SafeHTTPClient(utils.SafeClientOpts{Timeout: timeout})
+
+		cap := cfg.OutboundMaxConc
+		if cap <= 0 {
+			cap = 4
+		}
+		outboundSem = make(chan struct{}, cap)
+	})
+}
+
+func outboundHTTPClient() *http.Client {
+	initOutbound()
+	return outboundClient
+}
+
+func acquireOutboundSlot() bool {
+	initOutbound()
+	select {
+	case outboundSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func releaseOutboundSlot() {
+	<-outboundSem
+}
+
+func initEmbedVideoProxy() {
+	embedVideoClientOnce.Do(func() {
+		cfg := config.LoadConfig()
+		// Vídeo é servido por Range e pode ficar aberto por mais tempo que o
+		// fetch curto de metadata/thumbnail.
+		embedVideoClient = utils.SafeHTTPClient(utils.SafeClientOpts{Timeout: 5 * time.Minute})
+		cap := cfg.OutboundMaxConc
+		if cap <= 0 {
+			cap = 4
+		}
+		embedVideoSem = make(chan struct{}, cap)
+	})
+}
+
+func acquireEmbedVideoSlot() bool {
+	initEmbedVideoProxy()
+	select {
+	case embedVideoSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func releaseEmbedVideoSlot() {
+	<-embedVideoSem
+}
+
+// tokenBucket é um bucket de tokens com refill contínuo (rate por minuto).
+type tokenBucket struct {
+	mu     sync.Mutex
+	tokens float64
+	max    float64
+	last   time.Time
+}
+
+func newTokenBucket(perMinute int) *tokenBucket {
+	if perMinute <= 0 {
+		perMinute = 1
+	}
+	return &tokenBucket{tokens: float64(perMinute), max: float64(perMinute), last: time.Now()}
+}
+
+// take consome 1 token se disponível.
+func (b *tokenBucket) take() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	b.tokens = math.Min(b.max, b.tokens+b.max*now.Sub(b.last).Seconds()/60)
+	b.last = now
+	if b.tokens >= 1 {
+		b.tokens--
+		return true
+	}
+	return false
+}
+
+var (
+	embedRateOnce   sync.Once
+	embedRateGlobal *tokenBucket
+	embedRateUsers  sync.Map // userID → *tokenBucket
+)
+
+// embedRateUserTTL é o tempo máximo que um bucket por usuário fica no mapa sem
+// uso: os obsoletos são removidos pela rotina de manutenção (sem isso o
+// embedRateUsers cresce sem limite — 1 entrada por usuário que enviou link ou
+// mídia de embed). O TTL é bem maior que o tempo de refill completo (~6min a
+// 10/min), então remover um bucket não altera a taxa de um usuário ativo.
+// (var: os testes usam um TTL curto.)
+var embedRateUserTTL = time.Hour
+
+// stale indica se o bucket está sem uso há mais que ttl (o último uso é a
+// referência do refill).
+func (b *tokenBucket) stale(ttl time.Duration) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return time.Since(b.last) > ttl
+}
+
+// cleanupStaleEmbedRateBuckets remove dos buckets de rate limit de embed os que
+// estão sem uso há mais que embedRateUserTTL (chamado pela rotina de
+// manutenção). CompareAndDelete evita remover um bucket recém-recriado para o
+// mesmo usuário. Retorna a quantidade removida.
+func cleanupStaleEmbedRateBuckets() int {
+	removed := 0
+	embedRateUsers.Range(func(key, value any) bool {
+		bucket := value.(*tokenBucket)
+		if bucket.stale(embedRateUserTTL) && embedRateUsers.CompareAndDelete(key, bucket) {
+			removed++
+		}
+		return true
+	})
+	return removed
+}
+
+// embedRateAllow consome token do bucket global (PREVIEW_FETCH_RATE_GLOBAL,
+// 30/min) E do bucket por usuário (PREVIEW_FETCH_RATE_PER_USER, 10/min).
+// Estourou algum → false (pular o fetch, best-effort). Fecha o cache-busting
+// por URLs únicas (§6.2 passo 3) e limita também o download de mídia de embed
+// customizado (mesmo vetor de abuso: URL outbound informada pelo cliente).
+func embedRateAllow(userID string) bool {
+	cfg := config.LoadConfig()
+	embedRateOnce.Do(func() {
+		embedRateGlobal = newTokenBucket(cfg.PreviewFetchRateGlob)
+	})
+	if !embedRateGlobal.take() {
+		return false
+	}
+
+	var userBucket *tokenBucket
+	if v, ok := embedRateUsers.Load(userID); ok {
+		userBucket = v.(*tokenBucket)
+	} else {
+		userBucket = newTokenBucket(cfg.PreviewFetchRateUser)
+		actual, _ := embedRateUsers.LoadOrStore(userID, userBucket)
+		userBucket = actual.(*tokenBucket)
+	}
+	return userBucket.take()
+}
+
+var (
+	embedURLRe      = regexp.MustCompile(`(?:https?://|www\.)\S+`)
+	trailingPunctRe = regexp.MustCompile(`[.,;!?]+$`)
+)
+
+// extractEmbedURLs extrai até max URLs do content (regex conservadora
+// https?://\S+), removendo pontuação de cauda e parênteses desbalanceados.
+// Duplicatas (mesma string) são ignoradas; as primeiras prevalecem (§6.1).
+func extractEmbedURLs(content string, max int) []string {
+	if max <= 0 {
+		max = 2
+	}
+	seen := make(map[string]struct{}, max)
+	urls := make([]string, 0, max)
+	for _, match := range embedURLRe.FindAllString(content, -1) {
+		cleaned := stripTrailingPunctuation(match)
+		if cleaned == "" {
+			continue
+		}
+		// URL sem scheme (www.) → assume https (nunca http).
+		if !strings.HasPrefix(cleaned, "http://") && !strings.HasPrefix(cleaned, "https://") {
+			cleaned = "https://" + cleaned
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		urls = append(urls, cleaned)
+		if len(urls) == max {
+			break
+		}
+	}
+	return urls
+}
+
+// stripTrailingPunctuation remove pontuação de cauda (.,;:!?) e parênteses
+// fechados desbalanceados (ex.: "https://x.com/a(b)." → "https://x.com/a(b)").
+func stripTrailingPunctuation(s string) string {
+	for {
+		if trimmed := trailingPunctRe.ReplaceAllString(s, ""); trimmed != s {
+			s = trimmed
+			continue
+		}
+		if strings.HasSuffix(s, ")") && strings.Count(s, ")") > strings.Count(s, "(") {
+			s = s[:len(s)-1]
+			continue
+		}
+		return s
+	}
+}
+
+// twitterStatusID identifica a URL de status do X/Twitter (host allowlistado +
+// segmento /status/<id> numérico).
+func twitterStatusID(u *url.URL) (string, bool) {
+	switch strings.ToLower(u.Hostname()) {
+	case "twitter.com", "www.twitter.com", "mobile.twitter.com",
+		"x.com", "www.x.com",
+		"fxtwitter.com", "www.fxtwitter.com",
+		"fixupx.com", "www.fixupx.com",
+		"vxtwitter.com", "www.vxtwitter.com",
+		"fixvx.com", "www.fixvx.com", "girlcockx.com",
+		"www.girlcockx.com":
+	default:
+		return "", false
+	}
+
+	parts := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if !strings.EqualFold(parts[i], "status") {
+			continue
+		}
+		id, err := url.PathUnescape(parts[i+1])
+		if err != nil || id == "" {
+			return "", false
+		}
+		for _, r := range id {
+			if r < '0' || r > '9' {
+				return "", false
+			}
+		}
+		return id, true
+	}
+	return "", false
+}
+
+type fxTwitterStatusResponse struct {
+	Code   int              `json:"code"`
+	Status *fxTwitterStatus `json:"status"`
+}
+
+type fxTwitterStatus struct {
+	Text   string         `json:"text"`
+	Author fxTwitterUser  `json:"author"`
+	Media  fxTwitterMedia `json:"media"`
+	Card   *fxTwitterCard `json:"card"`
+	// Quote é o tweet citado em um quote tweet ("retweet com comentário").
+	// Quando o tweet principal não tem mídia, a mídia vem do citado
+	// (profundidade 1; o FxEmbed já desdobra retweet nativo no próprio status).
+	Quote *fxTwitterStatus `json:"quote"`
+}
+
+type fxTwitterUser struct {
+	Name       string `json:"name"`
+	ScreenName string `json:"screen_name"`
+}
+
+type fxTwitterMedia struct {
+	Photos   []fxTwitterPhoto `json:"photos"`
+	Videos   []fxTwitterVideo `json:"videos"`
+	External *struct {
+		ThumbnailURL string `json:"thumbnail_url"`
+	} `json:"external"`
+}
+
+type fxTwitterPhoto struct {
+	URL string `json:"url"`
+}
+
+type fxTwitterVideo struct {
+	URL          string `json:"url"`
+	ThumbnailURL string `json:"thumbnail_url"`
+}
+
+type fxTwitterCard struct {
+	Image *struct {
+		URL string `json:"url"`
+	} `json:"image"`
+}
+
+// normalizeTwitterVideoURL restringe o vídeo do X ao CDN oficial (hotlink
+// direto a video.twimg.com é bloqueado por referrer; o relay autenticado é o
+// único caminho) e descarta o parâmetro transitório ?tag=.
+func normalizeTwitterVideoURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("URL de vídeo vazia")
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" {
+		return "", errors.New("URL de vídeo inválida")
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "video.twimg.com" && !strings.HasSuffix(host, ".video.twimg.com") {
+		return "", errors.New("host de vídeo não permitido")
+	}
+
+	// O CDN do X pode rejeitar variantes com o parâmetro transitório ?tag=.
+	q := u.Query()
+	q.Del("tag")
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+func fxTwitterVideoURL(status *fxTwitterStatus) string {
+	if status == nil || len(status.Media.Videos) == 0 {
+		return ""
+	}
+	normalized, err := normalizeTwitterVideoURL(status.Media.Videos[0].URL)
+	if err != nil {
+		return ""
+	}
+	return normalized
+}
+
+func fxTwitterImageURL(status *fxTwitterStatus) string {
+	if status == nil {
+		return ""
+	}
+	if len(status.Media.Photos) > 0 && status.Media.Photos[0].URL != "" {
+		return status.Media.Photos[0].URL
+	}
+	if len(status.Media.Videos) > 0 && status.Media.Videos[0].ThumbnailURL != "" {
+		return status.Media.Videos[0].ThumbnailURL
+	}
+	if status.Media.External != nil && status.Media.External.ThumbnailURL != "" {
+		return status.Media.External.ThumbnailURL
+	}
+	if status.Card != nil && status.Card.Image != nil {
+		return status.Card.Image.URL
+	}
+	return ""
+}
+
+// fxTwitterAuthorLabel monta "Nome (@handle)" a partir do autor, tolerando
+// nome ou handle ausentes.
+func fxTwitterAuthorLabel(author fxTwitterUser) string {
+	name := strings.TrimSpace(author.Name)
+	handle := strings.TrimSpace(author.ScreenName)
+	switch {
+	case name != "" && handle != "":
+		return name + " (@" + handle + ")"
+	case name != "":
+		return name
+	case handle != "":
+		return "@" + handle
+	default:
+		return ""
+	}
+}
+
+// fxTwitterMediaSource escolhe de onde a mídia do embed vem: o próprio status
+// ou, quando ele não tem nenhuma mídia e há um tweet citado (quote), o citado.
+// Profundidade 1: não desdobra quote de quote.
+func fxTwitterMediaSource(status *fxTwitterStatus) *fxTwitterStatus {
+	if status == nil {
+		return nil
+	}
+	if fxTwitterVideoURL(status) != "" || fxTwitterImageURL(status) != "" {
+		return status
+	}
+	if status.Quote != nil {
+		return status.Quote
+	}
+	return status
+}
+
+// fxTwitterQuoteFields retorna a field que exibe o tweet citado no embed
+// (autor + texto). Sem quote, sem texto ou quote indisponível (tombstone):
+// nenhuma field.
+func fxTwitterQuoteFields(quote *fxTwitterStatus) []models.EmbedField {
+	if quote == nil {
+		return nil
+	}
+	text := strings.TrimSpace(quote.Text)
+	label := fxTwitterAuthorLabel(quote.Author)
+	if text == "" || label == "" {
+		return nil
+	}
+	return []models.EmbedField{{
+		Position: 0,
+		Name:     truncateRune(label, embedFieldNameMax),
+		Value:    truncateRune(text, embedFieldValueMax),
+	}}
+}
+
+// fetchFxTwitterEmbed obtém o embed de um status do X pela API JSON oficial do
+// FxEmbed (api.fxtwitter.com/2), a superfície estável documentada pelo próprio
+// projeto: os realms fxtwitter/fixupx alteram a resposta por User-Agent e
+// podem redirecionar clientes humanos.
+func fetchFxTwitterEmbed(ctx context.Context, cfg *config.Config, original *url.URL, statusID string) (models.Embed, error) {
+	if statusID == "" {
+		return models.Embed{}, errors.New("tweet id ausente")
+	}
+	if !acquireOutboundSlot() {
+		return models.Embed{}, errors.New("semáforo outbound cheio")
+	}
+	body, _, err := utils.SafeFetch(
+		ctx,
+		outboundHTTPClient(),
+		2<<20,
+		"https://api.fxtwitter.com/2/status/"+url.PathEscape(statusID),
+	)
+	releaseOutboundSlot()
+	if err != nil {
+		return models.Embed{}, err
+	}
+
+	var payload fxTwitterStatusResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return models.Embed{}, fmt.Errorf("FxTwitter: JSON inválido: %w", err)
+	}
+	if payload.Code != http.StatusOK || payload.Status == nil {
+		return models.Embed{}, fmt.Errorf("FxTwitter: status indisponível (code=%d)", payload.Code)
+	}
+
+	title := fxTwitterAuthorLabel(payload.Status.Author)
+	provider := "X"
+
+	cacheKey := original.String()
+	embed := models.Embed{
+		SourceType:  embedSourceLink,
+		FetchMethod: embedFetchOpenGraph,
+		CacheKey:    &cacheKey,
+		URL:         &cacheKey,
+		Title:       nullableText(truncateRune(title, embedTitleMax)),
+		Description: nullableText(truncateRune(strings.TrimSpace(payload.Status.Text), embedDescriptionMax)),
+		Provider:    &provider,
+		Fields:      fxTwitterQuoteFields(payload.Status.Quote),
+	}
+
+	// Mídia: o tweet principal; se não tiver nenhuma, o tweet citado (quote).
+	mediaSource := fxTwitterMediaSource(payload.Status)
+	if videoURL := fxTwitterVideoURL(mediaSource); videoURL != "" {
+		videoURLCopy := videoURL
+		videoType := "video/mp4"
+		embed.Video = &models.EmbedMedia{URL: &videoURLCopy, MimeType: &videoType}
+	}
+	if imageURL := fxTwitterImageURL(mediaSource); imageURL != "" {
+		if media, err := downloadEmbedImage(ctx, cfg, imageURL); err == nil {
+			embed.Thumbnail = media
+		}
+	}
+
+	return storage.UpsertLinkEmbed(ctx, embed)
+}
+
+)
+
+// klipyGIFSlug recognizes public KLIPY GIF pages and returns the API slug.
+// Restricting the host and path keeps arbitrary URLs away from the KLIPY API.
+func klipyGIFSlug(u *url.URL) (string, bool) {
+	if u == nil {
+		return "", false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "klipy.com", "www.klipy.com":
+	default:
+		return "", false
+	}
+
+	parts := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
+	if len(parts) < 2 || (parts[0] != "gifs" && parts[0] != "gif") {
+		return "", false
+	}
+	slug, err := url.PathUnescape(parts[1])
+	if err != nil {
+		return "", false
+	}
+	slug = strings.TrimSuffix(slug, ".gif")
+	if !klipySlugPattern.MatchString(slug) {
+		return "", false
+	}
+	return slug, true
+}
+
+type klipyGIFAsset struct {
+	URL    string `json:"url"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	Size   int64  `json:"size"`
+}
+
+type klipyGIFFile struct {
+	GIF klipyGIFAsset `json:"gif"`
+}
+
+type klipyGIFRenditions struct {
+	HD klipyGIFFile `json:"hd"`
+	MD klipyGIFFile `json:"md"`
+	SM klipyGIFFile `json:"sm"`
+	XS klipyGIFFile `json:"xs"`
+}
+
+type klipyGIFItem struct {
+	Slug  string             `json:"slug"`
+	Title string             `json:"title"`
+	File  klipyGIFRenditions `json:"file"`
+}
+
+type klipyGIFResponse struct {
+	Result bool `json:"result"`
+	Data   struct {
+		Data []klipyGIFItem `json:"data"`
+	} `json:"data"`
+}
+
+// fetchKlipyGIFEmbed resolves only the GIF metadata. KLIPY media URLs are
+// returned unchanged for direct client playback: the backend does not download,
+// transform, proxy, or persist the actual GIF bytes.
+func fetchKlipyGIFEmbed(ctx context.Context, cfg *config.Config, original *url.URL, slug string) (models.Embed, error) {
+	if cfg.KlipyAPIKey == "" {
+		return models.Embed{}, errors.New("Klipy API key not configured")
+	}
+	if !acquireOutboundSlot() {
+		return models.Embed{}, errors.New("outbound request limit reached")
+	}
+	defer releaseOutboundSlot()
+
+	apiURL := "https://api.klipy.com/api/v1/" + url.PathEscape(cfg.KlipyAPIKey) +
+		"/gifs/items?slugs=" + url.QueryEscape(slug)
+	body, _, err := utils.SafeFetch(ctx, outboundHTTPClient(), 2<<20, apiURL)
+	if err != nil {
+		// Do not return the transport error: it may contain the key-bearing API URL.
+		return models.Embed{}, errors.New("Klipy API request failed")
+	}
+
+	var payload klipyGIFResponse
+	if err := json.Unmarshal(body, &payload); err != nil || !payload.Result {
+		return models.Embed{}, errors.New("invalid Klipy API response")
+	}
+	var item *klipyGIFItem
+	for i := range payload.Data.Data {
+		if payload.Data.Data[i].Slug == slug {
+			item = &payload.Data.Data[i]
+			break
+		}
+	}
+	if item == nil {
+		return models.Embed{}, errors.New("GIF not found in Klipy response")
+	}
+
+	asset := item.File.HD.GIF
+	if asset.URL == "" {
+		asset = item.File.MD.GIF
+	}
+	if asset.URL == "" {
+		asset = item.File.SM.GIF
+	}
+	if asset.URL == "" {
+		asset = item.File.XS.GIF
+	}
+	if !isKlipyGIFAssetURL(asset.URL) {
+		return models.Embed{}, errors.New("Klipy returned an invalid GIF URL")
+	}
+
+	cacheKey := original.String()
+	gifURL := asset.URL // Preserve the provider URL and its query parameters exactly.
+	provider := "Klipy"
+	mimeType := "image/gif"
+	thumbnail := &models.EmbedMedia{
+		URL:       &gifURL,
+		MimeType:  &mimeType,
+		Width:     intOrNil(asset.Width),
+		Height:    intOrNil(asset.Height),
+		SizeBytes: int64OrNil(asset.Size),
+	}
+	embed := models.Embed{
+		SourceType:  embedSourceLink,
+		FetchMethod: embedFetchKlipy,
+		CacheKey:    &cacheKey,
+		URL:         &cacheKey,
+		Title:       nullableText(truncateRune(strings.TrimSpace(item.Title), embedTitleMax)),
+		Provider:    &provider,
+		Thumbnail:   thumbnail,
+	}
+	return storage.UpsertLinkEmbed(ctx, embed)
+}
+
+func isKlipyGIFAssetURL(raw string) bool {
+	if len(raw) > embedURLMax {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "static.klipy.com", "static1.klipy.com", "static2.klipy.com",
+		"static3.klipy.com", "static4.klipy.com":
+		return true
+	default:
+		return false
+	}
+}
+
+func int64OrNil(value int64) *int64 {
+	if value <= 0 {
+		return nil
+	}
+	return &value
+}
+
 func embedRobotsAllowed(ctx context.Context, u *url.URL) bool {
 	switch strings.ToLower(u.Hostname()) {
 	case "fxtwitter.com", "www.fxtwitter.com", "api.fxtwitter.com",
@@ -580,6 +1286,7 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 	}
 	normalized := u.String()
 	statusID, isTwitterStatus := twitterStatusID(u)
+	klipySlug, isKlipyGIF := klipyGIFSlug(u)
 
 	// 2. Cache (mesma cache_key, fetched_at dentro do TTL).
 	if cached, err := storage.GetEmbedByCacheKey(ctx, normalized); err == nil {
@@ -589,7 +1296,8 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 		} else {
 			age = cfg.LinkPreviewCacheTTL + 1 // sem fetched_at: trata como expirado
 		}
-		if age < cfg.LinkPreviewCacheTTL {
+		needsKlipyFetch := isKlipyGIF && cfg.KlipyAPIKey != "" && cached.FetchMethod != embedFetchKlipy
+		if age < cfg.LinkPreviewCacheTTL && !needsKlipyFetch {
 			// Embeds antigos de X/Twitter podiam ter sido persistidos antes do
 			// fetch via FxEmbed, sem thumbnail/vídeo. Damos uma janela curta
 			// antes de tentar completar esse cache incompleto, sem transformar
@@ -612,6 +1320,12 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 	// 4. X/Twitter: API JSON oficial do FxEmbed (ver fetchFxTwitterEmbed).
 	if isTwitterStatus {
 		embed, err := fetchFxTwitterEmbed(ctx, cfg, u, statusID)
+		return embed, err == nil, err
+	}
+
+	// KLIPY share pages resolve through the GIF item API when configured.
+	if isKlipyGIF && cfg.KlipyAPIKey != "" {
+		embed, err := fetchKlipyGIFEmbed(ctx, cfg, u, klipySlug)
 		return embed, err == nil, err
 	}
 
