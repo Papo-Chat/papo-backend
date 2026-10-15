@@ -547,6 +547,7 @@ func fetchFxTwitterEmbed(ctx context.Context, cfg *config.Config, original *url.
 }
 
 
+
 var klipySlugPattern = regexp.MustCompile("^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$")
 
 // klipyGIFSlug recognizes public KLIPY GIF pages and returns the API slug.
@@ -560,6 +561,7 @@ func klipyGIFSlug(u *url.URL) (string, bool) {
 	default:
 		return "", false
 	}
+
 	parts := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
 	if len(parts) != 2 || (parts[0] != "gifs" && parts[0] != "gif") {
 		return "", false
@@ -576,26 +578,32 @@ func klipyGIFSlug(u *url.URL) (string, bool) {
 }
 
 type klipyGIFAsset struct {
-	URL string
-	Width int
+	URL    string
+	Width  int
 	Height int
-	Size int64
+	Size   int64
 }
-type klipyGIFFile struct { GIF klipyGIFAsset }
+
+type klipyGIFFile struct {
+	GIF klipyGIFAsset
+}
+
 type klipyGIFRenditions struct {
 	HD klipyGIFFile
 	MD klipyGIFFile
 	SM klipyGIFFile
 	XS klipyGIFFile
 }
+
 type klipyGIFItem struct {
-	Slug string
+	Slug  string
 	Title string
-	File klipyGIFRenditions
+	File  klipyGIFRenditions
 }
+
 type klipyGIFResponse struct {
 	Result bool
-	Data struct {
+	Data   struct {
 		Data []klipyGIFItem
 	}
 }
@@ -606,6 +614,9 @@ type klipyGIFResponse struct {
 func fetchKlipyGIFEmbed(ctx context.Context, cfg *config.Config, original *url.URL, slug string) (models.Embed, error) {
 	if cfg.KlipyAPIKey == "" {
 		return models.Embed{}, errors.New("Klipy API key not configured")
+	}
+	if !cfg.KlipyServerSideApproved {
+		return models.Embed{}, errors.New("Klipy server-side integration has not been approved")
 	}
 	if !acquireOutboundSlot() {
 		return models.Embed{}, errors.New("outbound request limit reached")
@@ -619,6 +630,7 @@ func fetchKlipyGIFEmbed(ctx context.Context, cfg *config.Config, original *url.U
 		// The transport error may include the API URL, which contains the key.
 		return models.Embed{}, errors.New("Klipy API request failed")
 	}
+
 	var payload klipyGIFResponse
 	if err := json.Unmarshal(body, &payload); err != nil || !payload.Result {
 		return models.Embed{}, errors.New("invalid Klipy API response")
@@ -636,9 +648,15 @@ func fetchKlipyGIFEmbed(ctx context.Context, cfg *config.Config, original *url.U
 	}
 
 	asset := item.File.HD.GIF
-	if asset.URL == "" { asset = item.File.MD.GIF }
-	if asset.URL == "" { asset = item.File.SM.GIF }
-	if asset.URL == "" { asset = item.File.XS.GIF }
+	if asset.URL == "" {
+		asset = item.File.MD.GIF
+	}
+	if asset.URL == "" {
+		asset = item.File.SM.GIF
+	}
+	if asset.URL == "" {
+		asset = item.File.XS.GIF
+	}
 	if !isKlipyGIFAssetURL(asset.URL) {
 		return models.Embed{}, errors.New("Klipy returned an invalid GIF URL")
 	}
@@ -648,18 +666,20 @@ func fetchKlipyGIFEmbed(ctx context.Context, cfg *config.Config, original *url.U
 	provider := "Klipy"
 	mimeType := "image/gif"
 	thumbnail := &models.EmbedMedia{
-		URL: &gifURL, MimeType: &mimeType,
-		Width: intOrNil(asset.Width), Height: intOrNil(asset.Height),
+		URL:       &gifURL,
+		MimeType:  &mimeType,
+		Width:     intOrNil(asset.Width),
+		Height:    intOrNil(asset.Height),
 		SizeBytes: int64OrNil(asset.Size),
 	}
 	embed := models.Embed{
-		SourceType: embedSourceLink,
+		SourceType:  embedSourceLink,
 		FetchMethod: embedFetchKlipy,
-		CacheKey: &cacheKey,
-		URL: &cacheKey,
-		Title: nullableText(truncateRune(strings.TrimSpace(item.Title), embedTitleMax)),
-		Provider: &provider,
-		Thumbnail: thumbnail,
+		CacheKey:    &cacheKey,
+		URL:         &cacheKey,
+		Title:       nullableText(truncateRune(strings.TrimSpace(item.Title), embedTitleMax)),
+		Provider:    &provider,
+		Thumbnail:   thumbnail,
 	}
 	return storage.UpsertLinkEmbed(ctx, embed)
 }
@@ -669,12 +689,12 @@ func isKlipyGIFAssetURL(raw string) bool {
 		return false
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || !strings.HasSuffix(strings.ToLower(u.Path), ".gif") {
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" ||
+		!strings.HasSuffix(strings.ToLower(u.Path), ".gif") {
 		return false
 	}
 	switch strings.ToLower(u.Hostname()) {
-	case "static.klipy.com", "static1.klipy.com", "static2.klipy.com",
-		"static3.klipy.com", "static4.klipy.com":
+	case "static.klipy.com", "static1.klipy.com", "static2.klipy.com":
 		return true
 	default:
 		return false
@@ -682,7 +702,9 @@ func isKlipyGIFAssetURL(raw string) bool {
 }
 
 func int64OrNil(value int64) *int64 {
-	if value <= 0 { return nil }
+	if value <= 0 {
+		return nil
+	}
 	return &value
 }
 
