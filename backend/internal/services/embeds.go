@@ -561,7 +561,7 @@ func klipyGIFSlug(u *url.URL) (string, bool) {
 		return "", false
 	}
 	parts := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
-	if len(parts) < 2 || (parts[0] != "gifs" && parts[0] != "gif") {
+	if len(parts) != 2 || (parts[0] != "gifs" && parts[0] != "gif") {
 		return "", false
 	}
 	slug, err := url.PathUnescape(parts[1])
@@ -669,7 +669,7 @@ func isKlipyGIFAssetURL(raw string) bool {
 		return false
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" {
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || !strings.HasSuffix(strings.ToLower(u.Path), ".gif") {
 		return false
 	}
 	switch strings.ToLower(u.Hostname()) {
@@ -731,7 +731,7 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 		} else {
 			age = cfg.LinkPreviewCacheTTL + 1 // sem fetched_at: trata como expirado
 		}
-		needsKlipyFetch := isKlipyGIF && cfg.KlipyAPIKey != "" && cached.FetchMethod != embedFetchKlipy
+		needsKlipyFetch := isKlipyGIF && cfg.KlipyAPIKey != "" && cfg.KlipyServerSideApproved && cached.FetchMethod != embedFetchKlipy
 		if age < cfg.LinkPreviewCacheTTL && !needsKlipyFetch {
 			// Embeds antigos de X/Twitter podiam ter sido persistidos antes do
 			// fetch via FxEmbed, sem thumbnail/vídeo. Damos uma janela curta
@@ -759,9 +759,11 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 	}
 
 	// Resolve KLIPY share pages through its GIF items API when configured.
-	if isKlipyGIF && cfg.KlipyAPIKey != "" {
-		embed, err := fetchKlipyGIFEmbed(ctx, cfg, u, klipySlug)
-		return embed, err == nil, err
+	if isKlipyGIF && cfg.KlipyAPIKey != "" && cfg.KlipyServerSideApproved {
+		if embed, err := fetchKlipyGIFEmbed(ctx, cfg, u, klipySlug); err == nil {
+			return embed, true, nil
+		}
+		// Preserve the generic OpenGraph fallback if the KLIPY API is unavailable.
 	}
 
 	// 5. oEmbed first (host allowlistado) — falha → fallback para OpenGraph.
