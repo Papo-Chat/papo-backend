@@ -52,13 +52,13 @@ func TestGifProviderHost(t *testing.T) {
 }
 
 func TestIsGiphyID(t *testing.T) {
-	valid := []string{"okfvUCpgArv3y", "H0rs8l0T3rCs", "abc12345"}
+	valid := []string{"okfvUCpgArv3y", "H0rs8l0T3rCs", "abc12345", "QBd2kLB5qDmysEXre9"}
 	for _, s := range valid {
 		if !isGiphyID(s) {
 			t.Errorf("isGiphyID(%q) = false, esperado true", s)
 		}
 	}
-	invalid := []string{"", "short1", "all-lowercase-id", "alllowercaseid", "1234567", "toolongidtoolongid1", "has space1"}
+	invalid := []string{"", "short1", "all-lowercase-id", "alllowercaseid", "1234567", "has space1", "QBd2kLB5qDmysEXre9QBd2kLB"}
 	for _, s := range invalid {
 		if isGiphyID(s) {
 			t.Errorf("isGiphyID(%q) = true, esperado false", s)
@@ -161,6 +161,18 @@ func TestParseGiphyPageURL(t *testing.T) {
 			in:       "https://giphy.com/clips/okfvUCpgArv3y",
 			wantID:   "okfvUCpgArv3y",
 			wantPage: "https://giphy.com/clips/okfvUCpgArv3y",
+		},
+		{
+			// Id atual do giphy (18 chars): com o teto antigo de 16 o tail do
+			// slug era descartado e a resolução do link falha por completo.
+			in:       "https://giphy.com/gifs/time-mr-bean-look-at-the-QBd2kLB5qDmysEXre9",
+			wantID:   "QBd2kLB5qDmysEXre9",
+			wantPage: "https://giphy.com/gifs/time-mr-bean-look-at-the-QBd2kLB5qDmysEXre9",
+		},
+		{
+			in:       "https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/token/QBd2kLB5qDmysEXre9/giphy.gif",
+			wantID:   "QBd2kLB5qDmysEXre9",
+			wantPage: "https://giphy.com/gifs/QBd2kLB5qDmysEXre9",
 		},
 		{in: "https://giphy.com/", wantErr: true},
 	}
@@ -433,6 +445,20 @@ func TestPickGIFRendition(t *testing.T) {
 	if got.Kind != "mediumgif" {
 		t.Errorf("esperava mediumgif (tier md), obtive %q", got.Kind)
 	}
+
+	// Mesmo tier: escolha determinística (maior área), qualquer que seja a
+	// ordem das renditions (elas vêm de maps, cuja ordem é aleatória).
+	big := gifRendition{URL: "big", Format: "gif", Kind: "fixed_height", Tier: "md", Width: 334, Height: 200}
+	small := gifRendition{URL: "small", Format: "gif", Kind: "fixed_width", Tier: "md", Width: 200, Height: 120}
+	for _, order := range [][]gifRendition{{small, big}, {big, small}} {
+		got, err := pickGIFRendition(gifItem{Renditions: order}, 5_000_000)
+		if err != nil {
+			t.Fatalf("pickGIFRendition (mesmo tier) retornou erro: %v", err)
+		}
+		if got.Kind != "fixed_height" {
+			t.Errorf("pickGIFRendition deveria escolher a maior área do tier, obtive %q", got.Kind)
+		}
+	}
 }
 
 func TestMediaFormatFromURLAndTierByArea(t *testing.T) {
@@ -450,6 +476,29 @@ func TestMediaFormatFromURLAndTierByArea(t *testing.T) {
 	}
 	if got := tierByArea(0, 220); got != "sm" {
 		t.Errorf("tierByArea(0,220) = %q, esperado sm", got)
+	}
+}
+
+// TestGIFHeaderDims cobre a guarda do caminho sem re-encode: o blob do provedor
+// é gravado como veio, então as dimensões declaradas no cabeçalho são o que
+// fecha a decompression bomb antes de entrar na media.
+func TestGIFHeaderDims(t *testing.T) {
+	w, h, err := gifHeaderDims(gifAvatarBytes(640, 480))
+	if err != nil {
+		t.Fatalf("gifHeaderDims retornou erro: %v", err)
+	}
+	if w != 640 || h != 480 {
+		t.Errorf("gifHeaderDims = (%d, %d), esperado (640, 480)", w, h)
+	}
+
+	// Cabeçalho patológico: 65535x65535 declarados (arquivo minúsculo).
+	bomb := append([]byte("GIF89a"), 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00)
+	if _, _, err := gifHeaderDims(bomb); err == nil {
+		t.Errorf("gifHeaderDims deveria rejeitar dimensões acima do teto")
+	}
+
+	if _, _, err := gifHeaderDims([]byte("isso não é um gif")); err == nil {
+		t.Errorf("gifHeaderDims deveria rejeitar conteúdo que não é GIF")
 	}
 }
 

@@ -6,9 +6,10 @@ package services
 // O link na mensagem é resolvido no page URL do provedor (HTML aberto no
 // tenor/giphy; JSON API no klipy — a página HTML do klipy é bloqueada por
 // Cloudflare, mas o endpoint JSON que a própria página usa não é). Do page
-// URL saem o título e o mapa de renditions; a rendition GIF animada é
-// baixada, re-encodeada como thumbnail animada (pipeline utils.GenerateThumbnail,
-// GIFThumbnailMaxDim) e gravada na tabela media (content-addressable).
+// URL saem o título e o mapa de renditions; a rendition GIF animada é baixada
+// e gravada na tabela media (content-addressable) como veio do provedor: o
+// re-encode do pipeline de thumbnail (utils.GenerateThumbnail) produz WebP
+// estático e perderia a animação, que é o conteúdo do embed.
 //
 // O embed resultante é a versão simples de link embed: title (linkando ao
 // page URL original na UI), provider e thumbnail GIF. source_type='link' e
@@ -22,10 +23,12 @@ package services
 // (ProcessMessageEmbeds), nunca no caminho da resposta HTTP da mensagem.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/gif"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -48,6 +51,9 @@ const (
 // maxKlipyJSONBytes é o teto do corpo da API JSON do klipy (o payload de um
 // item é pequeno; 1MB fecha respostas aberrantes).
 const maxKlipyJSONBytes = 1 << 20
+
+// gifMimeType é o MIME da rendition GIF animada gravada como thumbnail do embed.
+const gifMimeType = "image/gif"
 
 // gifRendition é uma rendition normalizada do provedor (port do modelo do
 // gif-scrapper). Bytes é o tamanho declarado pelo provedor (0 = desconhecido).
@@ -105,13 +111,13 @@ func gifProviderLabel(provider string) string {
 	return ""
 }
 
-// fetchGIFEmbed resolve o link do provedor GIF, baixa a rendition GIF, grava a
-// thumbnail animada na media e upserta o link embed (cache_key = URL
-// normalizada). Qualquer falha retorna erro (o chamador loga e segue sem
-// embed — best-effort, como os outros link embeds).
+// fetchGIFEmbed resolve o link do provedor GIF, baixa a rendition GIF e grava
+// os bytes do próprio provedor na media (thumbnail do embed), então upserta o
+// link embed (cache_key = URL normalizada). Qualquer falha retorna erro (o
+// chamador loga e segue sem embed — best-effort, como os outros link embeds).
 func fetchGIFEmbed(ctx context.Context, cfg *config.Config, original *url.URL, provider string) (models.Embed, error) {
-	// O embed GIF É a thumbnail animada: sem o pipeline de thumbnail ele não
-	// tem sentido. Falha antes de gastar rede.
+	// O embed GIF é a mídia do provedor: sem mídia habilitada ele não tem
+	// sentido. Falha antes de gastar rede.
 	if !cfg.ThumbnailEnabled {
 		return models.Embed{}, errors.New("processamento de thumbnail desabilitado")
 	}
@@ -142,15 +148,18 @@ func fetchGIFEmbed(ctx context.Context, cfg *config.Config, original *url.URL, p
 		return models.Embed{}, err
 	}
 
-	// A thumbnail animada é o único artefato persistido (mesma regra da
-	// imagem de link embed): ≤ GIFThumbnailMaxDim px, ≤ MaxGIFThumbSize.
-	thumb, thumbMime, width, height, err := utils.GenerateThumbnail(body, cfg.GIFThumbnailMaxDim, cfg.ThumbnailTimeout)
+	// O GIF é gravado como veio do provedor: o re-encode do pipeline de
+	// thumbnail (utils.GenerateThumbnail) produz WebP estático e destruiria a
+	// animação, que é exatamente o que o embed GIF é. As guardas são o teto de
+	// bytes do download (maxEmbedImageBytes) e as dimensões declaradas no
+	// cabeçalho.
+	width, height, err := gifHeaderDims(body)
 	if err != nil {
-		return models.Embed{}, fmt.Errorf("falha ao gerar a thumbnail do gif: %w", err)
+		return models.Embed{}, err
 	}
-	mediaSHA, _, err := StoreMediaFromBytes(ctx, thumb, thumbMime)
+	mediaSHA, _, err := StoreMediaFromBytes(ctx, body, gifMimeType)
 	if err != nil {
-		return models.Embed{}, fmt.Errorf("falha ao gravar a thumbnail do gif: %w", err)
+		return models.Embed{}, fmt.Errorf("falha ao gravar o gif do embed: %w", err)
 	}
 
 	normalized := original.String()
@@ -160,12 +169,13 @@ func fetchGIFEmbed(ctx context.Context, cfg *config.Config, original *url.URL, p
 	}
 
 	providerLabel := gifProviderLabel(provider)
-	thumbnail := &models.EmbedMedia{MediaSHA: &mediaSHA, MimeType: &thumbMime}
-	if width > 0 {
-		thumbnail.Width = &width
-	}
-	if height > 0 {
-		thumbnail.Height = &height
+	thumbMime := gifMimeType
+	// gifHeaderDims garante dimensões > 0.
+	thumbnail := &models.EmbedMedia{
+		MediaSHA: &mediaSHA,
+		MimeType: &thumbMime,
+		Width:    &width,
+		Height:   &height,
 	}
 
 	embed := models.Embed{
@@ -185,38 +195,63 @@ func fetchGIFEmbed(ctx context.Context, cfg *config.Config, original *url.URL, p
 // tamanho declarado excede maxBytes; sem candidata dentro do teto, aceita a
 // melhor por tier mesmo estourando o declarado (o teto real é aplicado no
 // download).
+//
+// As renditions vêm de maps do Go, cuja ordem de iteração é aleatória: dentro
+// do tier a escolha é determinística (maior área, depois kind) para a mesma URL
+// sempre gravar a mesma mídia — sem isso, cada refetch poderia gravar um
+// arquivo diferente do mesmo gif.
 func pickGIFRendition(item gifItem, maxBytes int64) (gifRendition, error) {
 	tiers := []string{"md", "sm", "xs", "hd"}
 
+	animated := func(r gifRendition) bool { return r.Format == "gif" && !r.Still }
 	fits := func(r gifRendition) bool {
-		return r.Format == "gif" && !r.Still && (r.Bytes <= 0 || r.Bytes <= maxBytes)
+		return animated(r) && (r.Bytes <= 0 || r.Bytes <= maxBytes)
+	}
+
+	// best escolhe a melhor candidata que passa em pred; tier "" aceita
+	// qualquer tier (inclusive desconhecido).
+	best := func(pred func(gifRendition) bool, tier string) (gifRendition, bool) {
+		var out gifRendition
+		var found bool
+		for _, r := range item.Renditions {
+			if !pred(r) || (tier != "" && r.Tier != tier) {
+				continue
+			}
+			if !found || betterRendition(r, out) {
+				out, found = r, true
+			}
+		}
+		return out, found
 	}
 
 	for _, tier := range tiers {
-		for _, r := range item.Renditions {
-			if r.Tier == tier && fits(r) {
-				return r, nil
-			}
-		}
-	}
-	for _, r := range item.Renditions {
-		if fits(r) {
+		if r, ok := best(fits, tier); ok {
 			return r, nil
 		}
+	}
+	if r, ok := best(fits, ""); ok {
+		return r, nil
 	}
 	for _, tier := range tiers {
-		for _, r := range item.Renditions {
-			if r.Format == "gif" && !r.Still && r.Tier == tier {
-				return r, nil
-			}
-		}
-	}
-	for _, r := range item.Renditions {
-		if r.Format == "gif" && !r.Still {
+		if r, ok := best(animated, tier); ok {
 			return r, nil
 		}
 	}
+	if r, ok := best(animated, ""); ok {
+		return r, nil
+	}
 	return gifRendition{}, errors.New("item GIF não tem rendition animada disponível")
+}
+
+// betterRendition ordena candidatas do mesmo tier: maior área primeiro
+// (qualidade), desempate por kind.
+func betterRendition(a, b gifRendition) bool {
+	areaA := int64(a.Width) * int64(a.Height)
+	areaB := int64(b.Width) * int64(b.Height)
+	if areaA != areaB {
+		return areaA > areaB
+	}
+	return a.Kind < b.Kind
 }
 
 // downloadGIFRendition baixa os bytes da rendition (robots check na origem +
@@ -239,7 +274,7 @@ func downloadGIFRendition(ctx context.Context, rawURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if mime := utils.DetectMimeType(body); mime != "image/gif" {
+	if mime := utils.DetectMimeType(body); mime != gifMimeType {
 		return nil, fmt.Errorf("rendition não é GIF (mime=%q)", mime)
 	}
 	return body, nil
@@ -457,11 +492,13 @@ func resolveTenorItem(ctx context.Context, original *url.URL) (gifItem, error) {
 
 /* ------------------------------------------------------------------- giphy */
 
-// isGiphyID valida o id do giphy: 8–16 alfanuméricos com ao menos uma
+// isGiphyID valida o id do giphy: 8–24 alfanuméricos com ao menos uma
 // maiúscula ou dígito (ids puros em minúsculo não existem; slug words são
-// minúsculos).
+// minúsculos). O teto é 24, não 16: os ids atuais do giphy têm 12–19
+// caracteres (ex.: QBd2kLB5qDmysEXre9, 18). Com 16 o tail do slug é descartado
+// e o id do JSON-LD também — a resolução do link falha por completo.
 func isGiphyID(s string) bool {
-	if len(s) < 8 || len(s) > 16 {
+	if len(s) < 8 || len(s) > 24 {
 		return false
 	}
 	hasUpperOrDigit := false
@@ -612,9 +649,13 @@ type giphyRawGif struct {
 	Images   map[string]giphyImageEntry `json:"images"`
 }
 
+// giphyImageEntry é uma rendition do mapa "images" do giphy. Height/Width/Size
+// são json.RawMessage porque o payload mistura shapes (número, string JSON e,
+// no JSON-LD, objeto QuantitativeValue): um int rígido faz o Unmarshal do objeto
+// inteiro falhar e o resolvedor cai no caminho degradado.
 type giphyImageEntry struct {
-	Height int             `json:"height"`
-	Width  int             `json:"width"`
+	Height json.RawMessage `json:"height"`
+	Width  json.RawMessage `json:"width"`
 	Size   json.RawMessage `json:"size"`
 	URL    string          `json:"url"`
 	MP4    string          `json:"mp4"`
@@ -695,11 +736,12 @@ func giphyRenditionsFromImages(images map[string]giphyImageEntry) []gifRendition
 
 	for kind, entry := range images {
 		tier := giphyTierByKind[kind]
+		width, height := jsonInt(entry.Width), jsonInt(entry.Height)
 		if tier == "" {
-			tier = tierByArea(entry.Width, entry.Height)
+			tier = tierByArea(width, height)
 		}
 		isStill := strings.HasSuffix(kind, "_still") || kind == "480w_still"
-		size := jsonSize(entry.Size)
+		size := jsonNumber(entry.Size)
 
 		candidates := []struct {
 			url  string
@@ -727,8 +769,8 @@ func giphyRenditionsFromImages(images map[string]giphyImageEntry) []gifRendition
 				Format: format,
 				Kind:   kind,
 				Tier:   tier,
-				Width:  entry.Width,
-				Height: entry.Height,
+				Width:  width,
+				Height: height,
 				Bytes:  c.size,
 				Still:  isStill || format == "png",
 			})
@@ -765,10 +807,14 @@ func giphyLegacyRenditions(id string) []gifRendition {
 
 type giphyJSONLD struct {
 	Title string `json:"headline"`
+	// Width/Height são json.RawMessage: o JSON-LD do giphy os entrega como
+	// objeto QuantitativeValue ({"@type":"QuantitativeValue","value":194}), e
+	// um int rígido faria o parse do documento inteiro falhar (o título e a
+	// media URL autoritativa iriam embora com ele).
 	Image struct {
-		URL    string `json:"url"`
-		Width  int    `json:"width"`
-		Height int    `json:"height"`
+		URL    string          `json:"url"`
+		Width  json.RawMessage `json:"width"`
+		Height json.RawMessage `json:"height"`
 	} `json:"image"`
 }
 
@@ -837,8 +883,8 @@ func resolveGiphyItem(ctx context.Context, original *url.URL) (gifItem, error) {
 			Format: firstNonEmpty(mediaFormatFromURL(ld.Image.URL), "gif"),
 			Kind:   "original",
 			Tier:   "hd",
-			Width:  ld.Image.Width,
-			Height: ld.Image.Height,
+			Width:  jsonInt(ld.Image.Width),
+			Height: jsonInt(ld.Image.Height),
 		}}, renditions...)
 	}
 	return gifItem{
@@ -999,6 +1045,23 @@ func klipyRenditions(file map[string]map[string]klipyRenditionMeta) []gifRenditi
 
 /* -------------------------------------------------------- helpers comuns */
 
+// gifHeaderDims lê as dimensões do cabeçalho do GIF (sem decodificar pixels).
+// O blob do provedor é gravado sem re-encode, então esta é a única guarda de
+// decompression bomb do caminho: as dimensões declaradas são validadas contra
+// o teto absoluto de dimensão do pipeline de imagem antes de o arquivo entrar
+// na media.
+func gifHeaderDims(body []byte) (int, int, error) {
+	cfg, err := gif.DecodeConfig(bytes.NewReader(body))
+	if err != nil {
+		return 0, 0, fmt.Errorf("gif do provedor inválido: %w", err)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 ||
+		cfg.Width > utils.MaxThumbnailDimCeiling || cfg.Height > utils.MaxThumbnailDimCeiling {
+		return 0, 0, fmt.Errorf("dimensões do gif do provedor (%dx%d) fora do aceitável", cfg.Width, cfg.Height)
+	}
+	return cfg.Width, cfg.Height, nil
+}
+
 // mediaFormatFromURL deriva o formato da extensão do path da URL.
 var mediaFormatByExt = map[string]string{
 	"gif": "gif", "webp": "webp", "jpg": "jpg", "jpeg": "jpg",
@@ -1036,22 +1099,40 @@ func tierByArea(width, height int) string {
 	}
 }
 
-// jsonSize lê um tamanho que pode vir como número ou string JSON.
-func jsonSize(raw json.RawMessage) int64 {
+// jsonNumber lê um número do provedor que pode chegar como número JSON, string
+// JSON ("1860111") ou objeto QuantitativeValue do JSON-LD ({"value":480}).
+// 0 = desconhecido (mesma semântica de Bytes/Width/Height ausentes).
+func jsonNumber(raw json.RawMessage) int64 {
 	if len(raw) == 0 {
 		return 0
 	}
+
 	var n int64
 	if err := json.Unmarshal(raw, &n); err == nil {
 		return n
 	}
+
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
-			return v
+		v, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0
 		}
+		return v
+	}
+
+	var quantitative struct {
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &quantitative); err == nil {
+		return jsonNumber(quantitative.Value)
 	}
 	return 0
+}
+
+// jsonInt é jsonNumber na largura de um int (dimensões de rendition).
+func jsonInt(raw json.RawMessage) int {
+	return int(jsonNumber(raw))
 }
 
 // metaTagContent lê content de <meta property|name="key" content="…"> ou
