@@ -8,7 +8,7 @@ import "time"
 // 'custom', dono do próprio registro, cache_key nulo).
 //
 // FetchMethod: 'opengraph' (parser OpenGraph), 'oembed' (provedor
-// allowlistado) ou 'manual' (embed customizado).
+// allowlistado), 'klipy' (metadados de GIF KLIPY) ou 'manual' (embed customizado).
 //
 // Os campos de mídia guardam apenas a referência interna (EmbedMedia.MediaSHA
 // → tabela media); os bytes são servidos por GET /embeds/:embed_id (imagem) e
