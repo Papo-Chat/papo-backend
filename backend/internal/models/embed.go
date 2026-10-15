@@ -61,8 +61,8 @@ type EmbedAuthor struct {
 	Media *EmbedMedia `json:"media,omitempty"`
 }
 
-// EmbedMedia é uma mídia do embed: dimensões e MIME para renderização, com a
-// referência content-addressable mantida internamente.
+// EmbedMedia é uma mídia do embed: dimensões e MIME para renderização. Mídia
+// armazenada usa MediaSHA; mídia KLIPY usa a URL original e é carregada diretamente.
 type EmbedMedia struct {
 	URL       *string `json:"url,omitempty"`
 	MimeType  *string `json:"mime_type,omitempty"`
