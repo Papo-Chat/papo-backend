@@ -50,7 +50,8 @@ type Config struct {
 	PreviewFetchRateGlob int
 	PreviewFetchRateUser int
 
-	// Klipy app key for resolving shared GIF links. Empty disables the API integration.
+	// Klipy app key for resolving shared GIF links; empty disables resolution.
+	// Server-side use also requires explicit prior approval from KLIPY.
 	KlipyAPIKey string
 	// Server-side Klipy API calls require explicit approval from Klipy.
 	KlipyServerSideApproved bool
