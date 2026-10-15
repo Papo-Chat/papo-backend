@@ -26,7 +26,8 @@ func embedColumns(alias string) string {
 		alias + ".author_url, " +
 		alias + ".author_media, am.mime_type, am.size_bytes, " +
 		alias + ".thumbnail_media, " +
-		alias + ".thumbnail_width, " +
+		alias + ".thumbnail_url, " +
+		alias + ".thumbnail_width, "
 		alias + ".thumbnail_height, tm.mime_type, tm.size_bytes, " +
 		alias + ".image_media, " +
 		alias + ".image_width, " +
@@ -72,6 +73,7 @@ type embedRow struct {
 	AuthorSizeBytes *int64
 
 	ThumbnailMediaHash *string
+	ThumbnailURL       *string
 	ThumbnailWidth     *int
 	ThumbnailHeight    *int
 	ThumbnailMimeType  *string
@@ -119,6 +121,7 @@ func scanEmbedRowTargets(r *embedRow) []any {
 		&r.AuthorMimeType,
 		&r.AuthorSizeBytes,
 		&r.ThumbnailMediaHash,
+		&r.ThumbnailURL,
 		&r.ThumbnailWidth,
 		&r.ThumbnailHeight,
 		&r.ThumbnailMimeType,
@@ -185,7 +188,18 @@ func embedFromRow(r embedRow) models.Embed {
 	if author := embedAuthorFromRow(r); author != nil {
 		embed.Author = author
 	}
-	if thumbnail := embedMedia(r.ThumbnailMediaHash, r.ThumbnailMimeType, r.ThumbnailSizeBytes, r.ThumbnailWidth, r.ThumbnailHeight); thumbnail != nil {
+	thumbnail := embedMedia(r.ThumbnailMediaHash, r.ThumbnailMimeType, r.ThumbnailSizeBytes, r.ThumbnailWidth, r.ThumbnailHeight)
+	if r.ThumbnailURL != nil {
+		if thumbnail == nil {
+			thumbnail = &models.EmbedMedia{}
+		}
+		thumbnail.URL = r.ThumbnailURL
+		if thumbnail.MimeType == nil {
+			gifMIME := "image/gif"
+			thumbnail.MimeType = &gifMIME
+		}
+	}
+	if thumbnail != nil {
 		embed.Thumbnail = thumbnail
 	}
 	if image := embedMedia(r.ImageMediaHash, r.ImageMimeType, r.ImageSizeBytes, r.ImageWidth, r.ImageHeight); image != nil {
@@ -241,7 +255,7 @@ const embedInsertColumns = `(source_type, fetch_method, cache_key, url, provider
     thumbnail_media, thumbnail_width, thumbnail_height,
     image_media, image_width, image_height,
     video_url, video_type, video_width, video_height,
-    embed_url, footer_text, footer_icon, fetched_at)`
+    embed_url, footer_text, footer_icon, fetched_at, thumbnail_url)`
 
 // embedInsertValues monta a lista de valores do INSERT. O último valor é
 // fetched_at: $26 para embed customizado (NULL — não foi obtido por fetch) e
@@ -253,7 +267,7 @@ func embedInsertValues(fetchedAtValue string) string {
      $13, $14, $15,
      $16, $17, $18,
      $19, $20, $21, $22,
-     $23, $24, $25, ` + fetchedAtValue + `)`
+     $23, $24, $25, ` + fetchedAtValue + `, $27)`
 }
 
 // embedInsertArgs ordena os argumentos do INSERT na mesma ordem de
@@ -286,7 +300,7 @@ func embedInsertArgs(e models.Embed) []any {
 		mediaHashArg(e.Thumbnail), mediaWidthArg(e.Thumbnail), mediaHeightArg(e.Thumbnail),
 		mediaHashArg(e.Image), mediaWidthArg(e.Image), mediaHeightArg(e.Image),
 		videoURL, videoType, videoWidth, videoHeight,
-		e.EmbedURL, footerText, footerIcon, fetchedAt,
+		e.EmbedURL, footerText, footerIcon, fetchedAt, mediaURLArg(e.Thumbnail),
 	}
 }
 
@@ -297,6 +311,13 @@ func mediaHashArg(m *models.EmbedMedia) any {
 		return nil
 	}
 	return m.MediaSHA
+}
+
+func mediaURLArg(m *models.EmbedMedia) any {
+	if m == nil {
+		return nil
+	}
+	return m.URL
 }
 
 func mediaWidthArg(m *models.EmbedMedia) any {
@@ -361,6 +382,7 @@ func UpsertLinkEmbed(ctx context.Context, e models.Embed) (models.Embed, error) 
 		    author_url = EXCLUDED.author_url,
 		    author_media = EXCLUDED.author_media,
 		    thumbnail_media = EXCLUDED.thumbnail_media,
+		    thumbnail_url = EXCLUDED.thumbnail_url,
 		    thumbnail_width = EXCLUDED.thumbnail_width,
 		    thumbnail_height = EXCLUDED.thumbnail_height,
 		    image_media = EXCLUDED.image_media,
@@ -376,14 +398,14 @@ func UpsertLinkEmbed(ctx context.Context, e models.Embed) (models.Embed, error) 
 		    fetched_at = NOW()
 		 RETURNING id, source_type, fetch_method, provider, site_name, url, title, description, color,
 		    author_name, author_url, author_media,
-		    thumbnail_media, thumbnail_width, thumbnail_height,
+		    thumbnail_media, thumbnail_url, thumbnail_width, thumbnail_height,
 		    image_media, image_width, image_height,
 		    video_url, video_type, video_width, video_height,
 		    embed_url, footer_text, footer_icon, cache_key, created_at, fetched_at
 		 )
 		 SELECT u.id, u.source_type, u.fetch_method, u.provider, u.site_name, u.url, u.title, u.description, u.color,
 		        u.author_name, u.author_url, u.author_media, am.mime_type, am.size_bytes,
-		        u.thumbnail_media, u.thumbnail_width, u.thumbnail_height, tm.mime_type, tm.size_bytes,
+		        u.thumbnail_media, u.thumbnail_url, u.thumbnail_width, u.thumbnail_height, tm.mime_type, tm.size_bytes,
 		        u.image_media, u.image_width, u.image_height, im.mime_type, im.size_bytes,
 		        u.video_url, u.video_type, u.video_width, u.video_height,
 		        u.embed_url, u.footer_text, u.footer_icon, fm.mime_type, fm.size_bytes,
