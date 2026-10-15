@@ -10,9 +10,9 @@ import "time"
 // FetchMethod: 'opengraph' (parser OpenGraph), 'oembed' (provedor
 // allowlistado), 'klipy' (metadados de GIF KLIPY) ou 'manual' (embed customizado).
 //
-// Os campos de mídia guardam apenas a referência interna (EmbedMedia.MediaSHA
-// → tabela media); os bytes são servidos por GET /embeds/:embed_id (imagem) e
-// GET /embeds/:embed_id/video (relay de vídeo). Campos ausentes são omitidos.
+// Mídias armazenadas pelo backend usam EmbedMedia.MediaSHA e são servidas por
+// GET /embeds/:embed_id; mídia KLIPY usa a URL direta retornada pela API e não é
+// baixada, re-hospedada nem servida por proxy. Campos ausentes são omitidos.
 type Embed struct {
 	ID          string  `json:"id"`
 	SourceType  string  `json:"source_type"`
