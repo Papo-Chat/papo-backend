@@ -10,6 +10,7 @@ import (
 	"papo/internal/middleware"
 	"papo/internal/models"
 	"papo/internal/services"
+	"papo/internal/storage"
 	"papo/internal/utils"
 	"papo/internal/websocket"
 
@@ -582,10 +583,35 @@ func BanUserHandler(baseURL string, c echo.Context) error {
 	}
 
 	if *req.BanState {
+		// A revogação no banco invalida os tokens; encerra também os WebSockets
+		// ativos, começando pelo usuário banido para não depender da busca por IP.
 		disconnected := websocket.GetHub().DisconnectUser(targetID)
 		if disconnected > 0 {
 			utils.Infof("request_id=%s usuário banido %s: %d websocket(s) encerrado(s)",
 				c.Request().Header.Get(echo.HeaderXRequestID), targetID, disconnected)
+		}
+
+		target, err := storage.GetUserByID(c.Request().Context(), targetID)
+		if err != nil {
+			utils.Errorf("request_id=%s falha ao recuperar IP do usuário banido %s: %v",
+				c.Request().Header.Get(echo.HeaderXRequestID), targetID, err)
+		} else if target.LastIP != nil && *target.LastIP != "" {
+			userIDs, lookupErr := storage.ListUserIDsByIP(c.Request().Context(), *target.LastIP)
+			if lookupErr != nil {
+				utils.Errorf("request_id=%s falha ao buscar contas pelo IP do usuário banido %s: %v",
+					c.Request().Header.Get(echo.HeaderXRequestID), targetID, lookupErr)
+			} else {
+				for _, id := range userIDs {
+					if id == targetID {
+						continue
+					}
+					disconnected := websocket.GetHub().DisconnectUser(id)
+					if disconnected > 0 {
+						utils.Infof("request_id=%s banimento do usuário %s: %d websocket(s) encerrado(s) da conta %s",
+							c.Request().Header.Get(echo.HeaderXRequestID), targetID, disconnected, id)
+					}
+				}
+			}
 		}
 	}
 

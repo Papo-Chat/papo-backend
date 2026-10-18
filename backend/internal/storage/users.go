@@ -373,6 +373,35 @@ func UpdateUserLastIP(ctx context.Context, id, ip string) error {
 	return nil
 }
 
+// ListUserIDsByIP retorna os IDs das contas cujo último IP conhecido coincide
+// com o informado. IP vazio não é um critério válido para agrupar contas.
+func ListUserIDsByIP(ctx context.Context, ip string) ([]string, error) {
+	if ip == "" {
+		return []string{}, nil
+	}
+	rows, err := GetDB().QueryContext(ctx,
+		"SELECT id FROM users WHERE last_ip = $1",
+		ip,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao buscar usuários pelo IP: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("falha ao ler usuário pelo IP: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao listar usuários pelo IP: %w", err)
+	}
+	return ids, nil
+}
+
 // HasBannedUserByIP indica se existe algum usuário banido cujo último IP de conexão é o informado.
 func HasBannedUserByIP(ctx context.Context, ip string) (bool, error) {
 	var exists bool
@@ -435,14 +464,31 @@ func SetUserBanned(ctx context.Context, id string, banned bool) (bool, error) {
 		return false, ErrNotFound
 	}
 
-	// Banimento invalida todas as sessões existentes na mesma transação.
-	// Desbanir não reativa sessões antigas: o usuário precisa autenticar de novo.
+	// Banimento invalida sessões do usuário e de outras contas que compartilham
+	// seu último IP conhecido. O IP é lido na mesma transação que grava o ban.
+	// Desbanir não reativa sessões antigas: é necessário autenticar novamente.
 	if banned {
+		var ip sql.NullString
+		if err := tx.QueryRowContext(ctx, "SELECT last_ip FROM users WHERE id = $1", id).Scan(&ip); err != nil {
+			return false, fmt.Errorf("falha ao consultar IP do usuário banido: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx,
 			"UPDATE user_connections SET replaced_at = now() WHERE user_id = $1 AND replaced_at IS NULL",
 			id,
 		); err != nil {
 			return false, fmt.Errorf("falha ao revogar sessões do usuário banido: %w", err)
+		}
+		if ip.Valid && ip.String != "" {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE user_connections
+				 SET replaced_at = now()
+				 WHERE replaced_at IS NULL
+				   AND user_id <> $2
+				   AND user_id IN (SELECT id FROM users WHERE last_ip = $1)`,
+				ip.String, id,
+			); err != nil {
+				return false, fmt.Errorf("falha ao revogar sessões de contas do mesmo IP: %w", err)
+			}
 		}
 	}
 

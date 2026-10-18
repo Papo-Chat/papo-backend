@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 
 	"papo/internal/models"
+	"papo/internal/storage"
 
 	"github.com/labstack/echo/v4"
 )
@@ -63,7 +65,13 @@ func TestListAuditLogsRouteInvalidSince(t *testing.T) {
 // sensíveis (actor_id, entity_id, ip_address, user_agent).
 func TestListAuditLogsRouteReturnsLogs(t *testing.T) {
 	e := newApp()
-	_, actorToken := manageServerToken(t, e)
+	actorID, actorToken := manageServerToken(t, e)
+	// O teste usa o mesmo IP remoto por padrão para todas as requisições.
+	// Separe o administrador do alvo para ele não ter a própria sessão
+	// revogada pelo comportamento que este teste está validando.
+	if err := storage.UpdateUserLastIP(context.Background(), actorID, "203.0.113.10"); err != nil {
+		t.Fatalf("falha ao configurar IP do administrador: %v", err)
+	}
 	targetID, _ := registerAndLogin(t, e)
 	cleanupBan(t, targetID)
 
