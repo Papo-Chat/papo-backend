@@ -4179,6 +4179,21 @@ components:
             ID da thumbnail gerada no upload (imagens jpeg/png/webp/gif);
             null quando não há thumbnail. Download em
             /attachments/{file_id}/thumbnail.
+        thumbnail_width:
+          type: integer
+          nullable: true
+          description: >
+            Largura em pixels da thumbnail gerada no upload; null quando não
+            há thumbnail. Usada pelo frontend junto com thumbnail_height
+            para reservar o box da imagem antes do download (sem salto de
+            layout ao rolar). Para GIF a thumbnail tem o mesmo aspect ratio
+            do original.
+        thumbnail_height:
+          type: integer
+          nullable: true
+          description: >
+            Altura em pixels da thumbnail gerada no upload; null quando não
+            há thumbnail.
         created_at:
           type: string
           format: date-time

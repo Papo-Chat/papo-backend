@@ -35,12 +35,19 @@ type PinnedMessage struct {
 // de mensagens (listagem, criação e edição). ModerationStatus é o estado da
 // moderação assíncrona de imagens (nudez/gore): pending/processing/
 // clean/sensitive/blocked/failed (ver migrations/008_moderation.sql).
+// ThumbnailWidth/ThumbnailHeight são a geometria da thumbnail gerada no upload
+// (tabela attachment_thumbnails): o frontend reserva o box da imagem antes do
+// download, evitando o salto de layout quando a mídia entra no viewport.
+// Ambos são null quando não há thumbnail (ou quando o registro não tem
+// dimensões válidas).
 type MessageAttachment struct {
 	ID               string    `json:"id"`
 	MimeType         string    `json:"mime_type"`
 	OriginalFileName string    `json:"original_file_name"`
 	SizeBytes        int64     `json:"size_bytes"`
 	ThumbnailID      *string   `json:"thumbnail_id"`
+	ThumbnailWidth   *int      `json:"thumbnail_width"`
+	ThumbnailHeight  *int      `json:"thumbnail_height"`
 	CreatedAt        time.Time `json:"created_at"`
 	ModerationStatus string    `json:"moderation_status"`
 }

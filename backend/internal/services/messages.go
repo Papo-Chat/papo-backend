@@ -157,13 +157,22 @@ func ListMessagesOrdered(ctx context.Context, channelID, userID string, since *t
 	return models.MessageList{ChannelID: channelID, Messages: messages, HasMore: hasMore}, nil
 }
 
-// setAttachmentThumbnails popula o ThumbnailID dos attachments a partir do
-// mapa (vazio/ausente → ThumbnailID nil).
+// setAttachmentThumbnails popula o ThumbnailID e a geometria da thumbnail dos
+// attachments a partir do mapa (vazio/ausente → ThumbnailID e dimensões nil).
+// As dimensões só são expostas quando o registro tem largura e altura
+// válidas (> 0): o frontend usa esses valores para reservar o box da mídia.
 func setAttachmentThumbnails(attachments *[]models.MessageAttachment, thumbnails map[string]models.AttachmentThumbnail) {
 	for i := range *attachments {
-		if thumb, ok := thumbnails[(*attachments)[i].ID]; ok {
-			id := thumb.ID
-			(*attachments)[i].ThumbnailID = &id
+		thumb, ok := thumbnails[(*attachments)[i].ID]
+		if !ok {
+			continue
+		}
+		id := thumb.ID
+		(*attachments)[i].ThumbnailID = &id
+		if thumb.Width > 0 && thumb.Height > 0 {
+			width, height := thumb.Width, thumb.Height
+			(*attachments)[i].ThumbnailWidth = &width
+			(*attachments)[i].ThumbnailHeight = &height
 		}
 	}
 }
