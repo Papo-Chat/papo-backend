@@ -132,11 +132,13 @@ func ListMediaHashesBefore(ctx context.Context, cutoff time.Time) ([]string, err
 }
 
 // MediaIsReferenced indica se o sha_hash é referenciado por qualquer tabela
-// (users, servers, emojis, attachments, attachment_thumbnails, embeds).
+// (users, webhooks, servers, emojis, attachments, attachment_thumbnails,
+// embeds).
 func MediaIsReferenced(ctx context.Context, shaHash string) (bool, error) {
 	var referenced bool
 	err := GetDB().QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM users WHERE avatar_media = $1 OR banner_media = $1)
+		   OR EXISTS (SELECT 1 FROM webhooks WHERE avatar_media = $1)
 		   OR EXISTS (SELECT 1 FROM servers WHERE icon_media = $1)
 		   OR EXISTS (SELECT 1 FROM emojis WHERE image_media = $1)
 		   OR EXISTS (SELECT 1 FROM attachments WHERE media_sha_hash = $1)
