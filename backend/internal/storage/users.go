@@ -435,14 +435,31 @@ func SetUserBanned(ctx context.Context, id string, banned bool) (bool, error) {
 		return false, ErrNotFound
 	}
 
-	// Banimento invalida todas as sessões existentes na mesma transação.
-	// Desbanir não reativa sessões antigas: o usuário precisa autenticar de novo.
+	// Banimento invalida sessões do usuário e de outras contas que compartilham
+	// seu último IP conhecido. O IP é lido na mesma transação que grava o ban.
+	// Desbanir não reativa sessões antigas: é necessário autenticar novamente.
 	if banned {
+		var ip sql.NullString
+		if err := tx.QueryRowContext(ctx, "SELECT last_ip FROM users WHERE id = $1", id).Scan(&ip); err != nil {
+			return false, fmt.Errorf("falha ao consultar IP do usuário banido: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx,
 			"UPDATE user_connections SET replaced_at = now() WHERE user_id = $1 AND replaced_at IS NULL",
 			id,
 		); err != nil {
 			return false, fmt.Errorf("falha ao revogar sessões do usuário banido: %w", err)
+		}
+		if ip.Valid && ip.String != "" {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE user_connections
+				 SET replaced_at = now()
+				 WHERE replaced_at IS NULL
+				   AND user_id <> $2
+				   AND user_id IN (SELECT id FROM users WHERE last_ip = $1)`,
+				ip.String, id,
+			); err != nil {
+				return false, fmt.Errorf("falha ao revogar sessões de contas do mesmo IP: %w", err)
+			}
 		}
 	}
 
