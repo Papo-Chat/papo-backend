@@ -373,6 +373,35 @@ func UpdateUserLastIP(ctx context.Context, id, ip string) error {
 	return nil
 }
 
+// ListUserIDsByIP retorna os IDs das contas cujo último IP conhecido coincide
+// com o informado. IP vazio não é um critério válido para agrupar contas.
+func ListUserIDsByIP(ctx context.Context, ip string) ([]string, error) {
+	if ip == "" {
+		return []string{}, nil
+	}
+	rows, err := GetDB().QueryContext(ctx,
+		"SELECT id FROM users WHERE last_ip = $1",
+		ip,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao buscar usuários pelo IP: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("falha ao ler usuário pelo IP: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("falha ao listar usuários pelo IP: %w", err)
+	}
+	return ids, nil
+}
+
 // HasBannedUserByIP indica se existe algum usuário banido cujo último IP de conexão é o informado.
 func HasBannedUserByIP(ctx context.Context, ip string) (bool, error) {
 	var exists bool
