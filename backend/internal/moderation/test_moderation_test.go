@@ -119,7 +119,7 @@ func pingDB(db *sql.DB) error {
 }
 
 func createTempDatabase(db *sql.DB) (string, error) {
-	name := "papo_test_" + randHex(6)
+	name := "papo_test_moderation_" + randHex(6)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := db.ExecContext(ctx, "CREATE DATABASE "+name); err != nil {
@@ -140,7 +140,7 @@ func removeOldTempDatabases(db *sql.DB) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	rows, err := db.QueryContext(ctx, `SELECT datname FROM pg_database WHERE datname LIKE 'papo\_test\_%'`)
+	rows, err := db.QueryContext(ctx, `SELECT datname FROM pg_database WHERE datname LIKE 'papo\_test\_moderation\_%'`)
 	if err != nil {
 		fmt.Printf("falha ao listar bancos temporários antigos: %v", err)
 		return
