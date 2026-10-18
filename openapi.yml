@@ -3596,7 +3596,21 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: Autor da mensagem notificada (null quando o autor foi removido)
+          description: Autor da mensagem notificada (null quando o autor foi removido ou quando a mensagem é de webhook)
+        webhook_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Presente somente quando a mensagem notificada foi enviada por
+            webhook (author_id é null nesse caso).
+        external_author:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ExternalAuthor'
+          description: >
+            Identidade de exibição da mensagem notificada quando ela é de
+            webhook; permite desenhar nome e avatar fora do chat.
         message_content:
           type: string
           description: Conteúdo da mensagem notificada, truncado a 512 caracteres
@@ -4710,6 +4724,23 @@ components:
           format: uuid
         author_username:
           type: string
+          description: >
+            Nome de exibição do autor: username do usuário ou, em mensagem de
+            webhook, o name de external_author.
+        webhook_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Presente somente quando o resultado é uma mensagem de webhook
+            (author_id é null nesse caso).
+        external_author:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ExternalAuthor'
+          description: >
+            Identidade de exibição do resultado quando ele é de webhook;
+            permite desenhar nome e avatar na busca.
         created_at:
           type: string
           format: date-time

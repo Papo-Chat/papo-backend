@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -174,7 +175,8 @@ func ListUserNotificationsOrdered(ctx context.Context, userID string, since *tim
 	}
 	fetch := limit + 1
 
-	query := "SELECT n.id, n.message_id, m.channel_id, m.author_id, m.content, n.read, n.created_at " +
+	query := "SELECT n.id, n.message_id, m.channel_id, m.author_id, m.content, n.read, n.created_at, " +
+		"m.webhook_id, m.external_author " +
 		"FROM notifications n " +
 		"JOIN messages m ON m.id = n.message_id " +
 		"WHERE n.user_id = $1"
@@ -208,6 +210,7 @@ func ListUserNotificationsOrdered(ctx context.Context, userID string, since *tim
 	for rows.Next() {
 		var summary models.NotificationSummary
 		var content *string
+		var extJSON []byte
 		if err := rows.Scan(
 			&summary.ID,
 			&summary.MessageID,
@@ -216,11 +219,23 @@ func ListUserNotificationsOrdered(ctx context.Context, userID string, since *tim
 			&content,
 			&summary.Read,
 			&summary.CreatedAt,
+			&summary.WebhookID,
+			&extJSON,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler notificação: %w", err)
 		}
 		if content != nil {
 			summary.MessageContent = *content
+		}
+		// external_author é JSONB e só vem preenchido em mensagens de webhook;
+		// sem ela a notificação de um webhook fica sem nome e sem avatar no
+		// cliente (author_id é nil).
+		if len(extJSON) > 0 {
+			var author models.ExternalAuthor
+			if err := json.Unmarshal(extJSON, &author); err != nil {
+				return nil, fmt.Errorf("falha ao ler autoria externa da notificação: %w", err)
+			}
+			summary.ExternalAuthor = &author
 		}
 		notifications = append(notifications, summary)
 	}

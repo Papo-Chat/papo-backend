@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -190,6 +191,8 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 		"c.name, " +
 		"m.author_id, " +
 		"COALESCE(u.username, m.external_author->>'name'), " +
+		"m.webhook_id, " +
+		"m.external_author, " +
 		scoreExpr + " AS score " +
 		"FROM messages m " +
 		"JOIN channels c ON c.id = m.channel_id " +
@@ -208,6 +211,7 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 
 	for rows.Next() {
 		var result models.SearchResult
+		var extJSON []byte
 
 		if err := rows.Scan(
 			&result.ID,
@@ -217,9 +221,21 @@ func SearchMessages(ctx context.Context, p SearchParams) ([]models.SearchResult,
 			&result.ChannelName,
 			&result.AuthorID,
 			&result.AuthorUsername,
+			&result.WebhookID,
+			&extJSON,
 			&result.Score,
 		); err != nil {
 			return nil, fmt.Errorf("falha ao ler resultado da busca: %w", err)
+		}
+
+		// external_author é JSONB e só vem preenchido em mensagens de webhook;
+		// o formato é o mesmo de scanMessage.
+		if len(extJSON) > 0 {
+			var author models.ExternalAuthor
+			if err := json.Unmarshal(extJSON, &author); err != nil {
+				return nil, fmt.Errorf("falha ao ler autoria externa da busca: %w", err)
+			}
+			result.ExternalAuthor = &author
 		}
 
 		result.Type = "message"

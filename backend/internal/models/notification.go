@@ -42,13 +42,17 @@ type ChannelNotificationCandidate struct {
 // /users/:user_id/notifications), com o preview do conteúdo da mensagem
 // truncado a 512 caracteres.
 type NotificationSummary struct {
-	ID             string    `json:"id"`
-	MessageID      string    `json:"message_id"`
-	ChannelID      string    `json:"channel_id"`
-	AuthorID       *string   `json:"author_id"`
-	MessageContent string    `json:"message_content"`
-	Read           bool      `json:"read"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID        string  `json:"id"`
+	MessageID string  `json:"message_id"`
+	ChannelID string  `json:"channel_id"`
+	AuthorID  *string `json:"author_id"`
+	// WebhookID/ExternalAuthor carregam a identidade de exibição quando a
+	// mensagem notificada é de webhook (author_id é nil nesse caso).
+	WebhookID      *string         `json:"webhook_id,omitempty"`
+	ExternalAuthor *ExternalAuthor `json:"external_author,omitempty"`
+	MessageContent string          `json:"message_content"`
+	Read           bool            `json:"read"`
+	CreatedAt      time.Time       `json:"created_at"`
 }
 
 // NotificationList é a resposta de GET /users/:user_id/notifications
