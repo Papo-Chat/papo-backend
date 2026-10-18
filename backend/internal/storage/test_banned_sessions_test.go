@@ -33,7 +33,6 @@ func TestListUsersWithActiveConnectionsExcludesBannedUsers(t *testing.T) {
 	}
 }
 
-
 func TestSetUserBannedRevokesOtherSessionsWithSameIP(t *testing.T) {
 	ip := "198.51.100.77"
 	bannedUser := newTestUser(t)
@@ -79,6 +78,11 @@ func TestSetUserBannedRevokesOtherSessionsWithSameIP(t *testing.T) {
 func TestSetUserBannedWithoutIPDoesNotRevokeOtherUsers(t *testing.T) {
 	bannedUser := newTestUser(t)
 	otherUser := newTestUser(t)
+	// Remove the fixture IP: newTestUser uses a default IP, so an empty-IP
+	// case must explicitly clear it to verify the no-IP behavior.
+	if err := UpdateUserLastIP(testCtx(), bannedUser.ID, ""); err != nil {
+		t.Fatalf("UpdateUserLastIP: %v", err)
+	}
 	if _, err := CreateUserConnection(testCtx(), randUUID(), otherUser.ID, "hash_"+randHex(32), time.Now()); err != nil {
 		t.Fatalf("CreateUserConnection: %v", err)
 	}
