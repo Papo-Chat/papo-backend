@@ -1016,7 +1016,13 @@ func TestBanRouteOwnerBansUser(t *testing.T) {
 // banimento.
 func TestBanRouteOwnerUnbansUser(t *testing.T) {
 	e := newApp()
-	_, ownerToken := ownerTokenFor(t, e)
+	ownerID, ownerToken := ownerTokenFor(t, e)
+	// O teste usa o mesmo IP remoto por padrão para todas as requisições;
+	// mantenha o dono em outro IP para que o banimento do alvo não revogue
+	// também a sessão usada para validar o unban.
+	if err := storage.UpdateUserLastIP(context.Background(), ownerID, "203.0.113.11"); err != nil {
+		t.Fatalf("falha ao configurar IP do dono: %v", err)
+	}
 	targetID, _ := registerAndLogin(t, e)
 	cleanupBan(t, targetID)
 
