@@ -39,6 +39,18 @@ func InsertMediaIfAbsent(ctx context.Context, shaHash, mimeType string, sizeByte
 
 	media, err := scanMedia(row)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Blobs são deduplicados por hash. Corrige também rows antigas que
+		// foram persistidas como application/octet-stream antes de o detector
+		// reconhecer contêineres de vídeo. Não sobrescreve um MIME específico.
+		if mimeType != "" && mimeType != "application/octet-stream" {
+			if _, updateErr := GetDB().ExecContext(ctx,
+				`UPDATE media SET mime_type = $2
+				 WHERE sha_hash = $1 AND mime_type = 'application/octet-stream'`,
+				shaHash, mimeType,
+			); updateErr != nil {
+				return models.Media{}, false, fmt.Errorf("falha ao corrigir MIME da mídia existente: %w", updateErr)
+			}
+		}
 		existing, getErr := GetMediaByHash(ctx, shaHash)
 		if getErr != nil {
 			return models.Media{}, false, getErr
