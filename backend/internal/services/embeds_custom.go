@@ -296,6 +296,13 @@ func CreateCustomEmbedsWithAttachments(
 	if err := validateCustomEmbeds(inputs); err != nil {
 		return nil, err
 	}
+	attachmentInputs := make([]AttachmentInput, 0, len(attachments))
+	for _, attachment := range attachments {
+		attachmentInputs = append(attachmentInputs, AttachmentInput{OriginalFileName: attachment.OriginalFileName})
+	}
+	if err := validateEmbedAttachmentReferences(inputs, attachmentInputs); err != nil {
+		return nil, err
+	}
 
 	byName := make(map[string]models.Attachments, len(attachments))
 	for _, attachment := range attachments {
