@@ -7,7 +7,9 @@ ALTER TABLE attachments
     ADD CONSTRAINT attachments_video_dimensions_valid CHECK (
         (width IS NULL AND height IS NULL)
         OR (
-            width BETWEEN 1 AND 16384
+            width IS NOT NULL
+            AND height IS NOT NULL
+            AND width BETWEEN 1 AND 16384
             AND height BETWEEN 1 AND 16384
             AND width::BIGINT * height::BIGINT <= 100000000
             AND width::BIGINT <= height::BIGINT * 10
