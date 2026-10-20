@@ -66,6 +66,14 @@ func detectContainerMimeType(content []byte) string {
 			return "video/quicktime"
 		case "M4A ", "M4B ", "M4P ", "F4A ":
 			return "audio/mp4"
+		case "avif", "avis":
+			return "image/avif"
+		case "heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs", "mif1", "msf1":
+			return "image/heic"
+		case "3gp4", "3gp5", "3gp6", "3ge6", "3ge7":
+			return "video/3gpp"
+		case "3g2a", "3g2b":
+			return "video/3gpp2"
 		default:
 			// ISO-BMFF ftyp brands cover MP4/M4V and compatible variants.
 			return "video/mp4"
