@@ -729,6 +729,26 @@ func TestInsertMediaIfAbsent(t *testing.T) {
 	if _, created, err := InsertMediaIfAbsent(testCtx(), otherHash, "image/gif", int64(len(other))); err != nil || !created {
 		t.Errorf("conteúdo diferente deveria criar nova linha (created=%v, err=%v)", created, err)
 	}
+
+	// Registros antigos de vídeo podem ter sido persistidos como genéricos.
+	// Um upload deduplicado com MIME reconhecido deve reparar somente esse caso.
+	legacyContent := []byte("legacy video bytes")
+	legacyMac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
+	legacyMac.Write(legacyContent)
+	legacyHash := hex.EncodeToString(legacyMac.Sum(nil))
+	if _, created, err := InsertMediaIfAbsent(testCtx(), legacyHash, "application/octet-stream", int64(len(legacyContent))); err != nil || !created {
+		t.Fatalf("falha ao criar mídia legacy genérica (created=%v, err=%v)", created, err)
+	}
+	corrected, created, err := InsertMediaIfAbsent(testCtx(), legacyHash, "video/mp4", int64(len(legacyContent)))
+	if err != nil {
+		t.Fatalf("falha ao corrigir MIME duplicado: %v", err)
+	}
+	if created {
+		t.Fatal("mídia deduplicada não deveria ser reportada como recém-criada")
+	}
+	if corrected.MimeType != "video/mp4" {
+		t.Errorf("esperava MIME corrigido %q, obtive %q", "video/mp4", corrected.MimeType)
+	}
 }
 
 func TestGetMediaByHash(t *testing.T) {
