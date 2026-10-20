@@ -82,7 +82,7 @@ func DownloadAttachmentHandler(baseURL string, c echo.Context) error {
 	// para que uploads anteriores também funcionem em <video> e em seeks 206.
 	contentType := attachment.MimeType
 	if contentType == "" || contentType == "application/octet-stream" {
-		var header [512]byte
+		var header [64 * 1024]byte
 		n, readErr := io.ReadFull(file, header[:])
 		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
 			return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
