@@ -29,8 +29,9 @@ func scanMedia(row rowScanner) (models.Media, error) {
 
 // InsertMediaIfAbsent insere o registro de mídia pelo sha_hash (deduplicação
 // content-addressable). Quando o hash já existe, retorna o registro existente
-// sem alterar nada. O segundo retorno indica se a inserção foi feita por esta
-// chamada (false = hash já existia).
+// e repara o MIME apenas se ele estiver genérico (application/octet-stream) e
+// o conteúdo atual tiver sido reconhecido. O segundo retorno indica se a linha
+// foi criada por esta chamada (false = hash já existia).
 func InsertMediaIfAbsent(ctx context.Context, shaHash, mimeType string, sizeBytes int64) (models.Media, bool, error) {
 	row := GetDB().QueryRowContext(ctx,
 		"INSERT INTO media (sha_hash, mime_type, size_bytes) VALUES ($1, $2, $3) ON CONFLICT (sha_hash) DO NOTHING RETURNING "+mediaColumns,
