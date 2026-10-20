@@ -45,6 +45,8 @@ type MessageAttachment struct {
 	MimeType         string    `json:"mime_type"`
 	OriginalFileName string    `json:"original_file_name"`
 	SizeBytes        int64     `json:"size_bytes"`
+	Width            *int      `json:"width"`
+	Height           *int      `json:"height"`
 	ThumbnailID      *string   `json:"thumbnail_id"`
 	ThumbnailWidth   *int      `json:"thumbnail_width"`
 	ThumbnailHeight  *int      `json:"thumbnail_height"`
