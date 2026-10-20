@@ -14,6 +14,8 @@ type Attachments struct {
 	FilePath         string    `json:"-"`
 	MessagesID       *string   `db:"messages_id" json:"-"`
 	SizeBytes        int64     `json:"size_bytes"`
+	Width            *int      `db:"width" json:"-"`
+	Height           *int      `db:"height" json:"-"`
 	CreatedBy        *string   `db:"created_by" json:"-"`
 	CreatedAt        time.Time `db:"created_at" json:"created_at"`
 

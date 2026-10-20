@@ -189,6 +189,13 @@ func storeAttachment(ctx context.Context, input AttachmentInput, userID string) 
 		return models.Attachments{}, err
 	}
 
+	// Parse container headers only (MP4/WebM); never decode frames or trust
+	// client-supplied MIME/extensions. Invalid or suspicious dimensions remain nil.
+	var width, height *int
+	if w, h, ok := utils.VideoDimensionsFromFile(tmpName); ok {
+		width, height = &w, &h
+	}
+
 	if err := moveToBlob(tmpName, hash); err != nil {
 		return models.Attachments{}, err
 	}
@@ -200,6 +207,8 @@ func storeAttachment(ctx context.Context, input AttachmentInput, userID string) 
 	attachment, err := storage.CreateAttachment(ctx, models.Attachments{
 		OriginalFileName: fileName,
 		MediaShaHash:     hash,
+		Width:            width,
+		Height:           height,
 		CreatedBy:        &userID,
 	})
 	if err != nil {
@@ -396,7 +405,10 @@ func detectMimeTypeFromFile(path string) (string, error) {
 	}
 	defer f.Close()
 
-	buf := make([]byte, 512)
+	// EBML DocType can appear after additional header elements. Read a
+	// bounded prefix large enough for valid WebM headers; net/http only uses
+	// its own first 512 bytes when falling back to generic MIME sniffing.
+	buf := make([]byte, 64*1024)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return "", fmt.Errorf("falha ao detectar mime type: %w", err)

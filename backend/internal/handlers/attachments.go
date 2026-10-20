@@ -77,13 +77,37 @@ func DownloadAttachmentHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao baixar o arquivo")
 	}
 
+	// Novos uploads persistem o MIME detectado no conteúdo. Reclassifica
+	// apenas registros antigos/genéricos application/octet-stream na leitura,
+	// para que uploads anteriores também funcionem em <video> e em seeks 206.
+	contentType := attachment.MimeType
+	if contentType == "" || contentType == "application/octet-stream" {
+		var header [64 * 1024]byte
+		n, readErr := io.ReadFull(file, header[:])
+		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+				"internal", "Erro interno", "falha ao identificar o tipo do arquivo")
+		}
+		if detected := utils.DetectMimeType(header[:n]); detected != "" {
+			contentType = detected
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			utils.Errorf("request_id=%s falha ao reposicionar blob do attachment: %v",
+				c.Request().Header.Get(echo.HeaderXRequestID), err)
+			return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
+				"internal", "Erro interno", "falha ao preparar o arquivo para envio")
+		}
+	}
+
 	resp := c.Response()
-	resp.Header().Set(echo.HeaderContentType, attachment.MimeType)
+	resp.Header().Set(echo.HeaderContentType, contentType)
 	resp.Header().Set(echo.HeaderContentDisposition, utils.ContentDisposition(attachment.OriginalFileName))
+	resp.Header().Set("X-Content-Type-Options", "nosniff")
 
 	// ServeContent trata Range requests (206 Partial Content, 416 para
-	// intervalo fora do alcance) e If-Modified-Since (304). O blob é
-	// content-addressable e imutável, então o ModTime é estável.
+	// intervalo fora do alcance) e If-Modified-Since (304). O MIME escolhido
+	// acima é explicitado antes da chamada e preservado também nas respostas
+	// parciais, usadas pelo seek de players de vídeo.
 	http.ServeContent(resp, c.Request(), attachment.OriginalFileName, info.ModTime(), file)
 
 	return nil

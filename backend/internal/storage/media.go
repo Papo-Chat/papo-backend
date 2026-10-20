@@ -29,8 +29,9 @@ func scanMedia(row rowScanner) (models.Media, error) {
 
 // InsertMediaIfAbsent insere o registro de mídia pelo sha_hash (deduplicação
 // content-addressable). Quando o hash já existe, retorna o registro existente
-// sem alterar nada. O segundo retorno indica se a inserção foi feita por esta
-// chamada (false = hash já existia).
+// e repara o MIME apenas se ele estiver genérico (application/octet-stream) e
+// o conteúdo atual tiver sido reconhecido. O segundo retorno indica se a linha
+// foi criada por esta chamada (false = hash já existia).
 func InsertMediaIfAbsent(ctx context.Context, shaHash, mimeType string, sizeBytes int64) (models.Media, bool, error) {
 	row := GetDB().QueryRowContext(ctx,
 		"INSERT INTO media (sha_hash, mime_type, size_bytes) VALUES ($1, $2, $3) ON CONFLICT (sha_hash) DO NOTHING RETURNING "+mediaColumns,
@@ -39,6 +40,18 @@ func InsertMediaIfAbsent(ctx context.Context, shaHash, mimeType string, sizeByte
 
 	media, err := scanMedia(row)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Blobs são deduplicados por hash. Corrige também rows antigas que
+		// foram persistidas como application/octet-stream antes de o detector
+		// reconhecer contêineres de vídeo. Não sobrescreve um MIME específico.
+		if mimeType != "" && mimeType != "application/octet-stream" {
+			if _, updateErr := GetDB().ExecContext(ctx,
+				`UPDATE media SET mime_type = $2
+				 WHERE sha_hash = $1 AND mime_type = 'application/octet-stream'`,
+				shaHash, mimeType,
+			); updateErr != nil {
+				return models.Media{}, false, fmt.Errorf("falha ao corrigir MIME da mídia existente: %w", updateErr)
+			}
+		}
 		existing, getErr := GetMediaByHash(ctx, shaHash)
 		if getErr != nil {
 			return models.Media{}, false, getErr

@@ -12,7 +12,7 @@ import (
 // o attachment só guarda a referência content-addressable do blob. As
 // colunas moderation_* são o estado da moderação assíncrona de imagens
 // (migrations/008_moderation.sql).
-const attachmentColumns = "a.id, a.original_file_name, m.mime_type, a.media_sha_hash, a.messages_id, m.size_bytes, a.created_by, a.created_at, a.moderation_status, a.moderation_attempts, a.moderation_checked_at, a.moderation_updated_at, a.moderation_model_version, a.moderation_sfw_score, a.moderation_nudity_score, a.moderation_gore_score"
+const attachmentColumns = "a.id, a.original_file_name, m.mime_type, a.media_sha_hash, a.messages_id, m.size_bytes, a.created_by, a.created_at, a.moderation_status, a.moderation_attempts, a.moderation_checked_at, a.moderation_updated_at, a.moderation_model_version, a.moderation_sfw_score, a.moderation_nudity_score, a.moderation_gore_score, a.width, a.height"
 const attachmentFrom = "FROM attachments a JOIN media m ON m.sha_hash = a.media_sha_hash"
 
 func scanAttachment(row rowScanner) (models.Attachments, error) {
@@ -34,6 +34,8 @@ func scanAttachment(row rowScanner) (models.Attachments, error) {
 		&attachment.ModerationSFWScore,
 		&attachment.ModerationNudityScore,
 		&attachment.ModerationGoreScore,
+		&attachment.Width,
+		&attachment.Height,
 	)
 	if err != nil {
 		return models.Attachments{}, err
@@ -51,16 +53,16 @@ func CreateAttachment(ctx context.Context, a models.Attachments) (models.Attachm
 	// a linha inserida ainda não seria visível na tabela.
 	row := GetDB().QueryRowContext(ctx,
 		`WITH inserted AS (
-			INSERT INTO attachments (original_file_name, media_sha_hash, created_by) VALUES ($1, $2, $3)
-			RETURNING id, original_file_name, media_sha_hash, messages_id, created_by, created_at,
+			INSERT INTO attachments (original_file_name, media_sha_hash, created_by, width, height) VALUES ($1, $2, $3, $4, $5)
+			RETURNING id, original_file_name, media_sha_hash, messages_id, created_by, created_at, width, height,
 			          moderation_status, moderation_attempts, moderation_checked_at, moderation_updated_at,
 			          moderation_model_version, moderation_sfw_score, moderation_nudity_score, moderation_gore_score
 		 )
 		 SELECT i.id, i.original_file_name, m.mime_type, i.media_sha_hash, i.messages_id, m.size_bytes, i.created_by, i.created_at,
 		        i.moderation_status, i.moderation_attempts, i.moderation_checked_at, i.moderation_updated_at,
-		        i.moderation_model_version, i.moderation_sfw_score, i.moderation_nudity_score, i.moderation_gore_score
+		        i.moderation_model_version, i.moderation_sfw_score, i.moderation_nudity_score, i.moderation_gore_score, i.width, i.height
 		 FROM inserted i JOIN media m ON m.sha_hash = i.media_sha_hash`,
-		a.OriginalFileName, a.MediaShaHash, a.CreatedBy,
+		a.OriginalFileName, a.MediaShaHash, a.CreatedBy, a.Width, a.Height,
 	)
 
 	attachment, err := scanAttachment(row)
