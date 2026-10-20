@@ -69,8 +69,11 @@ func TestDetectMimeTypeRejectsMalformedContainerHeaders(t *testing.T) {
 }
 
 func TestDetectedVideoMIMEIsPreservedForFullAndRangeResponses(t *testing.T) {
-	data := append([]byte("video body for range tests"), bytes.Repeat([]byte{0x01}, 64)...)
-	mimeType := "video/mp4"
+	data := append(testMP4Box("ftyp", []byte("isom0000isommp42")), bytes.Repeat([]byte{0x01}, 64)...)
+	mimeType := DetectMimeType(data)
+	if mimeType != "video/mp4" {
+		t.Fatalf("DetectMimeType() = %q, want video/mp4", mimeType)
+	}
 
 	tests := []struct {
 		name       string
