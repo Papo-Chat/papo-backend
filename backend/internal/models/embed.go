@@ -49,6 +49,10 @@ type Embed struct {
 	// do hash pelo service (GET /embeds/:embed_id).
 	ThumbnailFilePath *string `json:"-"`
 
+	// ImageFilePath é o caminho do blob de image em disco, resolvido do hash
+	// pelo service para que GET /embeds/:embed_id também sirva embeds image-only.
+	ImageFilePath *string `json:"-"`
+
 	// AuthorFilePath é o caminho do blob do ícone do autor em disco, resolvido
 	// do hash pelo service (GET /embeds/:embed_id).
 	AuthorFilePath *string `json:"-"`
