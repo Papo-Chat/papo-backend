@@ -56,11 +56,7 @@ func GetEmbedHandler(baseURL string, c echo.Context) error {
 	resp := embedResponse{Embed: embed}
 	// image_data é o bitmap principal renderizado pelo frontend. Use thumbnail
 	// quando disponível; embeds personalizados podem ter apenas image.
-	imagePath := embed.ThumbnailFilePath
-	if imagePath == nil {
-		imagePath = embed.ImageFilePath
-	}
-	if data, err := readEmbedBlob(imagePath); err != nil {
+	if data, err := readEmbedBlob(embedImagePath(embed)); err != nil {
 		utils.Errorf("request_id=%s falha ao ler a imagem do embed: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
@@ -80,6 +76,15 @@ func GetEmbedHandler(baseURL string, c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, resp)
+}
+
+// embedImagePath escolhe o bitmap enviado como image_data: thumbnail tem
+// precedência; embeds customizados image-only usam o caminho de image.
+func embedImagePath(embed models.Embed) *string {
+	if embed.ThumbnailFilePath != nil {
+		return embed.ThumbnailFilePath
+	}
+	return embed.ImageFilePath
 }
 
 // readEmbedBlob lê o blob de mídia apontado pelo caminho interno. nil, nil
