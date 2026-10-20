@@ -102,7 +102,7 @@ func DownloadAttachmentHandler(baseURL string, c echo.Context) error {
 	resp := c.Response()
 	resp.Header().Set(echo.HeaderContentType, contentType)
 	resp.Header().Set(echo.HeaderContentDisposition, utils.ContentDisposition(attachment.OriginalFileName))
-	resp.Header().Set(echo.HeaderXContentTypeOptions, "nosniff")
+	resp.Header().Set("X-Content-Type-Options", "nosniff")
 
 	// ServeContent trata Range requests (206 Partial Content, 416 para
 	// intervalo fora do alcance) e If-Modified-Since (304). O MIME escolhido
