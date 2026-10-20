@@ -4522,17 +4522,21 @@ components:
     EmbedMediaInput:
       type: object
       description: >
-        Mídia de um embed customizado informada por URL: o backend baixa e
-        re-serve (client SSRF-safe, robots.txt, teto de tamanho e magic bytes
-        verificados). Thumbnail/image: exige HTTPS e MIME de imagem suportado
-        (image/jpeg, image/png, image/webp, image/gif). Video: exige HTTPS e
+        Mídia de um embed customizado. Thumbnail/image aceitam uma URL HTTPS
+        (o backend baixa e re-serve com client SSRF-safe) ou attachment_name,
+        que referencia um arquivo multipart da mesma mensagem e grava seus bytes
+        diretamente na mídia do embed, sem exibir o arquivo como attachment
+        independente. Informe exatamente um dos dois. Video exige URL HTTPS e
         mime_type obrigatório dentro do allowlist (video/mp4, video/webm,
         video/ogg); é servido pelo relay GET /embeds/{embed_id}/video.
-      required: [url]
       properties:
         url:
           type: string
           format: uri
+          description: URL HTTPS de imagem/vídeo; alternativamente use attachment_name para thumbnail/image
+        attachment_name:
+          type: string
+          description: Nome exato de um arquivo multipart enviado na mesma mensagem; permitido para thumbnail/image
         mime_type:
           type: string
           description: MIME declarado; rejeitado quando não suportado
