@@ -295,9 +295,11 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 			return models.MessageWithAttachment{}, false, ErrInvalidInput
 		}
 	}
-	// Embeds são validados antes de qualquer gravação: uma mensagem não pode
-	// ser criada com embeds que depois seriam rejeitados.
+	// Embeds e referências a attachments são validados antes de qualquer gravação.
 	if err := validateCustomEmbeds(embeds); err != nil {
+		return models.MessageWithAttachment{}, false, err
+	}
+	if err := validateEmbedAttachmentReferences(embeds, attachments); err != nil {
 		return models.MessageWithAttachment{}, false, err
 	}
 
@@ -385,17 +387,25 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 	}
 
 	createdAttachments := make([]models.Attachments, 0, len(attachments))
-	attachmentIDs := make([]string, 0, len(attachments))
+	messageAttachmentsStored := make([]models.Attachments, 0, len(attachments))
+	messageAttachmentIDs := make([]string, 0, len(attachments))
+	embedOnlyNames := embedAttachmentNames(embeds)
 	for _, att := range attachments {
 		created, err := storeAttachment(ctx, att, mediaOwner)
 		if err != nil {
 			return models.MessageWithAttachment{}, false, err
 		}
 		createdAttachments = append(createdAttachments, created)
-		attachmentIDs = append(attachmentIDs, created.ID)
+		if embedOnlyNames[created.OriginalFileName] {
+			continue
+		}
+		messageAttachmentsStored = append(messageAttachmentsStored, created)
+		messageAttachmentIDs = append(messageAttachmentIDs, created.ID)
 	}
 
-	message, inserted, err := storage.CreateMessageAs(ctx, channelID, authorID, webhookID, external, sourceID, content, replyTo, attachmentIDs)
+	message, inserted, err := storage.CreateMessageAs(
+		ctx, channelID, authorID, webhookID, external, sourceID, content, replyTo, messageAttachmentIDs,
+	)
 	if err != nil {
 		return models.MessageWithAttachment{}, false, err
 	}
@@ -415,16 +425,16 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 		}
 	}
 
-	messageAttachments := toMessageAttachments(createdAttachments)
-	if len(attachmentIDs) > 0 {
-		thumbnails, err := storage.ListThumbnailsByAttachmentIDs(ctx, attachmentIDs)
+	messageAttachments := toMessageAttachments(messageAttachmentsStored)
+	if len(messageAttachmentIDs) > 0 {
+		thumbnails, err := storage.ListThumbnailsByAttachmentIDs(ctx, messageAttachmentIDs)
 		if err != nil {
 			return models.MessageWithAttachment{}, false, err
 		}
 		setAttachmentThumbnails(&messageAttachments, thumbnails)
 	}
 
-	messageEmbeds, err := CreateCustomEmbeds(ctx, mediaOwner, embeds)
+	messageEmbeds, err := CreateCustomEmbedsWithAttachments(ctx, mediaOwner, embeds, createdAttachments)
 	if err != nil {
 		return models.MessageWithAttachment{}, false, err
 	}

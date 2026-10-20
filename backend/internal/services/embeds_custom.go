@@ -54,14 +54,14 @@ type EmbedFooterInput struct {
 	Text string `json:"text"`
 }
 
-// EmbedMediaInput é uma mídia do embed customizado informada por URL.
-// Thumbnail/Image: imagem baixada e gravada na tabela media (o backend nunca
-// serve a URL original do cliente). Video: URL HTTPS de vídeo direto, servida
-// pelo relay autenticado (GET /embeds/:embed_id/video); mime_type é obrigatório
-// e precisa estar no allowlist.
+// EmbedMediaInput é uma mídia do embed customizado. Thumbnail/Image podem apontar
+// para uma URL HTTPS, que o backend baixa e re-serve, ou para um attachment enviado
+// na mesma mensagem. AttachmentName evita um fetch externo para mídia do Discord.
+// Video segue usando URL HTTPS direta e MIME obrigatório.
 type EmbedMediaInput struct {
-	URL      string `json:"url"`
-	MimeType string `json:"mime_type"`
+	URL            string `json:"url"`
+	MimeType       string `json:"mime_type"`
+	AttachmentName string `json:"attachment_name,omitempty"`
 }
 
 // EmbedFieldInput é uma field do embed customizado. A ordem de exibição é a
@@ -139,12 +139,12 @@ func validateCustomEmbed(in EmbedInput) error {
 	}
 
 	if in.Thumbnail != nil {
-		if _, err := validateEmbedMediaURL(in.Thumbnail.URL, in.Thumbnail.MimeType); err != nil {
+		if err := validateEmbedMediaInput(in.Thumbnail); err != nil {
 			return err
 		}
 	}
 	if in.Image != nil {
-		if _, err := validateEmbedMediaURL(in.Image.URL, in.Image.MimeType); err != nil {
+		if err := validateEmbedMediaInput(in.Image); err != nil {
 			return err
 		}
 	}
@@ -202,6 +202,67 @@ func validateEmbedMediaURL(raw, mimeType string) (string, error) {
 	return u.String(), nil
 }
 
+// validateEmbedAttachmentReferences garante que cada attachment_name aponte para
+// exatamente um arquivo multipart da mesma mensagem. Arquivos referenciados viram
+// mídia do embed e não aparecem também como attachments independentes da mensagem.
+func validateEmbedAttachmentReferences(inputs []EmbedInput, attachments []AttachmentInput) error {
+	counts := make(map[string]int, len(attachments))
+	for _, attachment := range attachments {
+		name := utils.SanitizeFileName(attachment.OriginalFileName)
+		if name != "" {
+			counts[name]++
+		}
+	}
+	for _, embed := range inputs {
+		for _, media := range []*EmbedMediaInput{embed.Thumbnail, embed.Image} {
+			if media == nil || media.AttachmentName == "" {
+				continue
+			}
+			name := utils.SanitizeFileName(media.AttachmentName)
+			if name == "" || name != media.AttachmentName || counts[name] != 1 {
+				return ErrInvalidInput
+			}
+		}
+	}
+	return nil
+}
+
+func embedAttachmentNames(inputs []EmbedInput) map[string]bool {
+	names := make(map[string]bool)
+	for _, embed := range inputs {
+		for _, media := range []*EmbedMediaInput{embed.Thumbnail, embed.Image} {
+			if media != nil && media.AttachmentName != "" {
+				names[media.AttachmentName] = true
+			}
+		}
+	}
+	return names
+}
+
+// validateEmbedMediaInput aceita mídia por URL HTTPS ou referência a um
+// attachment da mesma mensagem. A referência é validada contra os arquivos do
+// multipart em validateEmbedAttachmentReferences, antes de qualquer gravação.
+func validateEmbedMediaInput(in *EmbedMediaInput) error {
+	if in.AttachmentName != "" {
+		if strings.TrimSpace(in.URL) != "" {
+			return fmt.Errorf("informe url ou attachment_name, não ambos")
+		}
+		name := utils.SanitizeFileName(in.AttachmentName)
+		if name == "" || name != in.AttachmentName || utf8.RuneCountInString(name) > maxAttachmentNameLength {
+			return fmt.Errorf("attachment_name inválido")
+		}
+		if in.MimeType != "" && !isProcessableImage(strings.ToLower(strings.TrimSpace(strings.Split(in.MimeType, ";")[0]))) {
+			return fmt.Errorf("MIME type de imagem não suportado")
+		}
+		return nil
+	}
+	if strings.TrimSpace(in.URL) == "" {
+		return fmt.Errorf("url ou attachment_name obrigatório para mídia")
+	}
+	_, err := validateEmbedMediaURL(in.URL, in.MimeType)
+	return err
+}
+
 // validateEmbedVideoInput valida o vídeo direto de um embed customizado: HTTPS,
 // MIME type obrigatório dentro do allowlist de vídeo.
 func validateEmbedVideoInput(in *EmbedMediaInput) (string, error) {
@@ -218,19 +279,39 @@ func validateEmbedVideoInput(in *EmbedMediaInput) (string, error) {
 	return normalizeEmbedVideoURL(in.URL)
 }
 
-// CreateCustomEmbeds valida e grava os embeds customizados de uma mensagem
-// (source_type='custom', fetch_method='manual'), baixando as mídias informadas
-// por URL com o client SSRF-safe. Best-effort na mídia: falha de download é
-// logada e o embed é gravado sem ela (a validação de entrada já rejeitou MIME,
-// esquema e tamanho inválidos).
+// CreateCustomEmbeds mantém o caminho de embed por URL para chamadas sem
+// attachments associados.
 func CreateCustomEmbeds(ctx context.Context, userID string, inputs []EmbedInput) ([]models.Embed, error) {
+	return CreateCustomEmbedsWithAttachments(ctx, userID, inputs, nil)
+}
+
+// CreateCustomEmbedsWithAttachments permite que thumbnail/image reutilizem o
+// blob de um attachment enviado na mesma mensagem, sem o backend baixar a URL do CDN.
+func CreateCustomEmbedsWithAttachments(
+	ctx context.Context,
+	userID string,
+	inputs []EmbedInput,
+	attachments []models.Attachments,
+) ([]models.Embed, error) {
 	if err := validateCustomEmbeds(inputs); err != nil {
 		return nil, err
+	}
+	attachmentInputs := make([]AttachmentInput, 0, len(attachments))
+	for _, attachment := range attachments {
+		attachmentInputs = append(attachmentInputs, AttachmentInput{OriginalFileName: attachment.OriginalFileName})
+	}
+	if err := validateEmbedAttachmentReferences(inputs, attachmentInputs); err != nil {
+		return nil, err
+	}
+
+	byName := make(map[string]models.Attachments, len(attachments))
+	for _, attachment := range attachments {
+		byName[attachment.OriginalFileName] = attachment
 	}
 
 	created := make([]models.Embed, 0, len(inputs))
 	for _, in := range inputs {
-		embed, fields := buildCustomEmbed(in)
+		embed, fields := buildCustomEmbedWithAttachments(in, byName)
 		resolveCustomEmbedMedia(ctx, userID, &embed)
 
 		stored, err := storage.CreateCustomEmbed(ctx, embed, fields)
@@ -247,6 +328,13 @@ func CreateCustomEmbeds(ctx context.Context, userID string, inputs []EmbedInput)
 // campos ao limite (defesa em profundidade: a validação já os rejeitou acima do
 // limite) e fixando source_type/fetch_method.
 func buildCustomEmbed(in EmbedInput) (models.Embed, []models.EmbedField) {
+	return buildCustomEmbedWithAttachments(in, nil)
+}
+
+func buildCustomEmbedWithAttachments(
+	in EmbedInput,
+	attachments map[string]models.Attachments,
+) (models.Embed, []models.EmbedField) {
 	embed := models.Embed{
 		SourceType:  embedSourceCustom,
 		FetchMethod: embedFetchManual,
@@ -296,10 +384,10 @@ func buildCustomEmbed(in EmbedInput) (models.Embed, []models.EmbedField) {
 		}
 	}
 
-	// thumbnail/image chegam aqui só com a URL declarada; resolveCustomEmbedMedia
-	// baixa cada uma e substitui pela mídia persistida (ou descarta).
-	embed.Thumbnail = declaredEmbedImage(in.Thumbnail)
-	embed.Image = declaredEmbedImage(in.Image)
+	// URL externa é baixada por resolveCustomEmbedMedia. Referências a attachments
+	// reutilizam os bytes que o bridge já enviou e não exigem fetch do CDN.
+	embed.Thumbnail = embedImageInput(in.Thumbnail, attachments)
+	embed.Image = embedImageInput(in.Image, attachments)
 
 	fields := make([]models.EmbedField, 0, len(in.Fields))
 	for _, field := range in.Fields {
@@ -312,6 +400,31 @@ func buildCustomEmbed(in EmbedInput) (models.Embed, []models.EmbedField) {
 	}
 
 	return embed, fields
+}
+
+// embedImageInput converte uma URL declarada ou referencia diretamente o blob
+// de um attachment da mesma mensagem, sem guardar a URL temporária do Discord.
+func embedImageInput(in *EmbedMediaInput, attachments map[string]models.Attachments) *models.EmbedMedia {
+	if in == nil {
+		return nil
+	}
+	if in.AttachmentName != "" {
+		attachment, ok := attachments[in.AttachmentName]
+		if !ok {
+			return nil // validateEmbedAttachmentReferences rejeita antes da gravação.
+		}
+		mimeType := attachment.MimeType
+		size := attachment.SizeBytes
+		sha := attachment.MediaShaHash
+		return &models.EmbedMedia{
+			MimeType:  &mimeType,
+			SizeBytes: &size,
+			Width:     attachment.Width,
+			Height:    attachment.Height,
+			MediaSHA:  &sha,
+		}
+	}
+	return declaredEmbedImage(in)
 }
 
 // declaredEmbedImage guarda a URL de imagem declarada pelo cliente (validada em
@@ -337,7 +450,14 @@ func resolveCustomEmbedMedia(ctx context.Context, userID string, embed *models.E
 }
 
 func resolveCustomEmbedImage(ctx context.Context, userID string, declared *models.EmbedMedia) *models.EmbedMedia {
-	if declared == nil || declared.URL == nil {
+	if declared == nil {
+		return nil
+	}
+	// Attachment-backed media já aponta para um blob persistido.
+	if declared.MediaSHA != nil {
+		return declared
+	}
+	if declared.URL == nil {
 		return nil
 	}
 	// A mídia de embed usa o mesmo rate limit do crawler: URL outbound informada
