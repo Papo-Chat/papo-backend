@@ -30,6 +30,16 @@ func TestDetectVideoContainerMIMETypes(t *testing.T) {
 			want: "audio/mp4",
 		},
 		{
+			name: "AVIF remains image",
+			data: testMP4Box("ftyp", []byte("avif0000avif")),
+			want: "image/avif",
+		},
+		{
+			name: "HEIC remains image",
+			data: testMP4Box("ftyp", []byte("heic0000mif1")),
+			want: "image/heic",
+		},
+		{
 			name: "WebM",
 			data: testEBMLElement([]byte{0x1a, 0x45, 0xdf, 0xa3},
 				testEBMLElement([]byte{0x42, 0x82}, []byte("webm"))),
