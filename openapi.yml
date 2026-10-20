@@ -4185,6 +4185,20 @@ components:
         size_bytes:
           type: integer
           format: int64
+        width:
+          type: integer
+          nullable: true
+          description: >
+            Largura do vídeo original em pixels, extraída dos metadados do
+            contêiner; null quando o formato não é suportado ou as dimensões
+            são inválidas/suspeitas.
+        height:
+          type: integer
+          nullable: true
+          description: >
+            Altura do vídeo original em pixels, extraída dos metadados do
+            contêiner; null quando o formato não é suportado ou as dimensões
+            são inválidas/suspeitas.
         thumbnail_id:
           type: string
           format: uuid
