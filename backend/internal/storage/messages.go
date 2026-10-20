@@ -241,7 +241,7 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 	fetch := limit + 1
 
 	query := "SELECT p.id, p.channel_id, p.author_id, p.content, p.created_at, p.edited_at, p.reply_to, p.webhook_id, p.external_author, p.external_message_id, " +
-		"a.id, m.mime_type, a.original_file_name, m.size_bytes, a.created_at " +
+		"a.id, m.mime_type, a.original_file_name, m.size_bytes, a.created_at, a.width, a.height " +
 		"FROM (SELECT " + messageColumns + " FROM messages WHERE channel_id = $1"
 	args := []any{channelID}
 	op, order := "<", "DESC"
@@ -286,6 +286,8 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 			fileName     *string
 			sizeBytes    *int64
 			attachmentAt *time.Time
+			width        *int
+			height       *int
 			extJSON      []byte
 		)
 		err := rows.Scan(
@@ -304,6 +306,8 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 			&fileName,
 			&sizeBytes,
 			&attachmentAt,
+			&width,
+			&height,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("falha ao ler mensagem: %w", err)
@@ -333,6 +337,8 @@ func ListMessagesWithAttachmentsByChannelOrdered(ctx context.Context, channelID 
 				MimeType:         *mimeType,
 				OriginalFileName: *fileName,
 				SizeBytes:        *sizeBytes,
+				Width:            width,
+				Height:           height,
 				CreatedAt:        *attachmentAt,
 			})
 		}
