@@ -35,6 +35,8 @@ type PinnedMessage struct {
 // de mensagens (listagem, criação e edição). ModerationStatus é o estado da
 // moderação assíncrona de imagens (nudez/gore): pending/processing/
 // clean/sensitive/blocked/failed (ver migrations/008_moderation.sql).
+// Width/Height são as dimensões do vídeo original extraídas do contêiner,
+// quando suportado e considerado seguro; caso contrário são null.
 // ThumbnailWidth/ThumbnailHeight são a geometria da thumbnail gerada no upload
 // (tabela attachment_thumbnails): o frontend reserva o box da imagem antes do
 // download, evitando o salto de layout quando a mídia entra no viewport.
