@@ -1101,8 +1101,8 @@ func nullableText(s string) *string {
 // GetEmbed resolve um embed com o MESMO check de acesso da mensagem à qual ele
 // está vinculado (read_channel do canal). Embed inexistente ou sem vínculo com
 // mensagem acessível → ErrEmbedNotFound (404, não vaza a existência). A imagem
-// não é obrigatória: o embed é retornado mesmo sem imagem (ThumbnailFilePath
-// nil).
+// não é obrigatória: o embed é retornado mesmo sem mídia (ThumbnailFilePath e
+// ImageFilePath nil).
 func GetEmbed(ctx context.Context, embedID, userID string) (models.Embed, error) {
 	if embedID == "" || userID == "" {
 		return models.Embed{}, ErrEmbedNotFound
