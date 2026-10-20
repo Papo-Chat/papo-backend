@@ -85,7 +85,7 @@ type mp4Box struct {
 }
 
 func readMP4Box(r io.ReaderAt, offset, parentEnd int64, budget *int) (mp4Box, bool) {
-	*budget++
+	(*budget)++
 	if *budget > maxVideoElements || offset < 0 || parentEnd < offset || parentEnd-offset < 8 {
 		return mp4Box{}, false
 	}
@@ -322,7 +322,7 @@ func readEBMLVINT(r io.ReaderAt, offset, parentEnd int64, isID bool) (uint64, in
 }
 
 func readEBMLElement(r io.ReaderAt, offset, parentEnd int64, budget *int) (ebmlElement, bool) {
-	*budget++
+	(*budget)++
 	if *budget > maxVideoElements || offset < 0 || parentEnd < offset {
 		return ebmlElement{}, false
 	}
@@ -359,6 +359,9 @@ func parseWebMDimensions(r io.ReaderAt, fileSize int64) (int, int, bool) {
 	for offset := int64(0); offset < fileSize; {
 		elem, ok := readEBMLElement(r, offset, fileSize, &budget)
 		if !ok {
+			return 0, 0, false
+		}
+		if offset == 0 && elem.id != ebmlHeaderID {
 			return 0, 0, false
 		}
 		if elem.unknown && elem.id != ebmlSegmentID {
