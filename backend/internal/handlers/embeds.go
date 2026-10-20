@@ -18,7 +18,7 @@ import (
 // embedResponse é a resposta de GET /embeds/:embed_id: os campos públicos do
 // embed + a imagem embutida em base64 (image_data) quando existe, e o ícone do
 // autor em base64 (author_image_data) quando existe. As referências internas de
-// mídia (ThumbnailFilePath, AuthorFilePath) são excluídas da serialização (json:"-").
+// mídia (ThumbnailFilePath, ImageFilePath, AuthorFilePath) não são serializadas.
 type embedResponse struct {
 	models.Embed
 	ImageData       *string `json:"image_data"`
@@ -54,7 +54,13 @@ func GetEmbedHandler(baseURL string, c echo.Context) error {
 	}
 
 	resp := embedResponse{Embed: embed}
-	if data, err := readEmbedBlob(embed.ThumbnailFilePath); err != nil {
+	// image_data é o bitmap principal renderizado pelo frontend. Use thumbnail
+	// quando disponível; embeds personalizados podem ter apenas image.
+	imagePath := embed.ThumbnailFilePath
+	if imagePath == nil {
+		imagePath = embed.ImageFilePath
+	}
+	if data, err := readEmbedBlob(imagePath); err != nil {
 		utils.Errorf("request_id=%s falha ao ler a imagem do embed: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
