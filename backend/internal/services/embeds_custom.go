@@ -202,6 +202,43 @@ func validateEmbedMediaURL(raw, mimeType string) (string, error) {
 	return u.String(), nil
 }
 
+// validateEmbedAttachmentReferences garante que cada attachment_name aponte para
+// exatamente um arquivo multipart da mesma mensagem. Arquivos referenciados viram
+// mídia do embed e não aparecem também como attachments independentes da mensagem.
+func validateEmbedAttachmentReferences(inputs []EmbedInput, attachments []AttachmentInput) error {
+	counts := make(map[string]int, len(attachments))
+	for _, attachment := range attachments {
+		name := utils.SanitizeFileName(attachment.OriginalFileName)
+		if name != "" {
+			counts[name]++
+		}
+	}
+	for _, embed := range inputs {
+		for _, media := range []*EmbedMediaInput{embed.Thumbnail, embed.Image} {
+			if media == nil || media.AttachmentName == "" {
+				continue
+			}
+			name := utils.SanitizeFileName(media.AttachmentName)
+			if name == "" || name != media.AttachmentName || counts[name] != 1 {
+				return ErrInvalidInput
+			}
+		}
+	}
+	return nil
+}
+
+func embedAttachmentNames(inputs []EmbedInput) map[string]bool {
+	names := make(map[string]bool)
+	for _, embed := range inputs {
+		for _, media := range []*EmbedMediaInput{embed.Thumbnail, embed.Image} {
+			if media != nil && media.AttachmentName != "" {
+				names[media.AttachmentName] = true
+			}
+		}
+	}
+	return names
+}
+
 // validateEmbedMediaInput aceita mídia por URL HTTPS ou referência a um
 // attachment da mesma mensagem. A referência é validada contra os arquivos do
 // multipart em validateEmbedAttachmentReferences, antes de qualquer gravação.
