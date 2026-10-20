@@ -403,7 +403,9 @@ func createMessageAs(ctx context.Context, channelID, authorID, webhookID string,
 		messageAttachmentIDs = append(messageAttachmentIDs, created.ID)
 	}
 
-	message, inserted, err := storage.CreateMessageAs(ctx, channelID, authorID, webhookID, external, sourceID, content, replyTo, messageAttachmentIDs)
+	message, inserted, err := storage.CreateMessageAs(
+		ctx, channelID, authorID, webhookID, external, sourceID, content, replyTo, messageAttachmentIDs,
+	)
 	if err != nil {
 		return models.MessageWithAttachment{}, false, err
 	}
