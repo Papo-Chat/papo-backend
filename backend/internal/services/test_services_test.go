@@ -7806,6 +7806,25 @@ func TestGetEmbed(t *testing.T) {
 		return created
 	}
 
+	seedImageEmbed := func(rawURL string, mediaSHA *string) models.Embed {
+		t.Helper()
+		cacheKey := rawURL
+		embed := models.Embed{
+			SourceType:  "link",
+			FetchMethod: "opengraph",
+			CacheKey:    &cacheKey,
+			URL:         &cacheKey,
+		}
+		if mediaSHA != nil {
+			embed.Image = &models.EmbedMedia{MediaSHA: mediaSHA}
+		}
+		created, err := storage.UpsertLinkEmbed(ctx, embed)
+		if err != nil {
+			t.Fatalf("UpsertLinkEmbed retornou erro: %v", err)
+		}
+		return created
+	}
+
 	embed := seedLinkEmbed("https://embed-image.example.com/pagina", &imgHash)
 
 	message, err := storage.CreateMessage(ctx, channel.ID, owner.ID, "mensagem com embed", "", nil)
@@ -7844,6 +7863,26 @@ func TestGetEmbed(t *testing.T) {
 		}
 		if got.ID != noImg.ID || got.ThumbnailFilePath != nil {
 			t.Errorf("esperava embed %s sem imagem, obtive id=%s path=%v", noImg.ID, got.ID, got.ThumbnailFilePath)
+		}
+	})
+
+	t.Run("embed somente com image resolve ImageFilePath", func(t *testing.T) {
+		imageOnly := seedImageEmbed("https://embed-image.example.com/image-only", &imgHash)
+		if err := storage.AddMessageEmbeds(ctx, message.ID, []string{imageOnly.ID}); err != nil {
+			t.Fatalf("falha ao vincular embed image-only: %v", err)
+		}
+		got, err := GetEmbed(ctx, imageOnly.ID, owner.ID)
+		if err != nil {
+			t.Fatalf("GetEmbed para image-only retornou erro: %v", err)
+		}
+		if got.ThumbnailFilePath != nil {
+			t.Errorf("embed image-only não deveria ter ThumbnailFilePath, obtive %v", got.ThumbnailFilePath)
+		}
+		if got.Image == nil || got.Image.MediaSHA == nil || *got.Image.MediaSHA != imgHash {
+			t.Fatalf("esperava image com hash %s, obtive %+v", imgHash, got.Image)
+		}
+		if got.ImageFilePath == nil || *got.ImageFilePath != mediaBlobPath(imgHash) {
+			t.Errorf("esperava ImageFilePath %s, obtive %v", mediaBlobPath(imgHash), got.ImageFilePath)
 		}
 	})
 
