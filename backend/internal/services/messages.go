@@ -899,6 +899,8 @@ func toMessageAttachments(attachments []models.Attachments) []models.MessageAtta
 			MimeType:         attachment.MimeType,
 			OriginalFileName: attachment.OriginalFileName,
 			SizeBytes:        attachment.SizeBytes,
+			Width:            attachment.Width,
+			Height:           attachment.Height,
 			CreatedAt:        attachment.CreatedAt,
 			ModerationStatus: attachment.ModerationStatus,
 		})
