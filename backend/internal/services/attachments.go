@@ -405,7 +405,10 @@ func detectMimeTypeFromFile(path string) (string, error) {
 	}
 	defer f.Close()
 
-	buf := make([]byte, 512)
+	// EBML DocType can appear after additional header elements. Read a
+	// bounded prefix large enough for valid WebM headers; net/http only uses
+	// its own first 512 bytes when falling back to generic MIME sniffing.
+	buf := make([]byte, 64*1024)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return "", fmt.Errorf("falha ao detectar mime type: %w", err)
