@@ -86,7 +86,7 @@ func gifProviderHost(host string) string {
 		provider string
 		domains  []string
 	}{
-		{gifProviderTenor, []string{"tenor.com"}},
+		{gifProviderTenor, []string{"tenor.com", "tenor.co"}},
 		{gifProviderGiphy, []string{"giphy.com", "giphy.media"}},
 		{gifProviderKlipy, []string{"klipy.com"}},
 	} {
