@@ -83,7 +83,7 @@ type gifItem struct {
 // www.tenor.com ...), ou "" quando o host não é de provedor GIF.
 func gifProviderHost(host string) string {
 	host = normalizeHost(host)
-	if isFxTwitterGIFHost(host) {
+	if isTwitterProxyGIFHost(host) {
 		return gifProviderXProxy
 	}
 	for _, entry := range []struct {
