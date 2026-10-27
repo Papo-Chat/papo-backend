@@ -74,6 +74,8 @@ func TestDirectGIFMediaURL(t *testing.T) {
 		{"https://giphy.com/gifs/funny-okfvUCpgArv3y", false},
 		{"http://c.tenor.com/abc/tenor.gif", false},
 		{"https://c.tenor.com/abc/tenor.mp4", false},
+		{"https://gifs.fxtwitter.com/abc/video.mp4", false},
+		{"https://gif.fxtwitter.com/abc/page", false},
 		{"https://gifs.fxtwitter.com.evil.com/abc.gif", false},
 	}
 	for _, tc := range cases {
