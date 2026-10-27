@@ -632,7 +632,7 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 	// cache do passo 2 (cache_key = URL normalizada) já devolve o embed
 	// gravado por um scrape anterior sem tocar na rede; aqui só entra quem
 	// ainda não tem embed para esta URL exata.
-	if provider := gifProviderHost(u.Hostname()); provider != "" {
+	if provider := gifProviderHost(u.Hostname()); provider != "" && provider != gifProviderFxTwitter {
 		embed, err := fetchGIFEmbed(ctx, cfg, u, provider)
 		return embed, err == nil, err
 	}
