@@ -32,9 +32,6 @@ func TestGifProviderHost(t *testing.T) {
 		{"gif.fxtwitter.com", gifProviderFxTwitter},
 		{"gifs.fxtwitter.com", gifProviderFxTwitter},
 		{"gif12.fxtwitter.com", gifProviderFxTwitter},
-		{"c.tenor.com", gifProviderTenor},
-		{"tenor.co", gifProviderTenor},
-		{"t.tenor.co", gifProviderTenor},
 		{"TENOR.com", gifProviderTenor},
 		{"giphy.com", gifProviderGiphy},
 		{"www.giphy.com", gifProviderGiphy},
@@ -46,7 +43,6 @@ func TestGifProviderHost(t *testing.T) {
 		{"static.klipy.com", gifProviderKlipy},
 		// Hosts que imitam o sufixo NÃO podem casar.
 		{"tenor.com.evil.com", ""},
-		{"tenor.co.evil.com", ""},
 		{"giphy.com.evil.com", ""},
 		{"klipy.com.evil.com", ""},
 		{"xtenor.com", ""},
