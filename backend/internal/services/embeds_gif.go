@@ -46,7 +46,7 @@ const (
 	gifProviderTenor = "tenor"
 	gifProviderGiphy = "giphy"
 	gifProviderKlipy = "klipy"
-	gifProviderFxTwitter = "fxtwitter"
+	gifProviderXProxy = "x_proxy"
 )
 
 // maxKlipyJSONBytes é o teto do corpo da API JSON do klipy (o payload de um
@@ -84,7 +84,7 @@ type gifItem struct {
 func gifProviderHost(host string) string {
 	host = normalizeHost(host)
 	if isFxTwitterGIFHost(host) {
-		return gifProviderFxTwitter
+		return gifProviderXProxy
 	}
 	for _, entry := range []struct {
 		provider string
@@ -105,8 +105,8 @@ func gifProviderHost(host string) string {
 
 func gifProviderLabel(provider string) string {
 	switch provider {
-	case gifProviderFxTwitter:
-		return "FxTwitter"
+	case gifProviderXProxy:
+		return "X"
 	case gifProviderTenor:
 		return "Tenor"
 	case gifProviderGiphy:
@@ -118,18 +118,26 @@ func gifProviderLabel(provider string) string {
 }
 
 
-// isFxTwitterGIFHost recognizes only the GIF-serving subdomains, not the
-// normal fxtwitter.com status pages.
-func isFxTwitterGIFHost(host string) bool {
+// isTwitterProxyGIFHost recognizes the GIF subdomains of hosts already
+// allowlisted for X/Twitter status previews, covering FxTwitter-compatible
+// services without accepting arbitrary domains.
+func isTwitterProxyGIFHost(host string) bool {
 	host = normalizeHost(host)
-	if !strings.HasSuffix(host, ".fxtwitter.com") {
+	parts := strings.SplitN(host, ".", 2)
+	if len(parts) != 2 {
 		return false
 	}
-	subdomain := strings.TrimSuffix(host, ".fxtwitter.com")
+
+	subdomain := parts[0]
+	isGIFSubdomain := false
 	for _, prefix := range []string{"gif", "gifs"} {
-		suffix := strings.TrimPrefix(subdomain, prefix)
+		suffix, ok := strings.CutPrefix(subdomain, prefix)
+		if !ok {
+			continue
+		}
 		if suffix == "" {
-			return true
+			isGIFSubdomain = true
+			break
 		}
 		allDigits := true
 		for _, r := range suffix {
@@ -139,10 +147,15 @@ func isFxTwitterGIFHost(host string) bool {
 			}
 		}
 		if allDigits {
-			return true
+			isGIFSubdomain = true
+			break
 		}
 	}
-	return false
+	if !isGIFSubdomain {
+		return false
+	}
+
+	return twitterStatusHostAllowed(parts[1])
 }
 
 // isDirectGIFMediaURL differentiates GIF CDN URLs from provider pages. The
@@ -156,7 +169,7 @@ func isDirectGIFMediaURL(u *url.URL) bool {
 	host := normalizeHost(u.Hostname())
 	provider := gifProviderHost(host)
 	switch provider {
-	case gifProviderFxTwitter:
+	case gifProviderXProxy:
 		return true
 	case gifProviderTenor:
 		return host != "tenor.com" && host != "www.tenor.com"
