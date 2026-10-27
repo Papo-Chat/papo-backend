@@ -27,6 +27,11 @@ func TestGifProviderHost(t *testing.T) {
 		{"www.tenor.com", gifProviderTenor},
 		{"m.tenor.com", gifProviderTenor},
 		{"media.tenor.com", gifProviderTenor},
+		{"c.tenor.com", gifProviderTenor},
+		{"media1.tenor.com", gifProviderTenor},
+		{"gif.fxtwitter.com", gifProviderFxTwitter},
+		{"gifs.fxtwitter.com", gifProviderFxTwitter},
+		{"gif12.fxtwitter.com", gifProviderFxTwitter},
 		{"TENOR.com", gifProviderTenor},
 		{"giphy.com", gifProviderGiphy},
 		{"www.giphy.com", gifProviderGiphy},
@@ -41,12 +46,45 @@ func TestGifProviderHost(t *testing.T) {
 		{"giphy.com.evil.com", ""},
 		{"klipy.com.evil.com", ""},
 		{"xtenor.com", ""},
+		{"gifs.fxtwitter.com.evil.com", ""},
+		{"example.fxtwitter.com", ""},
 		{"example.com", ""},
 		{"", ""},
 	}
 	for _, c := range cases {
 		if got := gifProviderHost(c.host); got != c.want {
 			t.Errorf("gifProviderHost(%q) = %q, esperado %q", c.host, got, c.want)
+		}
+	}
+}
+
+
+func TestDirectGIFMediaURL(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{"https://c.tenor.com/abc/tenor.gif", true},
+		{"https://media.tenor.com/abc/tenor.gif", true},
+		{"https://media1.tenor.com/m/abc/sample.gif", true},
+		{"https://media.giphy.com/media/id/giphy.gif", true},
+		{"https://static.klipy.com/ii/id/medium.gif", true},
+		{"https://gifs.fxtwitter.com/user/status/123.gif", true},
+		{"https://tenor.com/view/cats-dancing-gif-123456", false},
+		{"https://giphy.com/gifs/funny-okfvUCpgArv3y", false},
+		{"http://c.tenor.com/abc/tenor.gif", false},
+		{"https://c.tenor.com/abc/tenor.mp4", false},
+		{"https://gifs.fxtwitter.com/abc/video.mp4", false},
+		{"https://gif.fxtwitter.com/abc/page", false},
+		{"https://gifs.fxtwitter.com.evil.com/abc.gif", false},
+	}
+	for _, tc := range cases {
+		u, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatalf("URL inválida %q: %v", tc.raw, err)
+		}
+		if got := isDirectGIFMediaURL(u); got != tc.want {
+			t.Errorf("isDirectGIFMediaURL(%q) = %v, esperado %v", tc.raw, got, tc.want)
 		}
 	}
 }

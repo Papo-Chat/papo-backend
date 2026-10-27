@@ -547,6 +547,9 @@ func fetchFxTwitterEmbed(ctx context.Context, cfg *config.Config, original *url.
 }
 
 func embedRobotsAllowed(ctx context.Context, u *url.URL) bool {
+	if isFxTwitterGIFHost(u.Hostname()) {
+		return true
+	}
 	switch strings.ToLower(u.Hostname()) {
 	case "fxtwitter.com", "www.fxtwitter.com", "api.fxtwitter.com",
 		"fixupx.com", "www.fixupx.com",
@@ -581,6 +584,7 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 	}
 	normalized := u.String()
 	statusID, isTwitterStatus := twitterStatusID(u)
+	isDirectGIF := isDirectGIFMediaURL(u)
 
 	// 2. Cache (mesma cache_key, fetched_at dentro do TTL).
 	if cached, err := storage.GetEmbedByCacheKey(ctx, normalized); err == nil {
@@ -616,12 +620,19 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 		return embed, err == nil, err
 	}
 
+	// Links de mídia direto (CDNs do Tenor/GIPHY/Klipy e subdomínios GIF do
+	// FxTwitter) retornam bytes, não uma página HTML para o resolvedor.
+	if isDirectGIF {
+		embed, err := fetchDirectGIFEmbed(ctx, cfg, u, gifProviderHost(u.Hostname()))
+		return embed, err == nil, err
+	}
+
 	// 5. GIF providers (tenor/giphy/klipy): resolvedor dedicado
 	// (embeds_gif.go). A deduplicação por URL é a mesma dos link embeds: o
 	// cache do passo 2 (cache_key = URL normalizada) já devolve o embed
 	// gravado por um scrape anterior sem tocar na rede; aqui só entra quem
 	// ainda não tem embed para esta URL exata.
-	if provider := gifProviderHost(u.Hostname()); provider != "" {
+	if provider := gifProviderHost(u.Hostname()); provider != "" && provider != gifProviderFxTwitter {
 		embed, err := fetchGIFEmbed(ctx, cfg, u, provider)
 		return embed, err == nil, err
 	}

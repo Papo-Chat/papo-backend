@@ -46,6 +46,7 @@ const (
 	gifProviderTenor = "tenor"
 	gifProviderGiphy = "giphy"
 	gifProviderKlipy = "klipy"
+	gifProviderFxTwitter = "fxtwitter"
 )
 
 // maxKlipyJSONBytes é o teto do corpo da API JSON do klipy (o payload de um
@@ -82,6 +83,9 @@ type gifItem struct {
 // www.tenor.com ...), ou "" quando o host não é de provedor GIF.
 func gifProviderHost(host string) string {
 	host = normalizeHost(host)
+	if isFxTwitterGIFHost(host) {
+		return gifProviderFxTwitter
+	}
 	for _, entry := range []struct {
 		provider string
 		domains  []string
@@ -101,6 +105,8 @@ func gifProviderHost(host string) string {
 
 func gifProviderLabel(provider string) string {
 	switch provider {
+	case gifProviderFxTwitter:
+		return "FxTwitter"
 	case gifProviderTenor:
 		return "Tenor"
 	case gifProviderGiphy:
@@ -109,6 +115,101 @@ func gifProviderLabel(provider string) string {
 		return "KLIPY"
 	}
 	return ""
+}
+
+
+// isFxTwitterGIFHost recognizes only the GIF-serving subdomains, not the
+// normal fxtwitter.com status pages.
+func isFxTwitterGIFHost(host string) bool {
+	host = normalizeHost(host)
+	if !strings.HasSuffix(host, ".fxtwitter.com") {
+		return false
+	}
+	subdomain := strings.TrimSuffix(host, ".fxtwitter.com")
+	for _, prefix := range []string{"gif", "gifs"} {
+		suffix := strings.TrimPrefix(subdomain, prefix)
+		if suffix == "" {
+			return true
+		}
+		allDigits := true
+		for _, r := range suffix {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return true
+		}
+	}
+	return false
+}
+
+// isDirectGIFMediaURL differentiates GIF CDN URLs from provider pages. The
+// bytes are downloaded and validated as image/gif rather than parsed as HTML.
+func isDirectGIFMediaURL(u *url.URL) bool {
+	if u == nil || !strings.EqualFold(u.Scheme, "https") ||
+		!strings.HasSuffix(strings.ToLower(u.Path), ".gif") {
+		return false
+	}
+
+	host := normalizeHost(u.Hostname())
+	provider := gifProviderHost(host)
+	switch provider {
+	case gifProviderFxTwitter:
+		return true
+	case gifProviderTenor:
+		return host != "tenor.com" && host != "www.tenor.com"
+	case gifProviderGiphy:
+		return host != "giphy.com" && host != "www.giphy.com"
+	case gifProviderKlipy:
+		return host != "klipy.com" && host != "www.klipy.com"
+	default:
+		return false
+	}
+}
+
+// fetchDirectGIFEmbed stores a provider-hosted GIF without the HTML page
+// resolver. The media bytes are size-limited, MIME-checked and dimension-checked.
+func fetchDirectGIFEmbed(ctx context.Context, cfg *config.Config, original *url.URL, provider string) (models.Embed, error) {
+	if !cfg.ThumbnailEnabled {
+		return models.Embed{}, errors.New("processamento de thumbnail desabilitado")
+	}
+	if gifProviderLabel(provider) == "" {
+		return models.Embed{}, fmt.Errorf("provedor GIF desconhecido: %q", provider)
+	}
+
+	body, err := downloadGIFRendition(ctx, original.String())
+	if err != nil {
+		return models.Embed{}, err
+	}
+	width, height, err := gifHeaderDims(body)
+	if err != nil {
+		return models.Embed{}, err
+	}
+	mediaSHA, _, err := StoreMediaFromBytes(ctx, body, gifMimeType)
+	if err != nil {
+		return models.Embed{}, fmt.Errorf("falha ao gravar o gif do embed: %w", err)
+	}
+
+	normalized := original.String()
+	providerLabel := gifProviderLabel(provider)
+	mimeType := gifMimeType
+	thumbnail := &models.EmbedMedia{
+		MediaSHA: &mediaSHA,
+		MimeType: &mimeType,
+		Width:    &width,
+		Height:   &height,
+	}
+	embed := models.Embed{
+		SourceType:  embedSourceLink,
+		FetchMethod: embedFetchGIF,
+		CacheKey:    &normalized,
+		URL:         &normalized,
+		Provider:    &providerLabel,
+		Thumbnail:   thumbnail,
+	}
+	return storage.UpsertLinkEmbed(ctx, embed)
 }
 
 // fetchGIFEmbed resolve o link do provedor GIF, baixa a rendition GIF e grava
