@@ -300,10 +300,11 @@ func stripTrailingPunctuation(s string) string {
 	}
 }
 
-// twitterStatusID identifica a URL de status do X/Twitter (host allowlistado +
-// segmento /status/<id> numérico).
-func twitterStatusID(u *url.URL) (string, bool) {
-	switch strings.ToLower(u.Hostname()) {
+// twitterStatusHostAllowed is the shared allowlist for X/Twitter status
+// providers. GIF media subdomains are accepted only when their parent is in
+// this same allowlist.
+func twitterStatusHostAllowed(host string) bool {
+	switch strings.ToLower(host) {
 	case "twitter.com", "www.twitter.com", "mobile.twitter.com",
 		"x.com", "www.x.com",
 		"fxtwitter.com", "www.fxtwitter.com",
@@ -311,7 +312,16 @@ func twitterStatusID(u *url.URL) (string, bool) {
 		"vxtwitter.com", "www.vxtwitter.com",
 		"fixvx.com", "www.fixvx.com", "girlcockx.com",
 		"www.girlcockx.com":
+		return true
 	default:
+		return false
+	}
+}
+
+// twitterStatusID identifica a URL de status do X/Twitter (host allowlistado +
+// segmento /status/<id> numérico).
+func twitterStatusID(u *url.URL) (string, bool) {
+	if !twitterStatusHostAllowed(u.Hostname()) {
 		return "", false
 	}
 
