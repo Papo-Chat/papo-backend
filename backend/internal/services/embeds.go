@@ -637,12 +637,12 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 		return embed, err == nil, err
 	}
 
-	// 5. GIF providers (tenor/giphy/klipy): resolvedor dedicado
+	// 5. GIF providers (Tenor/GIPHY/Klipy and X proxy media): dedicated resolver
 	// (embeds_gif.go). A deduplicação por URL é a mesma dos link embeds: o
 	// cache do passo 2 (cache_key = URL normalizada) já devolve o embed
 	// gravado por um scrape anterior sem tocar na rede; aqui só entra quem
 	// ainda não tem embed para esta URL exata.
-	if provider := gifProviderHost(u.Hostname()); provider != "" && provider != gifProviderFxTwitter {
+	if provider := gifProviderHost(u.Hostname()); provider != "" && provider != gifProviderXProxy {
 		embed, err := fetchGIFEmbed(ctx, cfg, u, provider)
 		return embed, err == nil, err
 	}
