@@ -300,10 +300,11 @@ func stripTrailingPunctuation(s string) string {
 	}
 }
 
-// twitterStatusID identifica a URL de status do X/Twitter (host allowlistado +
-// segmento /status/<id> numérico).
-func twitterStatusID(u *url.URL) (string, bool) {
-	switch strings.ToLower(u.Hostname()) {
+// twitterStatusHostAllowed is the shared allowlist for X/Twitter status
+// providers. GIF media subdomains are accepted only when their parent is in
+// this same allowlist.
+func twitterStatusHostAllowed(host string) bool {
+	switch strings.ToLower(host) {
 	case "twitter.com", "www.twitter.com", "mobile.twitter.com",
 		"x.com", "www.x.com",
 		"fxtwitter.com", "www.fxtwitter.com",
@@ -311,7 +312,16 @@ func twitterStatusID(u *url.URL) (string, bool) {
 		"vxtwitter.com", "www.vxtwitter.com",
 		"fixvx.com", "www.fixvx.com", "girlcockx.com",
 		"www.girlcockx.com":
+		return true
 	default:
+		return false
+	}
+}
+
+// twitterStatusID identifica a URL de status do X/Twitter (host allowlistado +
+// segmento /status/<id> numérico).
+func twitterStatusID(u *url.URL) (string, bool) {
+	if !twitterStatusHostAllowed(u.Hostname()) {
 		return "", false
 	}
 
@@ -547,7 +557,7 @@ func fetchFxTwitterEmbed(ctx context.Context, cfg *config.Config, original *url.
 }
 
 func embedRobotsAllowed(ctx context.Context, u *url.URL) bool {
-	if isFxTwitterGIFHost(u.Hostname()) {
+	if isTwitterProxyGIFHost(u.Hostname()) {
 		return true
 	}
 	switch strings.ToLower(u.Hostname()) {
@@ -627,12 +637,12 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 		return embed, err == nil, err
 	}
 
-	// 5. GIF providers (tenor/giphy/klipy): resolvedor dedicado
+	// 5. GIF providers (Tenor/GIPHY/Klipy and X proxy media): dedicated resolver
 	// (embeds_gif.go). A deduplicação por URL é a mesma dos link embeds: o
 	// cache do passo 2 (cache_key = URL normalizada) já devolve o embed
 	// gravado por um scrape anterior sem tocar na rede; aqui só entra quem
 	// ainda não tem embed para esta URL exata.
-	if provider := gifProviderHost(u.Hostname()); provider != "" && provider != gifProviderFxTwitter {
+	if provider := gifProviderHost(u.Hostname()); provider != "" && provider != gifProviderXProxy {
 		embed, err := fetchGIFEmbed(ctx, cfg, u, provider)
 		return embed, err == nil, err
 	}
