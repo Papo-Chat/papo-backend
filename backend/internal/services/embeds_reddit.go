@@ -50,6 +50,11 @@ func isRedditPostURL(u *url.URL) bool {
 	if len(parts) == 0 || parts[0] == "" {
 		return false
 	}
+	for _, part := range parts {
+		if strings.HasSuffix(strings.ToLower(part), ".json") {
+			return false
+		}
+	}
 	if strings.EqualFold(u.Hostname(), "redd.it") {
 		return len(parts) == 1 && redditPathToken(parts[0])
 	}
