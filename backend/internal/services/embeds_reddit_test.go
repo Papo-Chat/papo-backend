@@ -51,7 +51,7 @@ func TestParseRedditPostHTML(t *testing.T) {
 	<meta property="og:image:height" content="630">
 	<meta name="author" content="devbr">
 </head><body>
-	<shreddit-post post-title="Golang é realmente isso tudo?" subreddit-name="brdev" author="devbr" permalink="/r/brdev/comments/1esc9k6/golang_titulo/">
+	<shreddit-post post-title="Golang é realmente isso tudo?" subreddit-name="brdev" author="devbr" score="60" comment-count="72" permalink="/r/brdev/comments/1esc9k6/golang_titulo/">
 		<div slot="text-body"><p>Olá a todos.</p><p>Eu sou desenvolvedor C# e gosto do ecossistema .NET.</p></div>
 	</shreddit-post>
 </body></html>`)
@@ -67,6 +67,9 @@ func TestParseRedditPostHTML(t *testing.T) {
 	}
 	if meta.author != "devbr" {
 		t.Errorf("author = %q", meta.author)
+	}
+	if meta.score != "60" || meta.comments != "72" {
+		t.Errorf("post stats = %q votes, %q comments", meta.score, meta.comments)
 	}
 	if !strings.Contains(meta.description, "Olá a todos.") ||
 		!strings.Contains(meta.description, "ecossistema .NET.") {
