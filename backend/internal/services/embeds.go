@@ -654,6 +654,13 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 		return embed, err == nil, err
 	}
 
+	// Reddit: faz scrape da página HTML pública do post. O oEmbed do Reddit
+	// não fornece de forma consistente o preview completo desejado.
+	if isRedditPostURL(u) {
+		embed, err := fetchRedditPostEmbed(ctx, cfg, u)
+		return embed, err == nil, err
+	}
+
 	// 6. oEmbed first (host allowlistado) — falha → fallback para OpenGraph.
 	if oembedProviderHost(u.Hostname()) != "" {
 		if embed, err := fetchOEmbedLinkEmbed(ctx, cfg, u); err == nil {

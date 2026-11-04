@@ -546,19 +546,26 @@ func embedBudget(customs []models.Embed) (int, int) {
 // XProxyGIFProcessingTimeout is the minimum end-to-end budget for an animated
 // WebP served by an X media proxy. Its synchronous WebP decode, GIF encode and
 // media persistence must all finish before the crawler context expires.
-const xProxyGIFProcessingTimeout = 30 * time.Second
+const (
+	xProxyGIFProcessingTimeout = 30 * time.Second
+	redditPostCrawlTimeout     = 20 * time.Second
+)
 
 func embedCrawlTimeout(budget time.Duration, rawURLs []string) time.Duration {
-	if budget >= xProxyGIFProcessingTimeout {
-		return budget
-	}
+	required := budget
 	for _, rawURL := range rawURLs {
 		u, err := utils.NormalizeURL(rawURL)
-		if err == nil && isXProxyTweetVideoWebPURL(u) {
-			return xProxyGIFProcessingTimeout
+		if err != nil {
+			continue
+		}
+		if isXProxyTweetVideoWebPURL(u) && required < xProxyGIFProcessingTimeout {
+			required = xProxyGIFProcessingTimeout
+		}
+		if isRedditPostURL(u) && required < redditPostCrawlTimeout {
+			required = redditPostCrawlTimeout
 		}
 	}
-	return budget
+	return required
 }
 
 // crawlEmbeds extrai URLs do content e obtém/cria os link embeds (best-effort:
