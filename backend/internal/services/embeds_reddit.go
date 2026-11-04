@@ -1,11 +1,10 @@
 package services
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
+	"bytes"
 	"net/url"
 	"strings"
 
@@ -62,8 +61,7 @@ func isRedditHost(host string) bool {
 // redd.it. Não encaminha páginas de subreddit, pesquisa, perfis ou endpoints
 // JSON para o scraper de posts.
 func isRedditPostURL(u *url.URL) bool {
-	if u == nil || !strings.EqualFold(u.Scheme, "https") || u.User != nil ||
-		(u.Port() != "" && u.Port() != "443") || !isRedditHost(u.Hostname()) {
+	if u == nil || !strings.EqualFold(u.Scheme, "https") || !isRedditHost(u.Hostname()) {
 		return false
 	}
 
@@ -111,24 +109,6 @@ func redditPathToken(token string) bool {
 	return true
 }
 
-// EN-US: Validate every Reddit redirect before fetching it, retaining the safe transport and caller's policy.
-// PT-BR: Valida cada redirect do Reddit antes da busca, mantendo o transporte seguro e a política do chamador.
-func redditPostHTTPClient(client *http.Client) *http.Client {
-	scoped := *client
-	scoped.Jar = nil
-	originalCheck := client.CheckRedirect
-	scoped.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 || !isRedditPostURL(req.URL) {
-			return fmt.Errorf("%w: redirect de Reddit inválido", utils.ErrSSRFBlocked)
-		}
-		if originalCheck != nil {
-			return originalCheck(req, via)
-		}
-		return nil
-	}
-	return &scoped
-}
-
 // fetchRedditPostEmbed lê a página HTML pública do post, extrai os metadados
 // renderizados pelo Reddit e baixa a imagem Open Graph para a media local.
 // Não usa o endpoint oEmbed nem endpoints .json.
@@ -142,7 +122,7 @@ func fetchRedditPostEmbed(ctx context.Context, cfg *config.Config, target *url.U
 	if !acquireOutboundSlot() {
 		return models.Embed{}, errors.New("semáforo outbound cheio")
 	}
-	body, finalURL, err := utils.SafeFetch(ctx, redditPostHTTPClient(outboundHTTPClient()), maxEmbedHTMLBytes, target.String())
+	body, finalURL, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxEmbedHTMLBytes, target.String())
 	releaseOutboundSlot()
 	if err != nil {
 		return models.Embed{}, fmt.Errorf("Reddit: falha ao buscar HTML do post: %w", err)
@@ -239,7 +219,7 @@ func parseRedditPostHTML(body []byte, pageURL *url.URL) (redditPostMetadata, err
 
 	var (
 		ogTitle, ogDescription, ogURL, ogImage, twitterImage, htmlDescription string
-		postThumbnail                                                         string
+		postThumbnail                                                        string
 		ogImageWidth, ogImageHeight                                           int
 	)
 	var walk func(*html.Node, bool)
