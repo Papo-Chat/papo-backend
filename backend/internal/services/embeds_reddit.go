@@ -109,8 +109,8 @@ func fetchRedditPostEmbed(ctx context.Context, cfg *config.Config, target *url.U
 	if err != nil {
 		return models.Embed{}, fmt.Errorf("Reddit: falha ao buscar HTML do post: %w", err)
 	}
-	if !isRedditHost(finalURL.Hostname()) {
-		return models.Embed{}, errors.New("Reddit: redirect para host fora da allowlist")
+	if !isRedditHost(finalURL.Hostname()) || !isRedditPostURL(finalURL) {
+		return models.Embed{}, errors.New("Reddit: redirect não terminou em uma página de post permitida")
 	}
 
 	metadata, err := parseRedditPostHTML(body, finalURL)
@@ -201,6 +201,7 @@ func parseRedditPostHTML(body []byte, pageURL *url.URL) (redditPostMetadata, err
 
 	var (
 		ogTitle, ogDescription, ogURL, ogImage, twitterImage, htmlDescription string
+		postThumbnail                                                        string
 		ogImageWidth, ogImageHeight                                           int
 	)
 	var walk func(*html.Node, bool)
@@ -233,8 +234,8 @@ func parseRedditPostHTML(body []byte, pageURL *url.URL) (redditPostMetadata, err
 				if meta.canonicalURL == "" {
 					meta.canonicalURL = resolveRelativeURL(pageURL, htmlNodeAttr(n, "permalink"))
 				}
-				if meta.imageURL == "" {
-					meta.imageURL = firstNonEmpty(
+				if postThumbnail == "" {
+					postThumbnail = firstNonEmpty(
 						redditImageCandidate(htmlNodeAttr(n, "thumbnail")),
 						redditImageCandidate(htmlNodeAttr(n, "thumbnail-url")),
 						redditImageCandidate(htmlNodeAttr(n, "post-thumbnail")),
@@ -302,13 +303,13 @@ func parseRedditPostHTML(body []byte, pageURL *url.URL) (redditPostMetadata, err
 				if slot := htmlNodeAttr(n, "slot"); slot == "text-body" && meta.description == "" {
 					meta.description = nodeText(n)
 				}
-				if meta.imageURL == "" {
+				if postThumbnail == "" {
 					slot := htmlNodeAttr(n, "slot")
 					testID := htmlNodeAttr(n, "data-testid")
 					if (n.Data == "img" && (htmlNodeAttr(n, "id") == "post-image" ||
 						testID == "post-image" || slot == "thumbnail")) ||
 						(n.Data == "faceplate-img" && (slot == "thumbnail" || testID == "post-thumbnail")) {
-						meta.imageURL = redditImageCandidate(firstNonEmpty(
+						postThumbnail = redditImageCandidate(firstNonEmpty(
 							htmlNodeAttr(n, "src"),
 							htmlNodeAttr(n, "data-src"),
 							htmlNodeAttr(n, "image-url"),
@@ -336,7 +337,7 @@ func parseRedditPostHTML(body []byte, pageURL *url.URL) (redditPostMetadata, err
 		meta.subreddit = redditSubredditFromURL(pageURL)
 	}
 	if meta.imageURL == "" {
-		meta.imageURL = firstNonEmpty(ogImage, twitterImage)
+		meta.imageURL = firstNonEmpty(ogImage, twitterImage, postThumbnail)
 	}
 	if meta.imageURL != "" {
 		meta.imageURL = resolveRelativeURL(pageURL, meta.imageURL)
