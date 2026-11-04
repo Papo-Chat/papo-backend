@@ -7,6 +7,18 @@ import (
 	"testing"
 )
 
+func TestRedditCrawlerUserAgent(t *testing.T) {
+	if !strings.HasPrefix(redditCrawlerUserAgent, "Mozilla/5.0 (compatible; ") {
+		t.Errorf("User-Agent do crawler deve seguir o formato de bot: %q", redditCrawlerUserAgent)
+	}
+	if !strings.Contains(redditCrawlerUserAgent, "PapoBot/1.0") {
+		t.Errorf("User-Agent deve identificar o Papo, obtive %q", redditCrawlerUserAgent)
+	}
+	if strings.Contains(redditCrawlerUserAgent, "Discordbot") {
+		t.Errorf("crawler não deve se identificar como Discord: %q", redditCrawlerUserAgent)
+	}
+}
+
 func TestRedditRobotsExemptHosts(t *testing.T) {
 	hosts := []string{
 		"www.reddit.com",
