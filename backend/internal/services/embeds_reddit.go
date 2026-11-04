@@ -29,6 +29,22 @@ type redditPostMetadata struct {
 	comments     string
 }
 
+// isRedditRobotsExemptHost dispensa a consulta ao robots.txt para as
+// páginas públicas de posts e CDNs próprios de imagens do Reddit. A exceção
+// é restrita a hosts conhecidos; URLs de outros domínios continuam usando
+// RobotsAllowed, e SafeFetch mantém suas validações SSRF/HTTPS.
+func isRedditRobotsExemptHost(host string) bool {
+	switch strings.ToLower(strings.TrimSuffix(host, ".")) {
+	case "reddit.com", "www.reddit.com", "old.reddit.com", "new.reddit.com",
+		"m.reddit.com", "redd.it",
+		"preview.redd.it", "external-preview.redd.it", "i.redd.it",
+		"a.thumbs.redditmedia.com", "b.thumbs.redditmedia.com":
+		return true
+	default:
+		return false
+	}
+}
+
 // isRedditHost aceita somente os hosts públicos usados para páginas de posts.
 // Não usa suffix matching genérico: reddit.com.attacker.example não é Reddit.
 func isRedditHost(host string) bool {
