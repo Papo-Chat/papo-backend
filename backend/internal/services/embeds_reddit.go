@@ -25,6 +25,8 @@ type redditPostMetadata struct {
 	imageURL     string
 	imageWidth   int
 	imageHeight  int
+	score        string
+	comments     string
 }
 
 // isRedditHost aceita somente os hosts públicos usados para páginas de posts.
