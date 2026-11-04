@@ -207,6 +207,10 @@ func TestWebPToGIFPreservesAnimation(t *testing.T) {
 	if result.LoopCount != 0 {
 		t.Errorf("LoopCount = %d, esperado 0 (loop infinito)", result.LoopCount)
 	}
+	if len(result.Disposal) != 2 || result.Disposal[0] != gif.DisposalBackground ||
+		result.Disposal[1] != gif.DisposalBackground {
+		t.Errorf("Disposal = %v, esperado DisposalBackground em cada frame", result.Disposal)
+	}
 }
 
 func TestWebPToGIFRejectsInvalidInput(t *testing.T) {
