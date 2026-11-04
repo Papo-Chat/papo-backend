@@ -801,6 +801,12 @@ func oEmbedAuthor(result oembedResult) *models.EmbedAuthor {
 // na tabela media (content-addressable) — a thumbnail é o único artefato
 // persistido (§6.2 passo 8). Retorna a mídia com hash, MIME e dimensões.
 func downloadEmbedImage(ctx context.Context, cfg *config.Config, rawImageURL string) (*models.EmbedMedia, error) {
+	return downloadEmbedImageWithUserAgent(ctx, cfg, rawImageURL, "")
+}
+
+// downloadEmbedImageWithUserAgent baixa e persiste uma thumbnail usando um
+// User-Agent específico quando o provedor exige identificação do crawler.
+func downloadEmbedImageWithUserAgent(ctx context.Context, cfg *config.Config, rawImageURL, userAgent string) (*models.EmbedMedia, error) {
 	// THUMBNAIL_ENABLED=false: nenhuma imagem de embed (o embed segue apenas
 	// com title/description — best-effort).
 	if !cfg.ThumbnailEnabled {
@@ -818,7 +824,12 @@ func downloadEmbedImage(ctx context.Context, cfg *config.Config, rawImageURL str
 	}
 	defer releaseOutboundSlot()
 
-	body, _, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxEmbedImageBytes, u.String())
+	var body []byte
+	if userAgent == "" {
+		body, _, err = utils.SafeFetch(ctx, outboundHTTPClient(), maxEmbedImageBytes, u.String())
+	} else {
+		body, _, err = utils.SafeFetchWithUserAgent(ctx, outboundHTTPClient(), maxEmbedImageBytes, u.String(), userAgent)
+	}
 	if err != nil {
 		return nil, err
 	}
