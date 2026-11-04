@@ -86,6 +86,30 @@ func TestParseRedditPostHTML(t *testing.T) {
 	}
 }
 
+func TestParseRedditPostHTMLUsesShredditThumbnailFallback(t *testing.T) {
+	pageURL, _ := url.Parse("https://www.reddit.com/r/golang/comments/abc123/")
+	body := []byte(`<html><body>
+		<shreddit-post post-title="Post with thumbnail" subreddit-name="golang" thumbnail="self">
+			<img slot="thumbnail" src="https://preview.redd.it/fallback-thumbnail.webp">
+		</shreddit-post>
+	</body></html>`)
+	meta, err := parseRedditPostHTML(body, pageURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.imageURL != "https://preview.redd.it/fallback-thumbnail.webp" {
+		t.Errorf("imageURL = %q", meta.imageURL)
+	}
+}
+
+func TestRedditImageCandidateRejectsPlaceholders(t *testing.T) {
+	for _, value := range []string{"", "self", "nsfw", "default", "spoiler"} {
+		if got := redditImageCandidate(value); got != "" {
+			t.Errorf("redditImageCandidate(%q) = %q, esperado vazio", value, got)
+		}
+	}
+}
+
 func TestParseRedditPostHTMLFallsBackToOpenGraph(t *testing.T) {
 	pageURL, _ := url.Parse("https://www.reddit.com/r/golang/comments/abc123/")
 	body := []byte(`<html><head>
