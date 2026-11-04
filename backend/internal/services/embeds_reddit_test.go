@@ -1,10 +1,47 @@
 package services
 
 import (
+	"context"
 	"net/url"
 	"strings"
 	"testing"
 )
+
+func TestRedditRobotsExemptHosts(t *testing.T) {
+	hosts := []string{
+		"www.reddit.com",
+		"old.reddit.com",
+		"reddit.com",
+		"redd.it",
+		"preview.redd.it",
+		"external-preview.redd.it",
+		"i.redd.it",
+		"a.thumbs.redditmedia.com",
+		"b.thumbs.redditmedia.com",
+	}
+	for _, host := range hosts {
+		u, err := url.Parse("https://" + host + "/")
+		if err != nil {
+			t.Fatalf("URL inválida para %s: %v", host, err)
+		}
+		if !embedRobotsAllowed(context.Background(), u) {
+			t.Errorf("robots deveria ser permissivo para host Reddit %q", host)
+		}
+	}
+}
+
+func TestRedditRobotsExemptionDoesNotMatchUnrelatedHosts(t *testing.T) {
+	for _, host := range []string{
+		"reddit.com.attacker.example",
+		"preview.redd.it.attacker.example",
+		"notreddit.com",
+		"redditmedia.com",
+	} {
+		if isRedditRobotsExemptHost(host) {
+			t.Errorf("host externo %q não deve receber exceção", host)
+		}
+	}
+}
 
 func TestIsRedditPostURL(t *testing.T) {
 	cases := []struct {
