@@ -617,7 +617,7 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 			missingXProxyMedia := isXProxyDirectMedia &&
 				(cached.FetchMethod != embedFetchGIF || cached.Thumbnail == nil ||
 					cached.Thumbnail.MimeType == nil || *cached.Thumbnail.MimeType != gifMimeType)
-			if (!missingTwitterMedia && !missingXProxyMedia) || age < 5*time.Minute {
+			if !redditCacheNeedsRefresh(cached, time.Now()) && ((!missingTwitterMedia && !missingXProxyMedia) || age < 5*time.Minute) {
 				return cached, false, nil
 			}
 		}
@@ -651,6 +651,13 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 	// ainda não tem embed para esta URL exata.
 	if provider := gifProviderHost(u.Hostname()); provider != "" && provider != gifProviderXProxy {
 		embed, err := fetchGIFEmbed(ctx, cfg, u, provider)
+		return embed, err == nil, err
+	}
+
+	// EN-US: Reddit uses its first-party embed document, with bounded official oEmbed fallback.
+	// PT-BR: O Reddit usa seu documento oficial de incorporação, com alternativa limitada ao oEmbed oficial.
+	if isRedditPostURL(u) {
+		embed, err := fetchRedditPostEmbed(ctx, cfg, u)
 		return embed, err == nil, err
 	}
 
@@ -794,6 +801,12 @@ func oEmbedAuthor(result oembedResult) *models.EmbedAuthor {
 // na tabela media (content-addressable) — a thumbnail é o único artefato
 // persistido (§6.2 passo 8). Retorna a mídia com hash, MIME e dimensões.
 func downloadEmbedImage(ctx context.Context, cfg *config.Config, rawImageURL string) (*models.EmbedMedia, error) {
+	return downloadEmbedImageWithClient(ctx, cfg, rawImageURL, outboundHTTPClient())
+}
+
+// EN-US: Provider-scoped clients can restrict media redirects without changing image processing or storage.
+// PT-BR: Clientes restritos ao provedor podem limitar redirects sem alterar processamento ou armazenamento.
+func downloadEmbedImageWithClient(ctx context.Context, cfg *config.Config, rawImageURL string, client *http.Client) (*models.EmbedMedia, error) {
 	// THUMBNAIL_ENABLED=false: nenhuma imagem de embed (o embed segue apenas
 	// com title/description — best-effort).
 	if !cfg.ThumbnailEnabled {
@@ -811,7 +824,7 @@ func downloadEmbedImage(ctx context.Context, cfg *config.Config, rawImageURL str
 	}
 	defer releaseOutboundSlot()
 
-	body, _, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxEmbedImageBytes, u.String())
+	body, _, err := utils.SafeFetch(ctx, client, maxEmbedImageBytes, u.String())
 	if err != nil {
 		return nil, err
 	}
@@ -1203,6 +1216,15 @@ func OpenEmbedVideo(
 	embed, err := GetEmbed(ctx, embedID, userID)
 	if err != nil {
 		return nil, nil, err
+	}
+	// EN-US: Packaged Reddit MP4 signatures expire sooner than the shared embed cache; renew after access is checked.
+	// PT-BR: Assinaturas dos MP4s do Reddit expiram antes do cache compartilhado; renova após verificar o acesso.
+	if redditCacheNeedsRefresh(embed, time.Now()) && embed.CacheKey != nil {
+		refreshed, _, err := GetOrCreateEmbed(ctx, userID, *embed.CacheKey)
+		if err != nil {
+			return nil, nil, err
+		}
+		embed = refreshed
 	}
 	if embed.Video == nil || embed.Video.URL == nil {
 		return nil, nil, ErrEmbedNotFound
