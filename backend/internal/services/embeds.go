@@ -595,6 +595,7 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 	normalized := u.String()
 	statusID, isTwitterStatus := twitterStatusID(u)
 	isDirectGIF := isDirectGIFMediaURL(u)
+	isXProxyDirectMedia := isDirectGIF && gifProviderHost(u.Hostname()) == gifProviderXProxy
 
 	// 2. Cache (mesma cache_key, fetched_at dentro do TTL).
 	if cached, err := storage.GetEmbedByCacheKey(ctx, normalized); err == nil {
@@ -610,7 +611,13 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 			// antes de tentar completar esse cache incompleto, sem transformar
 			// tweets realmente text-only em fetch a cada mensagem.
 			missingTwitterMedia := isTwitterStatus && cached.Thumbnail == nil && cached.Video == nil
-			if !missingTwitterMedia || age < 5*time.Minute {
+			// URLs do FastGIF .webp podem ter sido armazenadas incorretamente
+			// pelo fallback OpenGraph antes do suporte dedicado. Refaça o fetch
+			// quando o cache não contém o GIF convertido esperado.
+			missingXProxyMedia := isXProxyDirectMedia &&
+				(cached.FetchMethod != embedFetchGIF || cached.Thumbnail == nil ||
+					cached.Thumbnail.MimeType == nil || *cached.Thumbnail.MimeType != gifMimeType)
+			if (!missingTwitterMedia && !missingXProxyMedia) || age < 5*time.Minute {
 				return cached, false, nil
 			}
 		}

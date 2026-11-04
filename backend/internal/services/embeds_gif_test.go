@@ -1,11 +1,18 @@
 package services
 
 import (
+	"bytes"
 	"errors"
+	"image"
+	"image/color"
+	"image/gif"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/deepteams/webp"
+	"github.com/deepteams/webp/animation"
 
 	"papo/internal/models"
 	"papo/internal/storage"
@@ -102,6 +109,113 @@ func TestDirectGIFMediaURL(t *testing.T) {
 		if got := isDirectGIFMediaURL(u); got != tc.want {
 			t.Errorf("isDirectGIFMediaURL(%q) = %v, esperado %v", tc.raw, got, tc.want)
 		}
+	}
+}
+
+func TestXProxyTweetVideoWebPURL(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{"https://gif.fxtwitter.com/tweet_video/HT-DVvMWoAASeEm.webp", true},
+		{"https://gifs.fxtwitter.com/tweet_video/video.webp?x=1", true},
+		{"https://gif12.fxtwitter.com/tweet_video/video.gif.webp", true},
+		{"https://gifs.fixupx.com/tweet_video/video.webp", true},
+		{"https://gifs.vxtwitter.com/tweet_video/video.webp", true},
+		{"https://gif.fxtwitter.com/other/video.webp", false},
+		{"https://gif.fxtwitter.com/tweet_video/a/b.webp", false},
+		{"http://gif.fxtwitter.com/tweet_video/video.webp", false},
+		{"https://gif.fxtwitter.com.evil.com/tweet_video/video.webp", false},
+		{"https://example.com/tweet_video/video.webp", false},
+	}
+	for _, tc := range cases {
+		u, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatalf("URL inválida %q: %v", tc.raw, err)
+		}
+		if got := isXProxyTweetVideoWebPURL(u); got != tc.want {
+			t.Errorf("isXProxyTweetVideoWebPURL(%q) = %v, esperado %v", tc.raw, got, tc.want)
+		}
+		if got := isDirectGIFMediaURL(u); got != tc.want {
+			t.Errorf("isDirectGIFMediaURL(%q) = %v, esperado %v", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func makeAnimatedWebPFixture(t *testing.T) []byte {
+	t.Helper()
+	const width, height = 4, 4
+	var encoded bytes.Buffer
+	encoder := animation.NewEncoder(&encoded, width, height, &animation.EncodeOptions{
+		LoopCount: 0,
+		Lossless:  true,
+	})
+	if encoder == nil {
+		t.Fatal("animation.NewEncoder retornou nil")
+	}
+	for _, c := range []color.NRGBA{
+		{R: 255, A: 255},
+		{G: 255, A: 255},
+	} {
+		frame := image.NewNRGBA(image.Rect(0, 0, width, height))
+		for y := 0; y < height; y++ {
+			for x := 0; x < width; x++ {
+				frame.SetNRGBA(x, y, c)
+			}
+		}
+		if err := encoder.AddFrame(frame, 80*time.Millisecond); err != nil {
+			t.Fatalf("AddFrame: %v", err)
+		}
+	}
+	if err := encoder.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	return encoded.Bytes()
+}
+
+func TestWebPToGIFPreservesAnimation(t *testing.T) {
+	source := makeAnimatedWebPFixture(t)
+	features, err := webp.GetFeatures(bytes.NewReader(source))
+	if err != nil {
+		t.Fatalf("GetFeatures: %v", err)
+	}
+	if !features.HasAnimation || features.FrameCount != 2 {
+		t.Fatalf("fixture não é uma animação de 2 frames: %+v", features)
+	}
+
+	converted, width, height, err := webpToGIF(source)
+	if err != nil {
+		t.Fatalf("webpToGIF: %v", err)
+	}
+	if width != 4 || height != 4 {
+		t.Fatalf("dimensões = %dx%d, esperado 4x4", width, height)
+	}
+
+	result, err := gif.DecodeAll(bytes.NewReader(converted))
+	if err != nil {
+		t.Fatalf("GIF convertido inválido: %v", err)
+	}
+	if result.Config.Width != 4 || result.Config.Height != 4 {
+		t.Errorf("canvas GIF = %dx%d, esperado 4x4", result.Config.Width, result.Config.Height)
+	}
+	if len(result.Image) != 2 {
+		t.Fatalf("GIF contém %d frames, esperado 2", len(result.Image))
+	}
+	if len(result.Delay) != 2 || result.Delay[0] != 8 || result.Delay[1] != 8 {
+		t.Errorf("delays GIF = %v, esperado [8 8] centissegundos", result.Delay)
+	}
+	if result.LoopCount != 0 {
+		t.Errorf("LoopCount = %d, esperado 0 (loop infinito)", result.LoopCount)
+	}
+	if len(result.Disposal) != 2 || result.Disposal[0] != gif.DisposalBackground ||
+		result.Disposal[1] != gif.DisposalBackground {
+		t.Errorf("Disposal = %v, esperado DisposalBackground em cada frame", result.Disposal)
+	}
+}
+
+func TestWebPToGIFRejectsInvalidInput(t *testing.T) {
+	if _, _, _, err := webpToGIF([]byte("not a WebP")); err == nil {
+		t.Fatal("webpToGIF deveria rejeitar entrada inválida")
 	}
 }
 

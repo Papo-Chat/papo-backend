@@ -28,11 +28,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	stdpalette "image/color/palette"
+	"image/draw"
 	"image/gif"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/deepteams/webp"
+	"github.com/deepteams/webp/animation"
 
 	"papo/internal/config"
 	"papo/internal/models"
@@ -53,8 +61,18 @@ const (
 // item é pequeno; 1MB fecha respostas aberrantes).
 const maxKlipyJSONBytes = 1 << 20
 
+// O proxy FastGIF pode entregar animações WebP. Estes limites restringem o
+// custo de descompressão e o GIF gerado antes de persistir a mídia.
+const (
+	maxXProxyAnimationFrames = 300
+	maxXProxyAnimationPixels int64 = 12 << 20
+)
+
 // gifMimeType é o MIME da rendition GIF animada gravada como thumbnail do embed.
-const gifMimeType = "image/gif"
+const (
+	gifMimeType  = "image/gif"
+	webpMimeType = "image/webp"
+)
 
 // gifRendition é uma rendition normalizada do provedor (port do modelo do
 // gif-scrapper). Bytes é o tamanho declarado pelo provedor (0 = desconhecido).
@@ -158,32 +176,51 @@ func isTwitterProxyGIFHost(host string) bool {
 	return twitterStatusHostAllowed(parts[1])
 }
 
-// isDirectGIFMediaURL differentiates GIF CDN URLs from provider pages. The
-// bytes are downloaded and validated as image/gif rather than parsed as HTML.
-func isDirectGIFMediaURL(u *url.URL) bool {
+// isXProxyTweetVideoWebPURL reconhece apenas o endpoint de vídeo dos proxies
+// FastGIF allowlistados. Não transforma páginas .webp genéricas desses hosts
+// em mídia direta.
+func isXProxyTweetVideoWebPURL(u *url.URL) bool {
 	if u == nil || !strings.EqualFold(u.Scheme, "https") ||
-		!strings.HasSuffix(strings.ToLower(u.Path), ".gif") {
+		gifProviderHost(u.Hostname()) != gifProviderXProxy {
+		return false
+	}
+	const prefix = "/tweet_video/"
+	path := strings.ToLower(u.Path)
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	file := strings.TrimPrefix(path, prefix)
+	return file != "" && !strings.Contains(file, "/") && strings.HasSuffix(file, ".webp")
+}
+
+// isDirectGIFMediaURL diferencia URLs de mídia dos proxies/páginas dos
+// provedores. O proxy FastGIF entrega WebP em /tweet_video/*.webp; esse
+// conteúdo é validado, convertido para GIF e armazenado como image/gif.
+func isDirectGIFMediaURL(u *url.URL) bool {
+	if u == nil || !strings.EqualFold(u.Scheme, "https") {
 		return false
 	}
 
 	host := normalizeHost(u.Hostname())
+	path := strings.ToLower(u.Path)
 	provider := gifProviderHost(host)
 	switch provider {
 	case gifProviderXProxy:
-		return true
+		return strings.HasSuffix(path, ".gif") || isXProxyTweetVideoWebPURL(u)
 	case gifProviderTenor:
-		return host != "tenor.com" && host != "www.tenor.com"
+		return strings.HasSuffix(path, ".gif") && host != "tenor.com" && host != "www.tenor.com"
 	case gifProviderGiphy:
-		return host != "giphy.com" && host != "www.giphy.com"
+		return strings.HasSuffix(path, ".gif") && host != "giphy.com" && host != "www.giphy.com"
 	case gifProviderKlipy:
-		return host != "klipy.com" && host != "www.klipy.com"
+		return strings.HasSuffix(path, ".gif") && host != "klipy.com" && host != "www.klipy.com"
 	default:
 		return false
 	}
 }
 
-// fetchDirectGIFEmbed stores a provider-hosted GIF without the HTML page
-// resolver. The media bytes are size-limited, MIME-checked and dimension-checked.
+// fetchDirectGIFEmbed baixa mídia direta de provedores GIF. Para os proxies
+// do X, aceita GIF ou WebP validado pelos bytes; WebP é convertido internamente
+// para GIF antes de armazenar, para que o frontend receba sempre image/gif.
 func fetchDirectGIFEmbed(ctx context.Context, cfg *config.Config, original *url.URL, provider string) (models.Embed, error) {
 	if !cfg.ThumbnailEnabled {
 		return models.Embed{}, errors.New("processamento de thumbnail desabilitado")
@@ -192,11 +229,32 @@ func fetchDirectGIFEmbed(ctx context.Context, cfg *config.Config, original *url.
 		return models.Embed{}, fmt.Errorf("provedor GIF desconhecido: %q", provider)
 	}
 
-	body, err := downloadGIFRendition(ctx, original.String())
-	if err != nil {
-		return models.Embed{}, err
+	var (
+		body        []byte
+		width       int
+		height      int
+		err         error
+	)
+	if provider == gifProviderXProxy {
+		var sourceMIME string
+		body, sourceMIME, err = downloadXProxyMedia(ctx, original.String())
+		if err != nil {
+			return models.Embed{}, err
+		}
+		switch sourceMIME {
+		case gifMimeType:
+			width, height, err = gifHeaderDims(body)
+		case webpMimeType:
+			body, width, height, err = webpToGIF(body)
+		default:
+			err = fmt.Errorf("mídia do proxy X não suportada (mime=%q)", sourceMIME)
+		}
+	} else {
+		body, err = downloadGIFRendition(ctx, original.String())
+		if err == nil {
+			width, height, err = gifHeaderDims(body)
+		}
 	}
-	width, height, err := gifHeaderDims(body)
 	if err != nil {
 		return models.Embed{}, err
 	}
@@ -366,6 +424,156 @@ func betterRendition(a, b gifRendition) bool {
 		return areaA > areaB
 	}
 	return a.Kind < b.Kind
+}
+
+// downloadXProxyMedia baixa um arquivo do proxy de mídia do X com o mesmo
+// SafeFetch, limite de bytes, semáforo e bypass de robots já usados no crawler.
+// O MIME é derivado dos magic bytes: extensão e Content-Type remoto não são
+// considerados confiáveis.
+func downloadXProxyMedia(ctx context.Context, rawURL string) ([]byte, string, error) {
+	u, err := utils.NormalizeURL(rawURL)
+	if err != nil {
+		return nil, "", err
+	}
+	if gifProviderHost(u.Hostname()) != gifProviderXProxy ||
+		(!strings.HasSuffix(strings.ToLower(u.Path), ".gif") && !isXProxyTweetVideoWebPURL(u)) {
+		return nil, "", errors.New("URL de mídia do proxy X não permitida")
+	}
+	if !embedRobotsAllowed(ctx, u) {
+		return nil, "", errors.New("origem da mídia não permitida pelo robots.txt")
+	}
+	if !acquireOutboundSlot() {
+		return nil, "", errors.New("semáforo outbound cheio")
+	}
+	defer releaseOutboundSlot()
+
+	body, _, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxEmbedImageBytes, u.String())
+	if err != nil {
+		return nil, "", err
+	}
+	mimeType := utils.DetectMimeType(body)
+	if mimeType != gifMimeType && mimeType != webpMimeType {
+		return nil, "", fmt.Errorf("mídia do proxy X não é GIF/WebP (mime=%q)", mimeType)
+	}
+	return body, mimeType, nil
+}
+
+// boundedMediaBuffer impede que a conversão produza um arquivo maior que o
+// limite de mídia de embed.
+type boundedMediaBuffer struct {
+	bytes.Buffer
+	maxBytes int
+}
+
+func (b *boundedMediaBuffer) Write(p []byte) (int, error) {
+	if len(p) > b.maxBytes-b.Len() {
+		return 0, fmt.Errorf("GIF convertido excede o limite de %d bytes", b.maxBytes)
+	}
+	return b.Buffer.Write(p)
+}
+
+// webpToGIF converte WebP estático ou animado para GIF sem subprocessos. Para
+// animações, preserva a sequência de frames, delays e loop count. Os limites
+// são aplicados antes de decodificar todos os frames para reduzir risco de
+// decompression bombs.
+func webpToGIF(body []byte) ([]byte, int, int, error) {
+	features, err := webp.GetFeatures(bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("WebP do proxy X inválido: %w", err)
+	}
+	width, height := features.Width, features.Height
+	if width <= 0 || height <= 0 ||
+		width > utils.MaxThumbnailDimCeiling || height > utils.MaxThumbnailDimCeiling {
+		return nil, 0, 0, fmt.Errorf("dimensões do WebP do proxy X (%dx%d) fora do aceitável", width, height)
+	}
+
+	frameCount := 1
+	if features.HasAnimation {
+		frameCount = features.FrameCount
+	}
+	if frameCount <= 0 || frameCount > maxXProxyAnimationFrames ||
+		int64(width)*int64(height)*int64(frameCount) > maxXProxyAnimationPixels {
+		return nil, 0, 0, errors.New("animação WebP do proxy X excede os limites de frames/pixels")
+	}
+
+	// A primeira cor transparente preserva a transparência; as 255 cores
+	// seguintes formam uma paleta GIF válida (máximo de 256 entradas).
+	gifPalette := append(color.Palette{color.Transparent}, stdpalette.Plan9[:255]...)
+	result := &gif.GIF{
+		Config: image.Config{
+			ColorModel: gifPalette,
+			Width:      width,
+			Height:     height,
+		},
+		BackgroundIndex: 0, // índice transparente da paleta global
+		LoopCount:       0,
+	}
+	appendFrame := func(frame image.Image, delay time.Duration) error {
+		if frame == nil || frame.Bounds().Dx() != width || frame.Bounds().Dy() != height {
+			return errors.New("frame WebP com dimensões inconsistentes")
+		}
+		bounds := frame.Bounds()
+		paletted := image.NewPaletted(bounds, gifPalette)
+		draw.FloydSteinberg.Draw(paletted, bounds, frame, bounds.Min)
+
+		delayCentiseconds := int(delay / (10 * time.Millisecond))
+		if delayCentiseconds < 1 {
+			delayCentiseconds = 10
+		}
+		if delayCentiseconds > 65535 {
+			delayCentiseconds = 65535
+		}
+		result.Image = append(result.Image, paletted)
+		result.Delay = append(result.Delay, delayCentiseconds)
+		// Cada frame contém o canvas completo. Limpar o frame anterior para o
+		// índice de fundo transparente preserva pixels alpha entre frames.
+		result.Disposal = append(result.Disposal, gif.DisposalBackground)
+		return nil
+	}
+
+	if features.HasAnimation {
+		anim, err := animation.DecodeBytes(body)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("falha ao decodificar animação WebP: %w", err)
+		}
+		if err := anim.DecodeFrames(); err != nil {
+			return nil, 0, 0, fmt.Errorf("falha ao decodificar frames WebP: %w", err)
+		}
+		decoder, err := animation.NewAnimDecoder(anim)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("falha ao inicializar decoder WebP: %w", err)
+		}
+		result.LoopCount = anim.LoopCount
+		for decoder.HasNext() {
+			frame, delay, err := decoder.NextFrame()
+			if err != nil {
+				return nil, 0, 0, fmt.Errorf("falha ao ler frame WebP: %w", err)
+			}
+			if len(result.Image) >= maxXProxyAnimationFrames {
+				return nil, 0, 0, errors.New("animação WebP do proxy X excede o limite de frames")
+			}
+			if err := appendFrame(frame, delay); err != nil {
+				return nil, 0, 0, err
+			}
+		}
+	} else {
+		frame, err := webp.Decode(bytes.NewReader(body))
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("falha ao decodificar WebP: %w", err)
+		}
+		if err := appendFrame(frame, 100*time.Millisecond); err != nil {
+			return nil, 0, 0, err
+		}
+	}
+	if len(result.Image) == 0 {
+		return nil, 0, 0, errors.New("WebP do proxy X não contém frames")
+	}
+
+	out := &boundedMediaBuffer{maxBytes: maxEmbedImageBytes}
+	if err := gif.EncodeAll(out, result); err != nil {
+		return nil, 0, 0, fmt.Errorf("falha ao codificar GIF do proxy X: %w", err)
+	}
+	return out.Bytes(), width, height, nil
 }
 
 // downloadGIFRendition baixa os bytes da rendition (robots check na origem +
