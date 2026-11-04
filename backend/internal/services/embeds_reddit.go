@@ -1,10 +1,10 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"bytes"
 	"net/url"
 	"strings"
 
@@ -15,6 +15,10 @@ import (
 
 	"golang.org/x/net/html"
 )
+
+// redditCrawlerUserAgent identifica o crawler do Papo sem se passar por
+// outro serviço. O formato segue a convenção pública de crawlers de previews.
+const redditCrawlerUserAgent = "Mozilla/5.0 (compatible; PapoBot/1.0; +https://github.com/Papo-Chat/papo-backend)"
 
 type redditPostMetadata struct {
 	title        string
@@ -122,10 +126,10 @@ func fetchRedditPostEmbed(ctx context.Context, cfg *config.Config, target *url.U
 	if !acquireOutboundSlot() {
 		return models.Embed{}, errors.New("semáforo outbound cheio")
 	}
-	body, finalURL, err := utils.SafeFetch(ctx, outboundHTTPClient(), maxEmbedHTMLBytes, target.String())
+	body, finalURL, err := utils.SafeFetchWithUserAgent(ctx, outboundHTTPClient(), maxEmbedHTMLBytes, target.String(), redditCrawlerUserAgent)
 	releaseOutboundSlot()
 	if err != nil {
-		return models.Embed{}, fmt.Errorf("Reddit: falha ao buscar HTML do post: %w", err)
+		return models.Embed{}, fmt.Errorf("Reddit: falha ao buscar HTML do post (crawler=%q): %w", redditCrawlerUserAgent, err)
 	}
 	if !isRedditHost(finalURL.Hostname()) || !isRedditPostURL(finalURL) {
 		return models.Embed{}, errors.New("Reddit: redirect não terminou em uma página de post permitida")
@@ -182,7 +186,10 @@ func fetchRedditPostEmbed(ctx context.Context, cfg *config.Config, target *url.U
 		}
 	}
 	if metadata.imageURL != "" {
-		if media, err := downloadEmbedImage(ctx, cfg, metadata.imageURL); err == nil {
+		media, imageErr := downloadEmbedImageWithUserAgent(ctx, cfg, metadata.imageURL, redditCrawlerUserAgent)
+		if imageErr != nil {
+			utils.Warnf("Reddit: falha ao baixar thumbnail %s: %v", metadata.imageURL, imageErr)
+		} else {
 			if metadata.imageWidth > 0 {
 				media.Width = &metadata.imageWidth
 			}
