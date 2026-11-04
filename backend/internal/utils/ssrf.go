@@ -177,8 +177,19 @@ func SafeHTTPClient(opts SafeClientOpts) *http.Client {
 // pós-redirects (normalizada, para chave de cache e resolução de URLs
 // relativas). O ctx controla o timeout; o client já tem timeout próprio.
 func SafeFetch(ctx context.Context, client *http.Client, maxBodyBytes int64, rawURL string) ([]byte, *url.URL, error) {
+	return SafeFetchWithUserAgent(ctx, client, maxBodyBytes, rawURL, SafeClientUserAgent)
+}
+
+// SafeFetchWithUserAgent é igual a SafeFetch, mas permite identificar
+// explicitamente um crawler de um provedor. Todas as validações de URL,
+// redirects, IP/DNS e limite do corpo permanecem idênticas.
+func SafeFetchWithUserAgent(ctx context.Context, client *http.Client, maxBodyBytes int64, rawURL, userAgent string) ([]byte, *url.URL, error) {
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = 1 << 20
+	}
+	userAgent = strings.TrimSpace(userAgent)
+	if userAgent == "" {
+		userAgent = SafeClientUserAgent
 	}
 
 	u, err := NormalizeURL(rawURL)
@@ -190,7 +201,7 @@ func SafeFetch(ctx context.Context, client *http.Client, maxBodyBytes int64, raw
 	if err != nil {
 		return nil, nil, fmt.Errorf("falha ao criar requisição: %w", err)
 	}
-	req.Header.Set("User-Agent", SafeClientUserAgent)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
