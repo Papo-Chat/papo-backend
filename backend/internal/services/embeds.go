@@ -557,7 +557,7 @@ func fetchFxTwitterEmbed(ctx context.Context, cfg *config.Config, original *url.
 }
 
 func embedRobotsAllowed(ctx context.Context, u *url.URL) bool {
-	if isTwitterProxyGIFHost(u.Hostname()) || isRedditRobotsExemptHost(u.Hostname()) {
+	if isTwitterProxyGIFHost(u.Hostname()) {
 		return true
 	}
 	switch strings.ToLower(u.Hostname()) {
