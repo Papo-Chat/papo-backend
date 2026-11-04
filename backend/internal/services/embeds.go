@@ -654,7 +654,7 @@ func GetOrCreateEmbed(ctx context.Context, userID, rawURL string) (models.Embed,
 		return embed, err == nil, err
 	}
 
-		// Reddit: faz scrape da página HTML pública do post. O oEmbed do Reddit
+	// Reddit: faz scrape da página HTML pública do post. O oEmbed do Reddit
 	// não fornece de forma consistente o preview completo desejado.
 	if isRedditPostURL(u) {
 		embed, err := fetchRedditPostEmbed(ctx, cfg, u)
