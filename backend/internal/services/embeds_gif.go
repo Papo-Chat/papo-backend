@@ -500,8 +500,13 @@ func webpToGIF(body []byte) ([]byte, int, int, error) {
 	// seguintes formam uma paleta GIF válida (máximo de 256 entradas).
 	gifPalette := append(color.Palette{color.Transparent}, stdpalette.Plan9[:255]...)
 	result := &gif.GIF{
-		Config:   image.Config{Width: width, Height: height},
-		LoopCount: 0,
+		Config: image.Config{
+			ColorModel: gifPalette,
+			Width:      width,
+			Height:     height,
+		},
+		BackgroundIndex: 0, // índice transparente da paleta global
+		LoopCount:       0,
 	}
 	appendFrame := func(frame image.Image, delay time.Duration) error {
 		if frame == nil || frame.Bounds().Dx() != width || frame.Bounds().Dy() != height {
@@ -520,6 +525,9 @@ func webpToGIF(body []byte) ([]byte, int, int, error) {
 		}
 		result.Image = append(result.Image, paletted)
 		result.Delay = append(result.Delay, delayCentiseconds)
+		// Cada frame contém o canvas completo. Limpar o frame anterior para o
+		// índice de fundo transparente preserva pixels alpha entre frames.
+		result.Disposal = append(result.Disposal, gif.DisposalBackground)
 		return nil
 	}
 
