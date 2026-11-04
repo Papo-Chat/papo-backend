@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"bytes"
 
 	"papo/internal/config"
 	"papo/internal/models"
@@ -179,7 +180,7 @@ func parseRedditPostHTML(body []byte, pageURL *url.URL) (redditPostMetadata, err
 	if len(body) == 0 {
 		return meta, errors.New("Reddit: página HTML vazia")
 	}
-	doc, err := html.Parse(strings.NewReader(string(body)))
+	doc, err := html.Parse(bytes.NewReader(body))
 	if err != nil {
 		return meta, fmt.Errorf("Reddit: HTML inválido: %w", err)
 	}
@@ -188,7 +189,6 @@ func parseRedditPostHTML(body []byte, pageURL *url.URL) (redditPostMetadata, err
 		ogTitle, ogDescription, ogURL, ogImage, twitterImage, htmlDescription string
 		ogImageWidth, ogImageHeight                                           int
 	)
-	inPost := false
 	var walk func(*html.Node, bool)
 	walk = func(n *html.Node, insidePost bool) {
 		if n.Type == html.ElementNode {
@@ -283,14 +283,10 @@ func parseRedditPostHTML(body []byte, pageURL *url.URL) (redditPostMetadata, err
 					meta.imageURL = firstNonEmpty(htmlNodeAttr(n, "src"), htmlNodeAttr(n, "data-src"))
 				}
 			}
-			// The post element may be nested in a wrapper. Do not let comments
-			// replace its title/body metadata.
-			inPost = insidePost
 		}
 		for child := n.FirstChild; child != nil; child = child.NextSibling {
 			walk(child, insidePost)
 		}
-		_ = inPost
 	}
 	walk(doc, false)
 
