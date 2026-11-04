@@ -88,7 +88,7 @@ func redditImageURL(raw string) string {
 		return ""
 	}
 	switch strings.ToLower(u.Hostname()) {
-	case "i.redd.it", "preview.redd.it", "external-preview.redd.it", "a.thumbs.redditmedia.com", "b.thumbs.redditmedia.com":
+	case "i.redd.it", "preview.redd.it", "cf.preview.redd.it", "external-preview.redd.it", "a.thumbs.redditmedia.com", "b.thumbs.redditmedia.com":
 		return u.String()
 	}
 	return ""

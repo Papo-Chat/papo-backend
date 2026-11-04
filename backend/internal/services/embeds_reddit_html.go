@@ -23,6 +23,7 @@ func parseRedditDocument(body []byte, target redditTarget) (redditMetadata, erro
 	tokens := html.NewTokenizer(bytes.NewReader(body))
 	var title, description strings.Builder
 	identity, titleOpen, bodySeen := false, false, false
+	postMedia := false
 	bodyDivs := 0
 	skip := ""
 	for {
@@ -62,6 +63,18 @@ func parseRedditDocument(body []byte, target redditTarget) (redditMetadata, erro
 				return true
 			}
 			switch token.Data {
+			case "shreddit-screenview-data":
+				if len(attrs["data"]) <= 64<<10 {
+					var screen struct {
+						Post struct {
+							ID         string `json:"id"`
+							Translated bool   `json:"translation_state"`
+						} `json:"post"`
+					}
+					if json.Unmarshal([]byte(attrs["data"]), &screen) == nil && screen.Post.ID == "t3_"+target.id {
+						metadata.translated = metadata.translated || screen.Post.Translated
+					}
+				}
 			case "div":
 				if attrs["id"] == "canonical-url-updater" && matches(attrs["value"]) {
 					identity = true
@@ -109,7 +122,7 @@ func parseRedditDocument(body []byte, target redditTarget) (redditMetadata, erro
 					}
 				}
 			case "img":
-				if metadata.image == "" && target.comment == "" {
+				if postMedia && metadata.image == "" && target.comment == "" {
 					metadata.image = redditImageURL(attrs["src"])
 				}
 			}
@@ -124,6 +137,9 @@ func parseRedditDocument(body []byte, target redditTarget) (redditMetadata, erro
 				continue
 			}
 			if token.Data == "a" {
+				// EN-US: Community/author icons precede the title; only accept images from the post content.
+				// PT-BR: Ícones da comunidade/autor precedem o título; aceita imagens somente do conteúdo do post.
+				postMedia = postMedia || titleOpen
 				titleOpen = false
 			}
 			if bodyDivs > 0 {
