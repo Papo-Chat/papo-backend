@@ -22,6 +22,7 @@ var errRedditDocument = errors.New("Reddit: documento sem publicação identific
 type redditMetadata struct {
 	title, description, author, community, canonical, image, method string
 	video                                                           *models.EmbedMedia
+	translated                                                      bool
 }
 
 // EN-US: Read the first-party embed document, never execute its scripts; oEmbed is a text-only fallback.
@@ -53,6 +54,15 @@ func loadRedditMetadata(ctx context.Context, client *http.Client, original *url.
 	cancel()
 	if fetchErr == nil {
 		if metadata, err := parseRedditDocument(body, target); err == nil {
+			if metadata.translated {
+				// EN-US: Locale selects UI language, not an original-content guarantee. Recover the original title via oEmbed.
+				// PT-BR: O locale seleciona o idioma da interface, sem garantir conteúdo original. Recupera o título pelo oEmbed.
+				original, err := loadRedditOEmbedMetadata(ctx, client, target)
+				if err != nil {
+					return redditMetadata{}, err
+				}
+				metadata.title, metadata.description = original.title, ""
+			}
 			return metadata, nil
 		}
 	} else {
@@ -65,6 +75,10 @@ func loadRedditMetadata(ctx context.Context, client *http.Client, original *url.
 	if err := ctx.Err(); err != nil {
 		return redditMetadata{}, err
 	}
+	return loadRedditOEmbedMetadata(ctx, client, target)
+}
+
+func loadRedditOEmbedMetadata(ctx context.Context, client *http.Client, target redditTarget) (redditMetadata, error) {
 	endpoint, _ := url.Parse("https://www.reddit.com/oembed")
 	query := url.Values{"url": {target.url.String()}}
 	endpoint.RawQuery = query.Encode()
@@ -72,7 +86,7 @@ func loadRedditMetadata(ctx context.Context, client *http.Client, original *url.
 		return u.Hostname() == "www.reddit.com" && u.Path == "/oembed"
 	})
 	if err != nil {
-		return redditMetadata{}, fmt.Errorf("Reddit: documento e oEmbed indisponíveis: %w", err)
+		return redditMetadata{}, fmt.Errorf("Reddit: metadados originais do oEmbed indisponíveis: %w", err)
 	}
 	var response oembedResult
 	if err := json.Unmarshal(body, &response); err != nil {

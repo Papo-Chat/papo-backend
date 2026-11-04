@@ -38,6 +38,33 @@ remain unchanged. No generic Reddit robots exception is introduced: the provider
 uses the first-party embed renderer and oEmbed API, and ordinary image robots
 checks still apply.
 
+## Original language and post images
+
+The embed renderer can translate user content into English automatically even
+without a `tl` parameter. Its `locale` option selects interface language and is
+not a reliable original-content switch. When first-party metadata marks the
+requested post as translated, obtain its original title from the official
+oEmbed endpoint and retain the document's images/video. Never force a specific
+language such as Portuguese. If the original title cannot be obtained, do not
+publish the substituted translation.
+
+oEmbed does not supply the original post body. A translated body is therefore
+omitted rather than presented as original text; untranslated body text remains
+available. This does not introduce a translation service or guess the source
+language from the URL.
+
+Post image selection starts after the matching title, so a community icon in
+the header cannot become the preview. Both `preview.redd.it` and the exact
+`cf.preview.redd.it` host are accepted, retaining HTTPS, redirect, size and MIME
+checks. Unrelated hosts and lookalike domains remain rejected.
+
+Migration `019_reddit_original_previews_cache.sql` marks existing Reddit cache
+entries expired without deleting images, shared embed IDs or message links.
+On the next share/refetch, normal upsert/update handling refreshes previously
+translated cards or incorrect icons, including messages sharing that embed.
+Apply the migration as part of normal backend deployment. It does not trigger
+a bulk crawl of historical posts or invalidate other providers' previews.
+
 ## Cache, media and limits
 
 - Share the existing URL cache and rate limits. Ordinary cache hits make no
@@ -80,10 +107,13 @@ download and temporary PostgreSQL persistence for the supplied Factorio share
 link, a Reddit announcement text post and an image post:
 
 ```sh
-PAPO_REDDIT_LIVE=1 go test ./internal/services -run '^TestRedditLivePublicPreviews$' -count=1 -v
+PAPO_REDDIT_LIVE=1 go test ./internal/services -run '^TestRedditLive' -count=1 -v
 ```
 
 It uses no Reddit account, production database, browser cookies or Papo session.
+The additional image/language check covers the supplied PCMasterRace gallery
+and Portuguese FariaLimaBets image post, asserting original titles and actual
+post-image identities rather than a particular CDN alias chosen upstream.
 Production network access can differ from a development host; run this opt-in
 check on the deployment host before deployment. Deployment remains separate
 from opening or merging the source PR.
