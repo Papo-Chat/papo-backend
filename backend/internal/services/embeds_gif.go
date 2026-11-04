@@ -499,7 +499,10 @@ func webpToGIF(body []byte) ([]byte, int, int, error) {
 	// A primeira cor transparente preserva a transparência; as 255 cores
 	// seguintes formam uma paleta GIF válida (máximo de 256 entradas).
 	gifPalette := append(color.Palette{color.Transparent}, stdpalette.Plan9[:255]...)
-	result := &gif.GIF{}
+	result := &gif.GIF{
+		Config:   image.Config{Width: width, Height: height},
+		LoopCount: 0,
+	}
 	appendFrame := func(frame image.Image, delay time.Duration) error {
 		if frame == nil || frame.Bounds().Dx() != width || frame.Bounds().Dy() != height {
 			return errors.New("frame WebP com dimensões inconsistentes")
