@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"bytes"
 	"net/url"
 	"strings"
-	"bytes"
 
 	"papo/internal/config"
 	"papo/internal/models"
@@ -141,6 +141,20 @@ func fetchRedditPostEmbed(ctx context.Context, cfg *config.Config, target *url.U
 		Provider:    &provider,
 		SiteName:    nullableText(truncateRune(siteName, embedSiteNameMax)),
 	}
+	if metadata.score != "" {
+		embed.Fields = append(embed.Fields, models.EmbedField{
+			Position: len(embed.Fields),
+			Name:     "Votos",
+			Value:    truncateRune(metadata.score, embedFieldValueMax),
+		})
+	}
+	if metadata.comments != "" {
+		embed.Fields = append(embed.Fields, models.EmbedField{
+			Position: len(embed.Fields),
+			Name:     "Comentários",
+			Value:    truncateRune(metadata.comments, embedFieldValueMax),
+		})
+	}
 	if metadata.author != "" && metadata.author != "[deleted]" {
 		authorName := "u/" + metadata.author
 		authorURL := "https://www.reddit.com/user/" + url.PathEscape(metadata.author) + "/"
@@ -206,14 +220,25 @@ func parseRedditPostHTML(body []byte, pageURL *url.URL) (redditPostMetadata, err
 				if meta.author == "" {
 					meta.author = strings.TrimPrefix(htmlNodeAttr(n, "author"), "u/")
 				}
+				if meta.score == "" {
+					meta.score = htmlNodeAttr(n, "score")
+				}
+				if meta.comments == "" {
+					meta.comments = firstNonEmpty(
+						htmlNodeAttr(n, "comment-count"),
+						htmlNodeAttr(n, "num-comments"),
+						htmlNodeAttr(n, "comment_count"),
+					)
+				}
 				if meta.canonicalURL == "" {
 					meta.canonicalURL = resolveRelativeURL(pageURL, htmlNodeAttr(n, "permalink"))
 				}
 				if meta.imageURL == "" {
 					meta.imageURL = firstNonEmpty(
-						htmlNodeAttr(n, "thumbnail-url"),
-						htmlNodeAttr(n, "post-thumbnail"),
-						htmlNodeAttr(n, "preview-url"),
+						redditImageCandidate(htmlNodeAttr(n, "thumbnail")),
+						redditImageCandidate(htmlNodeAttr(n, "thumbnail-url")),
+						redditImageCandidate(htmlNodeAttr(n, "post-thumbnail")),
+						redditImageCandidate(htmlNodeAttr(n, "preview-url")),
 					)
 				}
 			}
@@ -277,10 +302,18 @@ func parseRedditPostHTML(body []byte, pageURL *url.URL) (redditPostMetadata, err
 				if slot := htmlNodeAttr(n, "slot"); slot == "text-body" && meta.description == "" {
 					meta.description = nodeText(n)
 				}
-				if meta.imageURL == "" && n.Data == "img" &&
-					(htmlNodeAttr(n, "id") == "post-image" ||
-						htmlNodeAttr(n, "data-testid") == "post-image") {
-					meta.imageURL = firstNonEmpty(htmlNodeAttr(n, "src"), htmlNodeAttr(n, "data-src"))
+				if meta.imageURL == "" {
+					slot := htmlNodeAttr(n, "slot")
+					testID := htmlNodeAttr(n, "data-testid")
+					if (n.Data == "img" && (htmlNodeAttr(n, "id") == "post-image" ||
+						testID == "post-image" || slot == "thumbnail")) ||
+						(n.Data == "faceplate-img" && (slot == "thumbnail" || testID == "post-thumbnail")) {
+						meta.imageURL = redditImageCandidate(firstNonEmpty(
+							htmlNodeAttr(n, "src"),
+							htmlNodeAttr(n, "data-src"),
+							htmlNodeAttr(n, "image-url"),
+						))
+					}
 				}
 			}
 		}
@@ -316,6 +349,19 @@ func parseRedditPostHTML(body []byte, pageURL *url.URL) (redditPostMetadata, err
 	meta.author = strings.TrimPrefix(strings.TrimSpace(meta.author), "u/")
 	meta.canonicalURL = strings.TrimSpace(meta.canonicalURL)
 	return meta, nil
+}
+
+func redditImageCandidate(raw string) string {
+	raw = strings.TrimSpace(raw)
+	switch strings.ToLower(raw) {
+	case "", "self", "nsfw", "default", "image", "spoiler":
+		return ""
+	}
+	if strings.HasPrefix(raw, "https://") || strings.HasPrefix(raw, "http://") ||
+		strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "/") {
+		return raw
+	}
+	return ""
 }
 
 func htmlNodeAttr(n *html.Node, key string) string {
