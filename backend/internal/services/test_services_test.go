@@ -7474,6 +7474,48 @@ func TestExtractEmbedURLs(t *testing.T) {
 	}
 }
 
+func TestEmbedCrawlTimeout(t *testing.T) {
+	base := 8 * time.Second
+	cases := []struct {
+		name    string
+		budget  time.Duration
+		urls    []string
+		want    time.Duration
+	}{
+		{
+			name:   "X proxy animated WebP gets enough time for conversion and persistence",
+			budget: base,
+			urls:   []string{"https://gif.fxtwitter.com/tweet_video/HT-DVvMWoAASeEm.webp"},
+			want:   xProxyGIFProcessingTimeout,
+		},
+		{
+			name:   "configured longer timeout is preserved",
+			budget: 45 * time.Second,
+			urls:   []string{"https://gif.fxtwitter.com/tweet_video/HT-DVvMWoAASeEm.webp"},
+			want:   45 * time.Second,
+		},
+		{
+			name:   "ordinary URL keeps configured timeout",
+			budget: base,
+			urls:   []string{"https://example.com/image.webp"},
+			want:   base,
+		},
+		{
+			name:   "other X proxy WebP path keeps configured timeout",
+			budget: base,
+			urls:   []string{"https://gif.fxtwitter.com/images/image.webp"},
+			want:   base,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := embedCrawlTimeout(tc.budget, tc.urls); got != tc.want {
+				t.Errorf("embedCrawlTimeout() = %s, esperado %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestStripTrailingPunctuation(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"https://x.com/a.", "https://x.com/a"},

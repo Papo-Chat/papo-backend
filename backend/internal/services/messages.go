@@ -543,6 +543,24 @@ func embedBudget(customs []models.Embed) (int, int) {
 	return maxEmbedsPerMessage - len(customs), remainingText
 }
 
+// XProxyGIFProcessingTimeout is the minimum end-to-end budget for an animated
+// WebP served by an X media proxy. Its synchronous WebP decode, GIF encode and
+// media persistence must all finish before the crawler context expires.
+const xProxyGIFProcessingTimeout = 30 * time.Second
+
+func embedCrawlTimeout(budget time.Duration, rawURLs []string) time.Duration {
+	if budget >= xProxyGIFProcessingTimeout {
+		return budget
+	}
+	for _, rawURL := range rawURLs {
+		u, err := utils.NormalizeURL(rawURL)
+		if err == nil && isXProxyTweetVideoWebPURL(u) {
+			return xProxyGIFProcessingTimeout
+		}
+	}
+	return budget
+}
+
 // crawlEmbeds extrai URLs do content e obtém/cria os link embeds (best-effort:
 // qualquer falha é logada e a URL segue sem embed). O ctx carrega o budget total
 // compartilhado entre as URLs (§6.1) e maxEmbeds/maxText limitam o resultado ao
@@ -566,8 +584,6 @@ func crawlEmbeds(ctx context.Context, authorID, content string, maxEmbeds, maxTe
 	if budget <= 0 {
 		budget = 8 * time.Second
 	}
-	embedCtx, cancel := context.WithTimeout(ctx, budget)
-	defer cancel()
 
 	// LINK_PREVIEW_MAX_URLS continua sendo o teto de URLs do crawler; o
 	// orçamento da mensagem (10 embeds menos os customizados) só pode reduzir
@@ -576,11 +592,18 @@ func crawlEmbeds(ctx context.Context, authorID, content string, maxEmbeds, maxTe
 	if maxEmbeds < maxURLs {
 		maxURLs = maxEmbeds
 	}
+	rawURLs := extractEmbedURLs(content, maxURLs)
+	// Conversão WebP -> GIF é síncrona e consome CPU antes da gravação no banco.
+	// Não deixe o timeout curto padrão de link preview expirar justamente na
+	// etapa final de persistência desse tipo específico de mídia.
+	budget = embedCrawlTimeout(budget, rawURLs)
+	embedCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 
 	var embeds []models.Embed
 	var updates []EmbedUpdate
 	remainingText := maxText
-	for _, rawURL := range extractEmbedURLs(content, maxURLs) {
+	for _, rawURL := range rawURLs {
 		embed, refetched, err := GetOrCreateEmbed(embedCtx, authorID, rawURL)
 		if err != nil {
 			utils.Errorf("embed para %s pulado: %v", rawURL, err)
