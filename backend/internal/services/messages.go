@@ -548,14 +548,21 @@ func embedBudget(customs []models.Embed) (int, int) {
 // media persistence must all finish before the crawler context expires.
 const xProxyGIFProcessingTimeout = 30 * time.Second
 
+// EN-US: Leave time for the embed document, optional oEmbed fallback, thumbnail and persistence.
+// PT-BR: Reserva tempo para o documento incorporado, oEmbed opcional, miniatura e persistência.
+const redditPreviewTimeout = 20 * time.Second
+
 func embedCrawlTimeout(budget time.Duration, rawURLs []string) time.Duration {
-	if budget >= xProxyGIFProcessingTimeout {
-		return budget
-	}
 	for _, rawURL := range rawURLs {
 		u, err := utils.NormalizeURL(rawURL)
-		if err == nil && isXProxyTweetVideoWebPURL(u) {
-			return xProxyGIFProcessingTimeout
+		if err != nil {
+			continue
+		}
+		if isXProxyTweetVideoWebPURL(u) && budget < xProxyGIFProcessingTimeout {
+			budget = xProxyGIFProcessingTimeout
+		}
+		if isRedditPostURL(u) && budget < redditPreviewTimeout {
+			budget = redditPreviewTimeout
 		}
 	}
 	return budget
