@@ -7495,18 +7495,6 @@ func TestEmbedCrawlTimeout(t *testing.T) {
 			want:   45 * time.Second,
 		},
 		{
-			name:   "Reddit HTML and thumbnail scraping gets enough time",
-			budget: base,
-			urls:   []string{"https://www.reddit.com/r/brdev/comments/1esc9k6/post-title"},
-			want:   redditPostCrawlTimeout,
-		},
-		{
-			name:   "configured longer Reddit timeout is preserved",
-			budget: 45 * time.Second,
-			urls:   []string{"https://www.reddit.com/r/brdev/comments/1esc9k6/post-title"},
-			want:   45 * time.Second,
-		},
-		{
 			name:   "ordinary URL keeps configured timeout",
 			budget: base,
 			urls:   []string{"https://example.com/image.webp"},

@@ -25,6 +25,7 @@ var oembedProviders = map[string]string{
 	"tiktok.com":     "https://www.tiktok.com/oembed?url={url}",
 	"vimeo.com":      "https://vimeo.com/api/oembed.json?url={url}",
 	"spotify.com":    "https://open.spotify.com/oembed?url={url}",
+	"reddit.com":     "https://www.reddit.com/oembed?url={url}",
 	"soundcloud.com": "https://soundcloud.com/oembed?url={url}&format=json",
 	"flickr.com":     "https://www.flickr.com/services/oembed?url={url}&format=json",
 }
