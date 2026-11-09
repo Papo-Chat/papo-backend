@@ -37,10 +37,14 @@ func ListChannelsHandler(baseURL string, c echo.Context) error {
 	return c.JSON(http.StatusOK, channelListResponse{Channels: channels})
 }
 
+// createChannelRequest é o corpo de POST /channels. ParentID e AccessRoles
+// são opcionais: ausentes, o canal nasce sem categoria e aberto, como antes.
 type createChannelRequest struct {
-	Name  string `json:"name"`
-	Type  string `json:"type"`
-	Topic string `json:"topic"`
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	Topic       string   `json:"topic"`
+	ParentID    *string  `json:"parent_id"`
+	AccessRoles []string `json:"access_roles"`
 }
 
 // CreateChannelHandler implementa POST /channels.
@@ -58,12 +62,22 @@ func CreateChannelHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	channel, err := services.CreateChannel(c.Request().Context(), userID, req.Name, req.Type, req.Topic)
+	channel, err := services.CreateChannelWithOptions(c.Request().Context(), userID,
+		req.Name, req.Type, req.Topic, req.ParentID, req.AccessRoles)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
 			"name é obrigatório e deve ter no máximo 32 caracteres; type deve ser 'text', 'category' ou 'voice'; topic tem no máximo 512 caracteres e é válido apenas para canais de texto")
+	case errors.Is(err, services.ErrNestedCategory):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "categorias não ficam dentro de outra categoria")
+	case errors.Is(err, services.ErrCategoryNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "categoria não encontrada")
+	case errors.Is(err, services.ErrRoleNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "role não encontrada")
 	case errors.Is(err, services.ErrChannelLimitReached):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"channel-limit-reached", "Limite de canais atingido",
@@ -87,6 +101,7 @@ func CreateChannelHandler(baseURL string, c echo.Context) error {
 		Position:    channel.Position,
 		ChannelType: channel.Type,
 		Topic:       channel.Topic,
+		ParentID:    channel.ParentID,
 	})
 
 	return c.JSON(http.StatusCreated, channel)
@@ -147,6 +162,7 @@ func UpdateChannelHandler(baseURL string, c echo.Context) error {
 		Name:      channel.Name,
 		Position:  channel.Position,
 		Topic:     channel.Topic,
+		ParentID:  channel.ParentID,
 	})
 
 	return c.JSON(http.StatusOK, channel)
@@ -279,9 +295,13 @@ func UpdateChannelPermissionsHandler(baseURL string, c echo.Context) error {
 	})
 }
 
+// changeChannelPositionRequest é o corpo de
+// PUT /channels/:channel_id/change_position. ParentID é opcional: ausente
+// mantém a categoria, "" tira o canal da categoria e um id o coloca nela.
 type changeChannelPositionRequest struct {
-	OldPosition int `json:"old_position"`
-	NewPosition int `json:"new_position"`
+	OldPosition int     `json:"old_position"`
+	NewPosition int     `json:"new_position"`
+	ParentID    *string `json:"parent_id"`
 }
 
 // ChangeChannelPositionHandler implementa
@@ -308,15 +328,22 @@ func ChangeChannelPositionHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	channel, err := services.ChangeChannelPosition(c.Request().Context(), userID, channelID, req.OldPosition, req.NewPosition)
+	channel, err := services.ChangeChannelPositionWithParent(c.Request().Context(), userID,
+		channelID, req.OldPosition, req.NewPosition, req.ParentID)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido",
 			"old_position e new_position devem ser posições válidas (1 até o número de canais)")
+	case errors.Is(err, services.ErrNestedCategory):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"invalid-param", "Parâmetro inválido", "categorias não ficam dentro de outra categoria")
 	case errors.Is(err, services.ErrChannelNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
 			"not-found", "Recurso não encontrado", "canal não encontrado")
+	case errors.Is(err, services.ErrCategoryNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "categoria não encontrada")
 	case errors.Is(err, services.ErrChannelPositionConflict):
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"channel-position-conflict", "Posição do canal desatualizada",
@@ -328,14 +355,15 @@ func ChangeChannelPositionHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao mudar a posição do canal")
 	}
 
-	// Distribui a mudança de posição aos clientes conectados
-	// (evento channel_update).
+	// Distribui a mudança de posição (e de categoria, quando houver) aos
+	// clientes conectados (evento channel_update).
 	websocket.GetHub().Broadcast(websocket.ChannelUpdateOutbound{
 		Type:      websocket.EventTypeChannelUpdate,
 		ChannelID: channel.ID,
 		Name:      channel.Name,
 		Position:  channel.Position,
 		Topic:     channel.Topic,
+		ParentID:  channel.ParentID,
 	})
 
 	return c.JSON(http.StatusOK, channel)

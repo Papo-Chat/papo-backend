@@ -261,6 +261,7 @@ type MessagePinOutbound struct {
 
 // ChannelCreateOutbound é o evento de criação de canal distribuído aos clientes.
 // Topic é null para canais category (ou sem tópico).
+// ParentID é a categoria do canal; null quando ele não está em uma categoria.
 type ChannelCreateOutbound struct {
 	Type        EventType `json:"type"`
 	ChannelID   string    `json:"channel_id"`
@@ -268,16 +269,21 @@ type ChannelCreateOutbound struct {
 	ChannelType string    `json:"channel_type"`
 	Position    int       `json:"position"`
 	Topic       *string   `json:"topic"`
+	ParentID    *string   `json:"parent_id"`
 }
 
 // ChannelUpdateOutbound é o evento de atualização de canal distribuído aos clientes.
 // Topic é null para canais category (ou sem tópico).
+// ParentID é a categoria atual do canal (null: sem categoria). Vai em todo
+// channel_update porque mover um canal de categoria pode não mudar nome nem
+// posição: sem o campo, o cliente não veria a mudança.
 type ChannelUpdateOutbound struct {
 	Type      EventType `json:"type"`
 	ChannelID string    `json:"channel_id"`
 	Name      string    `json:"name"`
 	Position  int       `json:"position"`
 	Topic     *string   `json:"topic"`
+	ParentID  *string   `json:"parent_id"`
 }
 
 // ChannelDeleteOutbound é o evento de exclusão de canal distribuído aos clientes.

@@ -31,10 +31,13 @@ func ListRolesHandler(baseURL string, c echo.Context) error {
 	return c.JSON(http.StatusOK, roleListResponse{Roles: roles})
 }
 
+// createRoleRequest é o corpo de POST /roles. People é opcional: são os
+// usuários que já nascem com a role; ausente, a role nasce sem ninguém.
 type createRoleRequest struct {
 	Name        string                 `json:"name"`
 	Color       *string                `json:"color"`
 	Permissions models.RolePermissions `json:"permissions"`
+	People      []string               `json:"people"`
 }
 
 // CreateRoleHandler implementa POST /roles.
@@ -54,7 +57,8 @@ func CreateRoleHandler(baseURL string, c echo.Context) error {
 			"invalid-param", "Parâmetro inválido", "corpo da requisição inválido")
 	}
 
-	role, err := services.CreateRole(c.Request().Context(), userID, req.Name, req.Color, req.Permissions)
+	role, members, err := services.CreateRoleWithMembers(c.Request().Context(), userID,
+		req.Name, req.Color, req.Permissions, req.People)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -64,11 +68,25 @@ func CreateRoleHandler(baseURL string, c echo.Context) error {
 		return utils.SendProblem(c, baseURL, http.StatusConflict,
 			"role-name-taken", "Nome de role já existe",
 			"o nome informado já está em uso")
+	case errors.Is(err, services.ErrUserNotFound):
+		return utils.SendProblem(c, baseURL, http.StatusNotFound,
+			"not-found", "Recurso não encontrado", "usuário de people não encontrado")
 	case err != nil:
 		utils.Errorf("request_id=%s falha ao criar role: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError,
 			"internal", "Erro interno", "falha ao criar a role")
+	}
+
+	// Quem nasce com a role recebe o mesmo role_add de
+	// POST /users/:user_id/roles. Sem isso, os clientes conectados não
+	// saberiam dessas atribuições até reconectar.
+	for _, memberID := range members {
+		websocket.GetHub().Broadcast(websocket.RoleAddOutbound{
+			Type:   websocket.EventTypeRoleAdd,
+			UserID: memberID,
+			RoleID: role.ID,
+		})
 	}
 
 	return c.JSON(http.StatusCreated, role)

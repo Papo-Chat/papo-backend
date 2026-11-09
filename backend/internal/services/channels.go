@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"sort"
 	"unicode/utf8"
 
 	"papo/internal/models"
@@ -18,6 +19,15 @@ var ErrChannelNameTaken = errors.New("nome do canal já existe")
 
 // ErrRoleNotFound indica que a role não existe.
 var ErrRoleNotFound = errors.New("role não encontrada")
+
+// ErrCategoryNotFound indica que o parent_id informado não é uma categoria
+// existente.
+var ErrCategoryNotFound = errors.New("categoria não encontrada")
+
+// ErrNestedCategory indica que uma categoria recebeu parent_id: categorias
+// não ficam dentro de outra categoria. É um erro à parte de ErrInvalidInput
+// para não mudar a mensagem que os clientes já recebem nos outros casos.
+var ErrNestedCategory = errors.New("categoria não pode ficar dentro de outra categoria")
 
 // ErrChannelLimitReached indica que o limite de canais foi atingido.
 var ErrChannelLimitReached = errors.New("limite de canais atingido")
@@ -52,6 +62,22 @@ func ListChannels(ctx context.Context, userID string) ([]models.ChannelSummary, 
 // limite de 500 canais já foi atingido e ErrChannelNameTaken quando o nome
 // já está em uso.
 func CreateChannel(ctx context.Context, actorID, name, channelType, topic string) (models.ChannelSummary, error) {
+	return CreateChannelWithOptions(ctx, actorID, name, channelType, topic, nil, nil)
+}
+
+// CreateChannelWithOptions cria o canal como CreateChannel e, na mesma
+// transação, o coloca na categoria parentID e o restringe às roles de
+// accessRoles (README: campos opcionais parent_id e access_roles de
+// POST /channels). Sem esses campos o comportamento é o de sempre: canal sem
+// categoria e aberto. parent_id vazio também significa sem categoria.
+// Além dos erros de CreateChannel, retorna ErrNestedCategory quando uma
+// categoria recebe parent_id, ErrCategoryNotFound
+// quando parent_id não é uma categoria existente e ErrRoleNotFound quando
+// alguma role de access_roles não existe.
+func CreateChannelWithOptions(ctx context.Context, actorID, name, channelType, topic string, parentID *string, accessRoles []string) (models.ChannelSummary, error) {
+	if parentID != nil && *parentID == "" {
+		parentID = nil
+	}
 	if channelType == "" {
 		channelType = "text"
 	}
@@ -67,6 +93,9 @@ func CreateChannel(ctx context.Context, actorID, name, channelType, topic string
 	if channelType == "category" && topic != "" {
 		return models.ChannelSummary{}, ErrInvalidInput
 	}
+	if channelType == "category" && parentID != nil {
+		return models.ChannelSummary{}, ErrNestedCategory
+	}
 
 	count, err := storage.CountChannels(ctx)
 	if err != nil {
@@ -76,28 +105,65 @@ func CreateChannel(ctx context.Context, actorID, name, channelType, topic string
 		return models.ChannelSummary{}, ErrChannelLimitReached
 	}
 
-	channel, err := storage.CreateChannel(ctx, name, channelType, topic)
-	if errors.Is(err, storage.ErrUniqueViolation) {
+	channel, err := storage.CreateChannelWithOptions(ctx, name, channelType, topic, parentID, accessRoles)
+	switch {
+	case errors.Is(err, storage.ErrUniqueViolation):
 		return models.ChannelSummary{}, ErrChannelNameTaken
-	}
-	if err != nil {
+	case errors.Is(err, storage.ErrCategoryNotFound):
+		return models.ChannelSummary{}, ErrCategoryNotFound
+	case errors.Is(err, storage.ErrInitialChannelRoleNotFound):
+		return models.ChannelSummary{}, ErrRoleNotFound
+	case err != nil:
 		return models.ChannelSummary{}, err
 	}
 
+	metadata := map[string]any{
+		"name": name,
+		"type": channelType,
+	}
+	// As permissões iniciais entram no audit da criação: sem isso, um canal
+	// criado já restrito não deixaria rastro de quem definiu o acesso (o
+	// PUT de permissões registra channel_perm_update à parte).
+	if channel.ParentID != nil {
+		metadata["parent_id"] = *channel.ParentID
+	}
+	if len(channel.Permissions) > 0 {
+		roles := make([]string, 0, len(channel.Permissions))
+		for roleID := range channel.Permissions {
+			roles = append(roles, roleID)
+		}
+		sort.Strings(roles)
+		metadata["access_roles"] = roles
+	}
 	RecordAudit(ctx, AuditEntry{
 		ActorID:    actorID,
 		Action:     ActionChannelCreate,
 		EntityType: EntityChannel,
 		EntityID:   &channel.ID,
-		Metadata: map[string]any{
-			"name": name,
-			"type": channelType,
-		},
+		Metadata:   metadata,
 	})
 
 	// Reconsulta a visão summary para que a resposta da criação tenha a
 	// mesma forma da listagem (permissões expandidas e last_message).
 	return storage.GetChannelSummary(ctx, channel.ID)
+}
+
+// moveMetadata monta o metadata do audit de mudança de posição. A categoria
+// só entra quando a requisição a trocou, para o audit distinguir "moveu e
+// mudou de categoria" de "só reordenou".
+func moveMetadata(oldPosition, newPosition int, requestedParent, parent *string) map[string]any {
+	metadata := map[string]any{
+		"old_position": oldPosition,
+		"new_position": newPosition,
+	}
+	if requestedParent != nil {
+		if parent != nil {
+			metadata["parent_id"] = *parent
+		} else {
+			metadata["parent_id"] = nil
+		}
+	}
+	return metadata
 }
 
 // UpdateChannel renomeia um canal pelo id e, opcionalmente, atualiza o topic
@@ -171,6 +237,17 @@ func UpdateChannel(ctx context.Context, actorID, id, name string, topic *string)
 // ErrChannelNotFound quando o canal não existe e
 // ErrChannelPositionConflict quando o canal não está em old_position.
 func ChangeChannelPosition(ctx context.Context, actorID, channelID string, oldPosition, newPosition int) (models.ChannelSummary, error) {
+	return ChangeChannelPositionWithParent(ctx, actorID, channelID, oldPosition, newPosition, nil)
+}
+
+// ChangeChannelPositionWithParent move o canal como ChangeChannelPosition e
+// troca a categoria dele na mesma transação (README: campo opcional
+// parent_id de PUT /channels/:channel_id/change_position): nil mantém a
+// categoria, string vazia tira o canal da categoria e um id o coloca nela.
+// Além dos erros de ChangeChannelPosition, retorna ErrNestedCategory quando
+// o canal movido é uma categoria e recebe uma categoria, e
+// ErrCategoryNotFound quando parent_id não é uma categoria existente.
+func ChangeChannelPositionWithParent(ctx context.Context, actorID, channelID string, oldPosition, newPosition int, parentID *string) (models.ChannelSummary, error) {
 	if channelID == "" {
 		return models.ChannelSummary{}, ErrChannelNotFound
 	}
@@ -184,11 +261,16 @@ func ChangeChannelPosition(ctx context.Context, actorID, channelID string, oldPo
 	if err != nil {
 		return models.ChannelSummary{}, err
 	}
+	if parentID != nil && *parentID != "" && current.Type == "category" {
+		return models.ChannelSummary{}, ErrNestedCategory
+	}
 
-	channel, err := storage.ChangeChannelPosition(ctx, channelID, oldPosition, newPosition)
+	channel, err := storage.ChangeChannelPositionWithParent(ctx, channelID, oldPosition, newPosition, parentID)
 	switch {
 	case errors.Is(err, storage.ErrNotFound):
 		return models.ChannelSummary{}, ErrChannelNotFound
+	case errors.Is(err, storage.ErrCategoryNotFound):
+		return models.ChannelSummary{}, ErrCategoryNotFound
 	case errors.Is(err, storage.ErrPositionConflict):
 		return models.ChannelSummary{}, ErrChannelPositionConflict
 	case errors.Is(err, storage.ErrInvalidPosition):
@@ -202,10 +284,7 @@ func ChangeChannelPosition(ctx context.Context, actorID, channelID string, oldPo
 		Action:     ActionChannelMovePosition,
 		EntityType: EntityChannel,
 		EntityID:   &channel.ID,
-		Metadata: map[string]any{
-			"old_position": oldPosition,
-			"new_position": newPosition,
-		},
+		Metadata:   moveMetadata(oldPosition, newPosition, parentID, channel.ParentID),
 	})
 
 	// Reconsulta a visão summary para que a resposta tenha a mesma forma da
