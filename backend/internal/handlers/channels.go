@@ -7,6 +7,7 @@ import (
 	"papo/internal/middleware"
 	"papo/internal/models"
 	"papo/internal/services"
+	"papo/internal/storage"
 	"papo/internal/utils"
 	"papo/internal/websocket"
 
@@ -272,10 +273,44 @@ func UpdateChannelPermissionsHandler(baseURL string, c echo.Context) error {
 			"internal", "Erro interno", "falha ao atualizar as permissões do canal")
 	}
 
+	broadcastChannelPermissionsChanged(c, channelID)
+
 	return c.JSON(http.StatusOK, updateChannelPermissionsResponse{
 		ChannelID:   channelID,
 		RoleID:      roleID,
 		Permissions: permissions,
+	})
+}
+
+// broadcastChannelPermissionsChanged distribui channel_update aos clientes
+// conectados depois que as permissões de uma role em um canal mudam
+// (PUT /channels/:channel_id/permissions/:role_id e
+// DELETE /channels/:channel_id/role/:role_id).
+//
+// Sem este evento, a mudança de permissões era a única alteração de canal
+// que não chegava aos clientes: quem estava conectado continuava com as
+// permissões antigas (canal oculto ou visível indevidamente, envio liberado
+// ou bloqueado) até reconectar. Criar, editar, mover e excluir canal já
+// distribuem seus eventos.
+//
+// O evento não carrega as permissões; o cliente que precisa delas recarrega
+// GET /channels, que já as devolve. A escrita já foi confirmada quando este
+// helper roda: se a leitura do canal falhar, só o aviso aos clientes é
+// perdido (fica registrado no log) e a resposta HTTP não muda.
+func broadcastChannelPermissionsChanged(c echo.Context, channelID string) {
+	channel, err := storage.GetChannelByID(c.Request().Context(), channelID)
+	if err != nil {
+		utils.Errorf("request_id=%s falha ao carregar o canal para distribuir channel_update: %v",
+			c.Request().Header.Get(echo.HeaderXRequestID), err)
+		return
+	}
+
+	websocket.GetHub().Broadcast(websocket.ChannelUpdateOutbound{
+		Type:      websocket.EventTypeChannelUpdate,
+		ChannelID: channel.ID,
+		Name:      channel.Name,
+		Position:  channel.Position,
+		Topic:     channel.Topic,
 	})
 }
 
@@ -362,5 +397,6 @@ func DeleteChannelRoleHandler(baseURL string, c echo.Context) error {
 		utils.Errorf("request_id=%s falha ao remover role do canal: %v", c.Request().Header.Get(echo.HeaderXRequestID), err)
 		return utils.SendProblem(c, baseURL, http.StatusInternalServerError, "internal", "Erro interno", "falha ao remover role do canal")
 	}
+	broadcastChannelPermissionsChanged(c, channelID)
 	return c.NoContent(http.StatusNoContent)
 }
