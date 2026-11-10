@@ -1242,7 +1242,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
-          description: Usuário de people não encontrado (a role não é criada)
+          description: Usuário não encontrado (a role não é criada)
           content:
             application/problem+json:
               schema:
@@ -4650,7 +4650,7 @@ components:
           type: string
         permissions:
           $ref: '#/components/schemas/RolePermissions'
-        people:
+        users:
           type: array
           items:
             type: string
