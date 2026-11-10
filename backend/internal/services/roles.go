@@ -37,12 +37,12 @@ func CreateRole(ctx context.Context, actorID, name string, color *string, permis
 }
 
 // CreateRoleWithMembers cria a role como CreateRole e, na mesma transação, a
-// atribui às pessoas de Users (README: campo opcional Users de
+// atribui às pessoas de  (README: campo opcional  de
 // POST /roles). Retorna a role e os ids de quem a recebeu, para o handler
-// distribuir role_add a cada um. Sem Users o comportamento é o de sempre.
+// distribuir role_add a cada um. Sem  o comportamento é o de sempre.
 // Além dos erros de CreateRole, retorna ErrUserNotFound quando alguma pessoa
 // não existe; nesse caso a role não é criada.
-func CreateRoleWithMembers(ctx context.Context, actorID, name string, color *string, permissions models.RolePermissions, people []string) (models.Role, []string, error) {
+func CreateRoleWithMembers(ctx context.Context, actorID, name string, color *string, permissions models.RolePermissions,  []string) (models.Role, []string, error) {
 	if name == "" || utf8.RuneCountInString(name) > maxRoleNameLength {
 		return models.Role{}, nil, ErrInvalidInput
 	}
@@ -51,7 +51,7 @@ func CreateRoleWithMembers(ctx context.Context, actorID, name string, color *str
 		return models.Role{}, nil, ErrInvalidInput
 	}
 
-	role, members, err := storage.CreateRoleWithMembers(ctx, name, color, permissions, Users)
+	role, members, err := storage.CreateRoleWithMembers(ctx, name, color, permissions, )
 	switch {
 	case errors.Is(err, storage.ErrUniqueViolation):
 		return models.Role{}, nil, ErrRoleNameTaken
@@ -154,7 +154,7 @@ func DeleteRole(ctx context.Context, actorID, roleID string) error {
 	return nil
 }
 
-// AssignUserRole atribui uma role a um usuário (README: POST /users/:user_id/roles).
+// AssignUserRole atribui uma role a um usuário (README: POST //:user_id/roles).
 // Atribuir uma role já atribuída é idempotente: retorna a atribuição existente.
 // Retorna ErrUserNotFound quando o usuário não existe e ErrRoleNotFound quando
 // a role não existe.
@@ -204,7 +204,7 @@ func AssignUserRole(ctx context.Context, actorID, userID, roleID string) (models
 }
 
 // RemoveUserRole remove a atribuição de uma role de um usuário
-// (README: DELETE /users/:user_id/roles/:role_id).
+// (README: DELETE //:user_id/roles/:role_id).
 // Retorna ErrUserNotFound quando o usuário não existe, ErrRoleNotFound quando a
 // role não existe e ErrUserRoleNotFound quando o usuário não possui a role.
 func RemoveUserRole(ctx context.Context, actorID, userID, roleID string) error {
