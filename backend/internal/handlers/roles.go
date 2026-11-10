@@ -31,13 +31,13 @@ func ListRolesHandler(baseURL string, c echo.Context) error {
 	return c.JSON(http.StatusOK, roleListResponse{Roles: roles})
 }
 
-// createRoleRequest é o corpo de POST /roles. People é opcional: são os
+// createRoleRequest é o corpo de POST /roles. Users é opcional: são os
 // usuários que já nascem com a role; ausente, a role nasce sem ninguém.
 type createRoleRequest struct {
 	Name        string                 `json:"name"`
 	Color       *string                `json:"color"`
 	Permissions models.RolePermissions `json:"permissions"`
-	People      []string               `json:"people"`
+	Users      []string                `json:"users"`
 }
 
 // CreateRoleHandler implementa POST /roles.
@@ -58,7 +58,7 @@ func CreateRoleHandler(baseURL string, c echo.Context) error {
 	}
 
 	role, members, err := services.CreateRoleWithMembers(c.Request().Context(), userID,
-		req.Name, req.Color, req.Permissions, req.People)
+		req.Name, req.Color, req.Permissions, req.Users)
 	switch {
 	case errors.Is(err, services.ErrInvalidInput):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
@@ -70,7 +70,7 @@ func CreateRoleHandler(baseURL string, c echo.Context) error {
 			"o nome informado já está em uso")
 	case errors.Is(err, services.ErrUserNotFound):
 		return utils.SendProblem(c, baseURL, http.StatusNotFound,
-			"not-found", "Recurso não encontrado", "usuário de people não encontrado")
+			"not-found", "Recurso não encontrado", "usuário não encontrado")
 	case err != nil:
 		utils.Errorf("request_id=%s falha ao criar role: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), err)
