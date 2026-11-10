@@ -37,9 +37,9 @@ func CreateRole(ctx context.Context, actorID, name string, color *string, permis
 }
 
 // CreateRoleWithMembers cria a role como CreateRole e, na mesma transação, a
-// atribui às pessoas de people (README: campo opcional people de
+// atribui às pessoas de Users (README: campo opcional Users de
 // POST /roles). Retorna a role e os ids de quem a recebeu, para o handler
-// distribuir role_add a cada um. Sem people o comportamento é o de sempre.
+// distribuir role_add a cada um. Sem Users o comportamento é o de sempre.
 // Além dos erros de CreateRole, retorna ErrUserNotFound quando alguma pessoa
 // não existe; nesse caso a role não é criada.
 func CreateRoleWithMembers(ctx context.Context, actorID, name string, color *string, permissions models.RolePermissions, people []string) (models.Role, []string, error) {
