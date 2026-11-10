@@ -51,7 +51,7 @@ func CreateRoleWithMembers(ctx context.Context, actorID, name string, color *str
 		return models.Role{}, nil, ErrInvalidInput
 	}
 
-	role, members, err := storage.CreateRoleWithMembers(ctx, name, color, permissions, people)
+	role, members, err := storage.CreateRoleWithMembers(ctx, name, color, permissions, Users)
 	switch {
 	case errors.Is(err, storage.ErrUniqueViolation):
 		return models.Role{}, nil, ErrRoleNameTaken
