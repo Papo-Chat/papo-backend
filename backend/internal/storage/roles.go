@@ -42,7 +42,7 @@ func scanRole(row rowScanner) (models.Role, error) {
 	return role, nil
 }
 
-func scanUserRole(row rowScanner) (models.UserRole users, error) {
+func scanUserRole(row rowScanner) (models.UserRole, error) {
 	var userRole models.UserRole
 	err := row.Scan(
 		&userRole.UserID,
