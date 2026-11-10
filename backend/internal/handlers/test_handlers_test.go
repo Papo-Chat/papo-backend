@@ -2952,6 +2952,82 @@ func assertRoleEvent(t *testing.T, conn *ws.Conn, eventType, userID, roleID stri
 	}
 }
 
+// --- channel_update ao mudar permissões (websocket) ---
+
+// TestChannelPermissionChangesBroadcastChannelUpdate garante que definir as
+// permissões de uma role em um canal (PUT /channels/:channel_id/permissions/:role_id)
+// e remover a role do canal (DELETE /channels/:channel_id/role/:role_id)
+// distribuem channel_update aos clientes websocket conectados. Antes, essas
+// duas rotas alteravam o canal sem avisar ninguém, e os clientes só viam as
+// novas permissões ao reconectar.
+func TestChannelPermissionChangesBroadcastChannelUpdate(t *testing.T) {
+	e := newApp()
+	cfg := config.LoadConfig()
+	RegisterWebSocketRoutes(e, cfg)
+	go websocket.GetHub().Run()
+
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	ownerID, ownerToken := registerAndLogin(t, e)
+	createServerFor(t, ownerID)
+	channel := createChannelFor(t, "permissoes")
+	role := createRoleFor(t, models.RolePermissions{})
+
+	header := http.Header{}
+	header.Set(echo.HeaderCookie, "Auth="+ownerToken)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+	conn, _, err := ws.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("falha ao abrir conexão websocket: %v", err)
+	}
+	defer conn.Close()
+
+	// primeiro evento: presence_sync da própria conexão
+	readWSMessage(t, conn)
+
+	body, _ := json.Marshal(map[string]any{
+		"permissions": models.ChannelPermission{ReadChannel: true, SendMessages: true},
+	})
+	rec := do(t, e, http.MethodPut, "/channels/"+channel.ID+"/permissions/"+role.ID, body, authCookie(ownerToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("esperava status 200, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	assertChannelUpdateEvent(t, conn, channel)
+
+	rec = do(t, e, http.MethodDelete, "/channels/"+channel.ID+"/role/"+role.ID, nil, authCookie(ownerToken))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("esperava status 204, obtive %d (corpo: %s)", rec.Code, rec.Body.String())
+	}
+	assertChannelUpdateEvent(t, conn, channel)
+}
+
+// assertChannelUpdateEvent lê o próximo evento do websocket e verifica que é
+// um channel_update do canal informado, com nome e posição inalterados.
+func assertChannelUpdateEvent(t *testing.T, conn *ws.Conn, channel models.Channel) {
+	t.Helper()
+	data := readWSMessage(t, conn)
+
+	var event struct {
+		Type      string `json:"type"`
+		ChannelID string `json:"channel_id"`
+		Name      string `json:"name"`
+		Position  int    `json:"position"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		t.Fatalf("falha ao decodificar evento: %v", err)
+	}
+	if event.Type != "channel_update" {
+		t.Fatalf("esperava tipo channel_update, obtive %q (corpo: %s)", event.Type, data)
+	}
+	if event.ChannelID != channel.ID {
+		t.Errorf("esperava channel_id %s, obtive %s", channel.ID, event.ChannelID)
+	}
+	if event.Name != channel.Name || event.Position != channel.Position {
+		t.Errorf("esperava nome %q e posição %d, obtive %q e %d", channel.Name, channel.Position, event.Name, event.Position)
+	}
+}
+
 // --- rotas de mensagens (tarefa 7.2) ---
 
 // TestListMessagesRouteWithAuth garante que GET /channels/:channel_id/messages
