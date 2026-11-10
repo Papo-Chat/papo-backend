@@ -207,7 +207,7 @@ func TestCreateRoleWithUsersBroadcastsRoleAdd(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]any{
 		"name":   "role_" + randHex(4),
-		"user": []string{firstID, secondID, firstID},
+		"users": []string{firstID, secondID, firstID},
 	})
 	rec := do(t, e, http.MethodPost, "/roles", body, authCookie(ownerToken))
 	if rec.Code != http.StatusCreated {
@@ -242,7 +242,7 @@ func TestCreateRoleWithMissingPersonCreatesNothing(t *testing.T) {
 	roleName := "role_" + randHex(4)
 	body, _ := json.Marshal(map[string]any{
 		"name":   roleName,
-		"user": []string{memberID, randUUID()},
+		"users": []string{memberID, randUUID()},
 	})
 	rec := do(t, e, http.MethodPost, "/roles", body, authCookie(ownerToken))
 	if rec.Code != http.StatusNotFound {
