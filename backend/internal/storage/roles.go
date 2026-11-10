@@ -14,7 +14,7 @@ const roleColumns = "id, name, color, permissions, created_at"
 
 const userRoleColumns = "user_id, role_id, assigned_at"
 
-// ErrInitialRoleMemberNotFound indica que um dos usuários de people da
+// ErrInitialRoleMemberNotFound indica que um dos usuários de users da
 // criação da role não existe. Nesse caso a role não é criada.
 var ErrInitialRoleMemberNotFound = errors.New("usuário inicial da role não encontrado")
 
@@ -62,16 +62,16 @@ func CreateRole(ctx context.Context, name string, color *string, permissions mod
 	return role, err
 }
 
-// CreateRoleWithMembers cria a role já atribuída aos usuários de people, na
+// CreateRoleWithMembers cria a role já atribuída aos usuários de users, na
 // mesma transação, e retorna a role e os ids canônicos de quem a recebeu
-// (sem repetições, na ordem de people).
+// (sem repetições, na ordem de users).
 //
 // Antes, o cliente criava a role e depois atribuía cada pessoa em uma
 // requisição separada; se uma atribuição falhasse no meio, a role ficava
 // criada só com parte das pessoas. Aqui ou a role nasce com todas, ou não é
 // criada: um usuário inexistente reverte tudo e retorna
 // ErrInitialRoleMemberNotFound.
-func CreateRoleWithMembers(ctx context.Context, name string, color *string, permissions models.RolePermissions, people []string) (models.Role, []string, error) {
+func CreateRoleWithMembers(ctx context.Context, name string, color *string, permissions models.RolePermissions, users []string) (models.Role, []string, error) {
 	permissionJSON, err := json.Marshal(permissions)
 	if err != nil {
 		return models.Role{}, nil, fmt.Errorf("falha ao codificar permissões da role: %w", err)
@@ -93,10 +93,10 @@ func CreateRoleWithMembers(ctx context.Context, name string, color *string, perm
 		return models.Role{}, nil, mapStorageError(err)
 	}
 
-	members := make([]string, 0, len(people))
-	seen := make(map[string]bool, len(people))
-	for _, userID := range people {
-		// Repetir a mesma pessoa em people não é erro: ela recebe a role
+	members := make([]string, 0, len(users))
+	seen := make(map[string]bool, len(users))
+	for _, userID := range users {
+		// Repetir a mesma pessoa em users não é erro: ela recebe a role
 		// uma vez só.
 		if seen[userID] {
 			continue
