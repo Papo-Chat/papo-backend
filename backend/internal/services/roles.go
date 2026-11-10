@@ -42,7 +42,7 @@ func CreateRole(ctx context.Context, actorID, name string, color *string, permis
 // distribuir role_add a cada um. Sem  o comportamento é o de sempre.
 // Além dos erros de CreateRole, retorna ErrUserNotFound quando alguma pessoa
 // não existe; nesse caso a role não é criada.
-func CreateRoleWithMembers(ctx context.Context, actorID, name string, color *string, permissions models.RolePermissions,  []string) (models.Role, []string, error) {
+func CreateRoleWithMembers(ctx context.Context, actorID, name string, color *string, permissions models.RolePermissions,  []string) (models.Role, users []string, error) {
 	if name == "" || utf8.RuneCountInString(name) > maxRoleNameLength {
 		return models.Role{}, nil, ErrInvalidInput
 	}
@@ -51,7 +51,7 @@ func CreateRoleWithMembers(ctx context.Context, actorID, name string, color *str
 		return models.Role{}, nil, ErrInvalidInput
 	}
 
-	role, members, err := storage.CreateRoleWithMembers(ctx, name, color, permissions, )
+	role, members, err := storage.CreateRoleWithMembers(ctx, name, color, permissions, users)
 	switch {
 	case errors.Is(err, storage.ErrUniqueViolation):
 		return models.Role{}, nil, ErrRoleNameTaken
