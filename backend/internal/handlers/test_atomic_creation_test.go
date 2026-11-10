@@ -194,10 +194,10 @@ func TestChangeChannelPositionChangesCategory(t *testing.T) {
 	}
 }
 
-// TestCreateRoleWithPeopleBroadcastsRoleAdd garante que POST /roles com
-// people cria a role já atribuída, distribui um role_add por pessoa (como
+// TestCreateRoleWithUsersBroadcastsRoleAdd garante que POST /roles com
+// User cria a role já atribuída, distribui um role_add por pessoa (como
 // POST /users/:user_id/roles) e conta repetições uma vez só.
-func TestCreateRoleWithPeopleBroadcastsRoleAdd(t *testing.T) {
+func TestCreateRoleWithUsersBroadcastsRoleAdd(t *testing.T) {
 	e := newApp()
 	ownerID, ownerToken := registerAndLogin(t, e)
 	firstID, _ := registerAndLogin(t, e)
@@ -207,7 +207,7 @@ func TestCreateRoleWithPeopleBroadcastsRoleAdd(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]any{
 		"name":   "role_" + randHex(4),
-		"people": []string{firstID, secondID, firstID},
+		"user": []string{firstID, secondID, firstID},
 	})
 	rec := do(t, e, http.MethodPost, "/roles", body, authCookie(ownerToken))
 	if rec.Code != http.StatusCreated {
@@ -231,7 +231,7 @@ func TestCreateRoleWithPeopleBroadcastsRoleAdd(t *testing.T) {
 }
 
 // TestCreateRoleWithMissingPersonCreatesNothing garante que uma pessoa
-// inexistente em people responde 404 e não cria a role: antes, a role era
+// inexistente em User responde 404 e não cria a role: antes, a role era
 // criada e ficava só com as atribuições que deram certo.
 func TestCreateRoleWithMissingPersonCreatesNothing(t *testing.T) {
 	e := newApp()
@@ -242,7 +242,7 @@ func TestCreateRoleWithMissingPersonCreatesNothing(t *testing.T) {
 	roleName := "role_" + randHex(4)
 	body, _ := json.Marshal(map[string]any{
 		"name":   roleName,
-		"people": []string{memberID, randUUID()},
+		"user": []string{memberID, randUUID()},
 	})
 	rec := do(t, e, http.MethodPost, "/roles", body, authCookie(ownerToken))
 	if rec.Code != http.StatusNotFound {
