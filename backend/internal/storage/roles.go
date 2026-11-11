@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"papo/internal/models"
@@ -11,6 +13,10 @@ import (
 const roleColumns = "id, name, color, permissions, created_at"
 
 const userRoleColumns = "user_id, role_id, assigned_at"
+
+// ErrInitialRoleMemberNotFound indica que um dos usuários de users da
+// criação da role não existe. Nesse caso a role não é criada.
+var ErrInitialRoleMemberNotFound = errors.New("usuário inicial da role não encontrado")
 
 func scanRole(row rowScanner) (models.Role, error) {
 	var role models.Role
@@ -52,22 +58,74 @@ func scanUserRole(row rowScanner) (models.UserRole, error) {
 
 // CreateRole cria uma nova role e retorna o registro criado.
 func CreateRole(ctx context.Context, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
+	role, _, err := CreateRoleWithMembers(ctx, name, color, permissions, nil)
+	return role, err
+}
+
+// CreateRoleWithMembers cria a role já atribuída aos usuários de users, na
+// mesma transação, e retorna a role e os ids canônicos de quem a recebeu
+// (sem repetições, na ordem de users).
+//
+// Antes, o cliente criava a role e depois atribuía cada pessoa em uma
+// requisição separada; se uma atribuição falhasse no meio, a role ficava
+// criada só com parte das pessoas. Aqui ou a role nasce com todas, ou não é
+// criada: um usuário inexistente reverte tudo e retorna
+// ErrInitialRoleMemberNotFound.
+func CreateRoleWithMembers(ctx context.Context, name string, color *string, permissions models.RolePermissions, users []string) (models.Role, []string, error) {
 	permissionJSON, err := json.Marshal(permissions)
 	if err != nil {
-		return models.Role{}, fmt.Errorf("falha ao codificar permissões da role: %w", err)
+		return models.Role{}, nil, fmt.Errorf("falha ao codificar permissões da role: %w", err)
 	}
 
-	row := GetDB().QueryRowContext(ctx,
+	tx, err := GetDB().BeginTx(ctx, nil)
+	if err != nil {
+		return models.Role{}, nil, fmt.Errorf("falha ao criar role: %w", err)
+	}
+	defer tx.Rollback()
+
+	row := tx.QueryRowContext(ctx,
 		"INSERT INTO roles (name, color, permissions) VALUES ($1, $2, $3) RETURNING "+roleColumns,
 		name, color, string(permissionJSON),
 	)
 
 	role, err := scanRole(row)
 	if err != nil {
-		return models.Role{}, mapStorageError(err)
+		return models.Role{}, nil, mapStorageError(err)
 	}
 
-	return role, nil
+	members := make([]string, 0, len(users))
+	seen := make(map[string]bool, len(users))
+	for _, userID := range users {
+		// Repetir a mesma pessoa em users não é erro: ela recebe a role
+		// uma vez só.
+		if seen[userID] {
+			continue
+		}
+		seen[userID] = true
+
+		// id::text compara sem converter o parâmetro para UUID: um valor que
+		// não é UUID vira "não encontrado" em vez de erro do banco.
+		var memberID string
+		err := tx.QueryRowContext(ctx,
+			`INSERT INTO user_roles (user_id, role_id)
+			 SELECT id, $2::uuid FROM users WHERE id::text = $1
+			 RETURNING user_id`,
+			userID, role.ID,
+		).Scan(&memberID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.Role{}, nil, ErrInitialRoleMemberNotFound
+		}
+		if err != nil {
+			return models.Role{}, nil, fmt.Errorf("falha ao atribuir a role inicial: %w", err)
+		}
+		members = append(members, memberID)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return models.Role{}, nil, fmt.Errorf("falha ao criar role: %w", err)
+	}
+
+	return role, members, nil
 }
 
 // GetRoleByID busca uma role pelo id.

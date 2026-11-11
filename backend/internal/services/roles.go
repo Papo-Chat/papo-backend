@@ -32,20 +32,33 @@ func ListRoles(ctx context.Context) ([]models.Role, error) {
 // quando a cor não é um hexadecimal #RRGGBB e ErrRoleNameTaken quando o nome
 // já está em uso.
 func CreateRole(ctx context.Context, actorID, name string, color *string, permissions models.RolePermissions) (models.Role, error) {
+	role, _, err := CreateRoleWithMembers(ctx, actorID, name, color, permissions, nil)
+	return role, err
+}
+
+// CreateRoleWithMembers cria a role como CreateRole e, na mesma transação, a
+// atribui às pessoas de  (README: campo opcional  de
+// POST /roles). Retorna a role e os ids de quem a recebeu, para o handler
+// distribuir role_add a cada um. Sem  o comportamento é o de sempre.
+// Além dos erros de CreateRole, retorna ErrUserNotFound quando alguma pessoa
+// não existe; nesse caso a role não é criada.
+func CreateRoleWithMembers(ctx context.Context, actorID, name string, color *string, permissions models.RolePermissions,users []string) (models.Role, []string, error) {
 	if name == "" || utf8.RuneCountInString(name) > maxRoleNameLength {
-		return models.Role{}, ErrInvalidInput
+		return models.Role{}, nil, ErrInvalidInput
 	}
 
 	if color != nil && !hexColorPattern.MatchString(*color) {
-		return models.Role{}, ErrInvalidInput
+		return models.Role{}, nil, ErrInvalidInput
 	}
 
-	role, err := storage.CreateRole(ctx, name, color, permissions)
-	if errors.Is(err, storage.ErrUniqueViolation) {
-		return models.Role{}, ErrRoleNameTaken
-	}
-	if err != nil {
-		return models.Role{}, err
+	role, members, err := storage.CreateRoleWithMembers(ctx, name, color, permissions, users)
+	switch {
+	case errors.Is(err, storage.ErrUniqueViolation):
+		return models.Role{}, nil, ErrRoleNameTaken
+	case errors.Is(err, storage.ErrInitialRoleMemberNotFound):
+		return models.Role{}, nil, ErrUserNotFound
+	case err != nil:
+		return models.Role{}, nil, err
 	}
 
 	RecordAudit(ctx, AuditEntry{
@@ -55,8 +68,20 @@ func CreateRole(ctx context.Context, actorID, name string, color *string, permis
 		EntityID:   &role.ID,
 		Metadata:   map[string]any{"name": name},
 	})
+	// Cada pessoa que nasce com a role fica no audit como uma atribuição,
+	// igual a POST /users/:user_id/roles, para o histórico não depender de
+	// como a role foi atribuída.
+	for _, memberID := range members {
+		RecordAudit(ctx, AuditEntry{
+			ActorID:      actorID,
+			Action:       ActionUserRoleAssign,
+			EntityType:   EntityUserRole,
+			TargetUserID: &memberID,
+			Metadata:     map[string]any{"role_id": role.ID},
+		})
+	}
 
-	return role, nil
+	return role, members, nil
 }
 
 // UpdateRole atualiza o nome, a cor e as permissões de uma role
@@ -129,7 +154,7 @@ func DeleteRole(ctx context.Context, actorID, roleID string) error {
 	return nil
 }
 
-// AssignUserRole atribui uma role a um usuário (README: POST /users/:user_id/roles).
+// AssignUserRole atribui uma role a um usuário (README: POST //:user_id/roles).
 // Atribuir uma role já atribuída é idempotente: retorna a atribuição existente.
 // Retorna ErrUserNotFound quando o usuário não existe e ErrRoleNotFound quando
 // a role não existe.
@@ -179,7 +204,7 @@ func AssignUserRole(ctx context.Context, actorID, userID, roleID string) (models
 }
 
 // RemoveUserRole remove a atribuição de uma role de um usuário
-// (README: DELETE /users/:user_id/roles/:role_id).
+// (README: DELETE //:user_id/roles/:role_id).
 // Retorna ErrUserNotFound quando o usuário não existe, ErrRoleNotFound quando a
 // role não existe e ErrUserRoleNotFound quando o usuário não possui a role.
 func RemoveUserRole(ctx context.Context, actorID, userID, roleID string) error {
