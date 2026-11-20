@@ -871,8 +871,8 @@ func TestSameAudioSetRebindsChangedTrack(t *testing.T) {
 
 	track1 := &webrtc.TrackRemote{}
 	track2 := &webrtc.TrackRemote{}
-	f1 := newFanout(track1)
-	f2 := newFanout(track2)
+	f1 := startedFanout(track1)
+	f2 := startedFanout(track2)
 
 	pub.mu.Lock()
 	pub.fanouts["audio"] = f1
