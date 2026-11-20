@@ -53,10 +53,17 @@ type VoiceError struct {
 // interessa a ele (answer, ICE, rotas de áudio e vídeo, erros do worker)
 // carrega o mesmo PeerID, para o cliente descartar o que ainda chegar de uma
 // call anterior pela mesma conexão.
+//
+// VideoCodec é o codec de vídeo da sala (VOICE_VIDEO_CODEC: vp8, vp9 ou
+// h264). O SFU não transcodifica: todo publisher envia e todo subscriber
+// decodifica esse codec. Sabendo dele antes do primeiro voice_offer, o
+// cliente prepara o encoder e o decoder certos (inclusive por hardware) em
+// vez de descobrir pelo answer ou por um voice-codec-unsupported.
 type VoiceJoined struct {
 	Type           string              `json:"type"`
 	ChannelID      string              `json:"channel_id"`
 	PeerID         string              `json:"peer_id"`
+	VideoCodec     string              `json:"video_codec"`
 	Members        []models.VoiceState `json:"members"`
 	ActiveSpeakers []string            `json:"active_speakers"`
 }

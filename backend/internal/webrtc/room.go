@@ -515,6 +515,7 @@ func (r *Room) addPeer(userID, clientID string) error {
 			Type:           EventTypeVoiceJoined,
 			ChannelID:      r.channelID,
 			PeerID:         peer.id,
+			VideoCodec:     r.m.cfg.VoiceVideoCodec,
 			Members:        members,
 			ActiveSpeakers: r.currentTopK(),
 		})

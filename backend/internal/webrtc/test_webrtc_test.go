@@ -1344,6 +1344,9 @@ func TestPeerIDIdentifiesEachJoin(t *testing.T) {
 	if first.PeerID == "" {
 		t.Fatal("voice_joined sem peer_id")
 	}
+	if first.VideoCodec != "vp8" {
+		t.Fatalf("voice_joined video_codec = %q, esperado o da sala (vp8)", first.VideoCodec)
+	}
 	if got := m.getRoom("ch").peer("u").id; got != first.PeerID {
 		t.Fatalf("peer_id do voice_joined = %q, esperado o do peer (%q)", first.PeerID, got)
 	}

@@ -2781,7 +2781,7 @@ paths:
         | `voice_camera` | inbound | `{ type: "voice_camera", channel_id, on }` (deve ser enviado antes do `voice_offer` correspondente; o backend usa esse estado para identificar/validar a publicação de câmera) |
         | `screen_share_start` | inbound | `{ type: "screen_share_start", channel_id }` (deve ser enviado antes do `voice_offer` que adiciona/publica a track de screen) |
         | `screen_share_stop` | inbound | `{ type: "screen_share_stop", channel_id }` (deve ser enviado antes do `voice_offer` que remove/inativa a publicação de screen) |
-        | `voice_joined`   | unicast   | `{ type: "voice_joined", channel_id, peer_id, members: (user_id, muted, camera_on, screen_sharing)[], active_speakers: user_id[] }` (estado inicial do late joiner, o peer novo começa com muted=true camera_on=false screen_sharing=false) |
+        | `voice_joined`   | unicast   | `{ type: "voice_joined", channel_id, peer_id, video_codec, members: (user_id, muted, camera_on, screen_sharing)[], active_speakers: user_id[] }` (estado inicial do late joiner, o peer novo começa com muted=true camera_on=false screen_sharing=false; `video_codec` é o codec de vídeo da sala, `vp8`, `vp9` ou `h264`, o único que publishers enviam e subscribers recebem) |
         | `voice_answer`   | unicast   | `{ type: "voice_answer", channel_id, peer_id, sdp }` (resposta ao `voice_offer` do cliente) |
         | `voice_offer`    | unicast   | `{ type: "voice_offer", channel_id, peer_id, sdp }` (renegociação iniciada pelo servidor) |
         | `voice_ice_candidate` | unicast | `{ type: "voice_ice_candidate", channel_id, peer_id, candidate, sdp_mid?, sdp_mline_index? }` |
