@@ -217,6 +217,15 @@ func (p *Peer) ownsClient(clientID string) bool {
 	return clientID != "" && p.signalingClient == clientID
 }
 
+// ownerClientID devolve a conexão dona do signaling deste peer, mesmo depois
+// de close(). Serve aos avisos de saída da sala, que precisam chegar a quem
+// estava na call depois que o peer já foi fechado.
+func (p *Peer) ownerClientID() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.signalingClient
+}
+
 // sendToOwner envia um evento unicast à conexão dona do signaling deste peer.
 // É o único caminho de envio do peer para o cliente (p.mu solto durante o
 // send, como manda a disciplina de lock).

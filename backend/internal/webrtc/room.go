@@ -598,13 +598,31 @@ func (r *Room) removePeer(peer *Peer) {
 		s.peer.releaseAllFrom(peer)
 		s.peer.setAudioSet(s.set, s.owners, s.tracks)
 	}
+	ownerClient := peer.ownerClientID()
 	peer.close()
 
-	r.m.broadcastVoice(r.channelID, VoiceLeave{
+	r.broadcastLeave(r.m.audience(r.channelID), peer.userID, ownerClient)
+}
+
+// broadcastLeave distribui o voice_leave de userID à audiência do canal e
+// garante que ele chegue também à conexão que estava na call (ownerClient).
+//
+// A audiência é quem tem connect_voice agora. Se o usuário perdeu essa
+// permissão durante a call e então sai (ou é removido), ele não está nela e
+// nunca recebia o próprio voice_leave: o cliente ficava esperando a
+// confirmação da saída até desistir por timeout. A conexão dona recebe o
+// evento em unicast nesse caso; quem continua na audiência recebe pelo
+// broadcast, sem duplicar.
+func (r *Room) broadcastLeave(allowed map[string]bool, userID, ownerClient string) {
+	leave := VoiceLeave{
 		Type:      EventTypeVoiceLeave,
 		ChannelID: r.channelID,
-		UserID:    peer.userID,
-	})
+		UserID:    userID,
+	}
+	r.m.broadcastTo(allowed, leave)
+	if !allowed[userID] && ownerClient != "" && r.m.signaler.SendToClient != nil {
+		r.m.signaler.SendToClient(ownerClient, leave)
+	}
 }
 
 func (r *Room) releasePublishedKind(pub *Peer, kind string) {
@@ -837,16 +855,16 @@ func (r *Room) destroyWithClosedNotice() {
 
 	allowed := r.m.audience(r.channelID)
 	for _, p := range peers {
+		// Vai a todas as conexões do usuário, então leva o canal: sem ele, um
+		// cliente em call em outro canal não sabia se o aviso era da call dele.
 		r.m.signaler.SendToUser(p.userID, VoiceError{
-			Type:    "error",
-			Message: "sala de voz encerrada",
-			Code:    CodeVoiceRoomClosed,
-		})
-		r.m.broadcastTo(allowed, VoiceLeave{
-			Type:      EventTypeVoiceLeave,
+			Type:      "error",
+			Message:   "sala de voz encerrada",
+			Code:      CodeVoiceRoomClosed,
 			ChannelID: r.channelID,
-			UserID:    p.userID,
 		})
+		ownerClient := p.ownerClientID()
+		r.broadcastLeave(allowed, p.userID, ownerClient)
 		r.m.trackUserRoom(p.userID, r.channelID, false)
 		p.close()
 	}

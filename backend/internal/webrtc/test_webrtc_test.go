@@ -1544,3 +1544,89 @@ func mustVideoTrack(t *testing.T, id string) *webrtc.TrackLocalStaticRTP {
 	}
 	return track
 }
+
+// --- voice_leave e voice-room-closed ---
+
+// TestLeaveReachesUserWithoutConnectVoice garante que quem sai da call recebe
+// o próprio voice_leave mesmo sem connect_voice. O voice_leave ia só à
+// audiência do canal (quem tem connect_voice agora); um usuário que perdeu a
+// permissão durante a call e saía nunca recebia a confirmação.
+func TestLeaveReachesUserWithoutConnectVoice(t *testing.T) {
+	cfg := &config.Config{
+		VoiceVideoCodec:         "vp8",
+		VoiceVideoSlots:         2,
+		VoiceAudioSlots:         2,
+		VoiceMaxRoomPeers:       10,
+		VoiceMaxRoomsPerUser:    1,
+		VoiceSignalRateLimit:    100,
+		VoiceSignalRateBurst:    100,
+		VoiceSubscribeRateLimit: 100,
+		VoiceSubscribeRateBurst: 100,
+		VoiceRoomCleanupGrace:   time.Hour,
+	}
+	leaves := make(chan string, 2)
+	m := testManager(t, cfg) // audiência vazia: ninguém tem connect_voice
+	m.signaler.SendToClient = func(clientID string, event any) {
+		if leave, ok := event.(VoiceLeave); ok && leave.UserID == "u" {
+			leaves <- clientID
+		}
+	}
+	defer m.Shutdown()
+
+	if err := m.Join("ch", "u", "conn"); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	if err := m.Leave("ch", "u", "conn"); err != nil {
+		t.Fatalf("Leave: %v", err)
+	}
+
+	select {
+	case clientID := <-leaves:
+		if clientID != "conn" {
+			t.Fatalf("voice_leave foi para %q, esperado a conexão dona (conn)", clientID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("usuário sem connect_voice não recebeu o próprio voice_leave")
+	}
+}
+
+// TestRoomClosedErrorCarriesChannel garante que o voice-room-closed (canal de
+// voz excluído) leva o canal. Ele vai a todas as conexões do usuário, e sem o
+// canal um cliente não sabia se o aviso era da call dele.
+func TestRoomClosedErrorCarriesChannel(t *testing.T) {
+	cfg := &config.Config{
+		VoiceVideoCodec:         "vp8",
+		VoiceVideoSlots:         2,
+		VoiceAudioSlots:         2,
+		VoiceMaxRoomPeers:       10,
+		VoiceMaxRoomsPerUser:    1,
+		VoiceSignalRateLimit:    100,
+		VoiceSignalRateBurst:    100,
+		VoiceSubscribeRateLimit: 100,
+		VoiceSubscribeRateBurst: 100,
+		VoiceRoomCleanupGrace:   time.Hour,
+	}
+	errs := make(chan VoiceError, 1)
+	m := testManager(t, cfg)
+	m.signaler.SendToClient = func(clientID string, event any) {}
+	m.signaler.SendToUser = func(userID string, event any) {
+		if event, ok := event.(VoiceError); ok {
+			errs <- event
+		}
+	}
+	defer m.Shutdown()
+
+	if err := m.Join("ch", "u", "conn"); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	m.DestroyRoom("ch")
+
+	select {
+	case event := <-errs:
+		if event.Code != CodeVoiceRoomClosed || event.ChannelID != "ch" {
+			t.Fatalf("erro = %#v, esperado voice-room-closed com channel_id ch", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("voice-room-closed não foi enviado")
+	}
+}
