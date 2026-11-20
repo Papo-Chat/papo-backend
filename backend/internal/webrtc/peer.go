@@ -507,9 +507,20 @@ func (p *Peer) onIncomingTrack(track *webrtc.TrackRemote, mid string) {
 
 	if newSSRC != 0 {
 		// Registra antes de iniciar ReadRTP para não perder os primeiros levels.
-		p.m.registerSSRC(newSSRC, p.room, p.userID)
+		p.m.registerSSRC(newSSRC, p)
 		if oldSSRC != 0 && oldSSRC != newSSRC {
-			p.m.unregisterSSRC(oldSSRC)
+			p.m.unregisterSSRC(oldSSRC, p)
+		}
+
+		// close() pode ter rodado entre o unlock acima e o registro: ele já
+		// removeu o SSRC antigo e não vê o novo. Sem desfazer aqui, o registro
+		// ficaria apontando para um peer fechado (e o manteria vivo).
+		p.mu.Lock()
+		closed := p.closed
+		p.mu.Unlock()
+		if closed {
+			p.m.unregisterSSRC(newSSRC, p)
+			return
 		}
 	}
 
@@ -1301,7 +1312,7 @@ func (p *Peer) close() {
 	p.stopAllFanouts()
 
 	if audioSSRC != 0 {
-		p.m.unregisterSSRC(audioSSRC)
+		p.m.unregisterSSRC(audioSSRC, p)
 	}
 	if pc != nil {
 		_ = pc.Close()

@@ -1630,3 +1630,29 @@ func TestRoomClosedErrorCarriesChannel(t *testing.T) {
 		t.Fatal("voice-room-closed não foi enviado")
 	}
 }
+
+// --- registro de SSRC do active speaker ---
+
+// TestUnregisterSSRCKeepsOtherPeer garante que um peer saindo não apaga o
+// registro de SSRC de outro peer que use o mesmo valor. Cada PeerConnection
+// escolhe seus SSRCs sozinha; antes, a remoção era só pelo SSRC e o nível de
+// áudio do peer que ficou deixava de contar para o active speaker.
+func TestUnregisterSSRCKeepsOtherPeer(t *testing.T) {
+	m := testManager(t, nil)
+	room := &Room{m: m, channelID: "voice-channel"}
+	leaving := &Peer{room: room, userID: "leaving"}
+	staying := &Peer{room: room, userID: "staying"}
+
+	m.registerSSRC(1234, leaving)
+	m.registerSSRC(1234, staying)
+	m.unregisterSSRC(1234, leaving)
+
+	if got := m.ssrcOwner[1234].peer; got != staying {
+		t.Fatalf("dono do SSRC = %v, esperado o peer que continua na sala", got)
+	}
+
+	m.unregisterSSRC(1234, staying)
+	if _, ok := m.ssrcOwner[1234]; ok {
+		t.Fatal("o próprio dono não conseguiu remover o SSRC")
+	}
+}
