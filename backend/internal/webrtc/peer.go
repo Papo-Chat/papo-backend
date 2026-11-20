@@ -7,6 +7,7 @@ import (
 
 	"papo/internal/models"
 
+	"github.com/google/uuid"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
@@ -40,6 +41,12 @@ type Peer struct {
 	m      *Manager
 	room   *Room
 	userID string
+
+	// id identifica esta entrada na call (um voice_join aceito) e nunca é
+	// reutilizado. Vai no voice_joined e em todo evento destinado só a este
+	// peer, para o cliente distinguir a call atual de uma anterior pela mesma
+	// conexão: sair e entrar de novo cria outro Peer, com outro id.
+	id string
 
 	mu     sync.Mutex
 	pc     *webrtc.PeerConnection
@@ -96,6 +103,10 @@ type Peer struct {
 
 	audioSet []string // top-K de áudio atual (p/ detecção de mudança)
 
+	// routesRevision numera os snapshots de voice_audio_routes e
+	// voice_video_routes deste peer (ver VoiceAudioRoutes.Revision).
+	routesRevision uint64
+
 	// fila de renegociação (D4): worker sequencial por PC
 	renegQueue chan func() error
 	renegStop  chan struct{}
@@ -108,6 +119,7 @@ func newPeer(m *Manager, room *Room, userID, clientID string) *Peer {
 		m:               m,
 		room:            room,
 		userID:          userID,
+		id:              uuid.NewString(),
 		signalingClient: clientID,
 
 		muted: true,
@@ -115,9 +127,9 @@ func newPeer(m *Manager, room *Room, userID, clientID string) *Peer {
 		fanouts:          make(map[string]*fanout),
 		pendingVideoSubs: make(map[string]pendingVideoSubscription),
 		midRole:          make(map[string]trackRole),
-		activeMidRole: make(map[string]trackRole),
-		renegQueue:    make(chan func() error, 64),
-		renegStop:     make(chan struct{}),
+		activeMidRole:    make(map[string]trackRole),
+		renegQueue:       make(chan func() error, 64),
+		renegStop:        make(chan struct{}),
 	}
 	go p.renegWorker()
 	return p
@@ -151,11 +163,7 @@ func (p *Peer) renegWorker() {
 		case fn := <-p.renegQueue:
 			if err := fn(); err != nil {
 				// Renegociação falhou: o cliente vê o erro e pode tentar de novo.
-				// Vai à conexão dona do signaling (p.mu solto durante o send).
-				p.mu.Lock()
-				clientID := p.signalingClient
-				p.mu.Unlock()
-				p.m.sendErrorToClient(clientID, err)
+				p.sendError(err)
 			}
 		}
 	}
@@ -207,6 +215,55 @@ func (p *Peer) ownsClient(clientID string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return clientID != "" && p.signalingClient == clientID
+}
+
+// ownerClientID devolve a conexão dona do signaling deste peer, mesmo depois
+// de close(). Serve aos avisos de saída da sala, que precisam chegar a quem
+// estava na call depois que o peer já foi fechado.
+func (p *Peer) ownerClientID() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.signalingClient
+}
+
+// sendToOwner envia um evento unicast à conexão dona do signaling deste peer.
+// É o único caminho de envio do peer para o cliente (p.mu solto durante o
+// send, como manda a disciplina de lock).
+//
+// Depois de close() nada mais é enviado. O worker de renegociação, os
+// callbacks do pion e as trocas de slot podem terminar uma operação já
+// iniciada depois que o peer saiu, e o cliente pode já ter entrado de novo
+// pela mesma conexão: sem esta checagem, um voice_answer, um candidate ou um
+// snapshot de rotas do peer antigo chegaria no meio da call nova. Ainda resta
+// a janela entre a checagem e o envio; para ela o evento carrega o peer_id,
+// e o cliente descarta o que não for do peer atual.
+func (p *Peer) sendToOwner(event any) {
+	p.mu.Lock()
+	clientID := p.signalingClient
+	closed := p.closed
+	p.mu.Unlock()
+
+	if closed || clientID == "" || p.m.signaler.SendToClient == nil {
+		return
+	}
+	p.m.signaler.SendToClient(clientID, event)
+}
+
+// sendError envia à conexão dona um erro assíncrono deste peer (falha no
+// worker de renegociação ou num subscribe pendente). Leva canal e peer_id
+// porque chega fora de ordem em relação aos eventos que o cliente enviou.
+func (p *Peer) sendError(err error) {
+	code := voiceErrorCode(err)
+	if code == "" {
+		code = CodeVoiceNotFound
+	}
+	p.sendToOwner(VoiceError{
+		Type:      "error",
+		Message:   err.Error(),
+		Code:      code,
+		ChannelID: p.room.channelID,
+		PeerID:    p.id,
+	})
 }
 
 // ensurePC cria a PeerConnection na primeira vez (o worker de renegociação é
@@ -310,8 +367,10 @@ func (p *Peer) handleOffer(
 		return err
 	}
 
+	var videoSlots, audioSlots []*slot
 	if firstOffer {
-		if err := p.allocateSlots(); err != nil {
+		videoSlots, audioSlots, err = p.allocateSlots(pc)
+		if err != nil {
 			return err
 		}
 	}
@@ -334,13 +393,26 @@ func (p *Peer) handleOffer(
 		return err
 	}
 
-	// voice_answer (unicast à conexão dona do signaling) — p.mu solto.
-	if p.m.signaler.SendToClient != nil {
-		p.m.signaler.SendToClient(clientID, VoiceAnswer{
-			Type:      EventTypeVoiceAnswer,
-			ChannelID: p.room.channelID,
-			SDP:       answer.SDP,
-		})
+	negotiated := negotiatedVideoRouteExtensions(pc, sdp, answer.SDP)
+	var routeUpdates []any
+	if firstOffer {
+		for _, s := range videoSlots {
+			s.routeExtID = negotiated[s.sender]
+			s.routeRequired = s.routeExtID != 0
+		}
+	} else {
+		routeUpdates = p.updateVideoRouteExtensions(negotiated)
+	}
+	p.sendToOwner(VoiceAnswer{
+		Type:      EventTypeVoiceAnswer,
+		ChannelID: p.room.channelID,
+		PeerID:    p.id,
+		SDP:       answer.SDP,
+	})
+	if firstOffer {
+		p.publishSlots(videoSlots, audioSlots)
+	} else {
+		p.sendRouteUpdates(routeUpdates)
 	}
 	return nil
 }
@@ -383,20 +455,14 @@ func (p *Peer) setupPCEvents(pc *webrtc.PeerConnection) {
 			return
 		}
 		init := candidate.ToJSON()
-		// ICE do servidor vai à conexão dona do signaling (p.mu para ler o
-		// clientID; o send é feito fora do lock).
-		p.mu.Lock()
-		clientID := p.signalingClient
-		p.mu.Unlock()
-		if clientID != "" && p.m.signaler.SendToClient != nil {
-			p.m.signaler.SendToClient(clientID, VoiceICECandidate{
-				Type:          EventTypeVoiceICECandidate,
-				ChannelID:     p.room.channelID,
-				Candidate:     init.Candidate,
-				SDPMid:        init.SDPMid,
-				SDPMLineIndex: intFromU16Ptr(init.SDPMLineIndex),
-			})
-		}
+		p.sendToOwner(VoiceICECandidate{
+			Type:          EventTypeVoiceICECandidate,
+			ChannelID:     p.room.channelID,
+			PeerID:        p.id,
+			Candidate:     init.Candidate,
+			SDPMid:        init.SDPMid,
+			SDPMLineIndex: intFromU16Ptr(init.SDPMLineIndex),
+		})
 	})
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
@@ -458,9 +524,20 @@ func (p *Peer) onIncomingTrack(track *webrtc.TrackRemote, mid string) {
 
 	if newSSRC != 0 {
 		// Registra antes de iniciar ReadRTP para não perder os primeiros levels.
-		p.m.registerSSRC(newSSRC, p.room, p.userID)
+		p.m.registerSSRC(newSSRC, p)
 		if oldSSRC != 0 && oldSSRC != newSSRC {
-			p.m.unregisterSSRC(oldSSRC)
+			p.m.unregisterSSRC(oldSSRC, p)
+		}
+
+		// close() pode ter rodado entre o unlock acima e o registro: ele já
+		// removeu o SSRC antigo e não vê o novo. Sem desfazer aqui, o registro
+		// ficaria apontando para um peer fechado (e o manteria vivo).
+		p.mu.Lock()
+		closed := p.closed
+		p.mu.Unlock()
+		if closed {
+			p.m.unregisterSSRC(newSSRC, p)
+			return
 		}
 	}
 
@@ -506,6 +583,7 @@ func (p *Peer) rebindVideoSlot(pub *Peer, kind string, track *webrtc.TrackRemote
 		p.mu.Unlock()
 		return
 	}
+	before := p.slotRoutesLocked()
 	rebound := false
 	for _, s := range p.videoSlots {
 		if s.owner == pub && s.kind == kind && s.src != track {
@@ -513,7 +591,10 @@ func (p *Peer) rebindVideoSlot(pub *Peer, kind string, track *webrtc.TrackRemote
 			rebound = true
 		}
 	}
+	updates := p.routeUpdatesLocked(before)
 	p.mu.Unlock()
+
+	p.sendRouteUpdates(updates)
 
 	if rebound {
 		sendPLIBurst(pub.PC(), track)
@@ -521,13 +602,8 @@ func (p *Peer) rebindVideoSlot(pub *Peer, kind string, track *webrtc.TrackRemote
 }
 
 // allocateSlots cria os slots de envio (N vídeo + K áudio) com tracks
-// placeholder (D5). As chamadas AddTransceiverFromTrack são feitas SEM p.mu;
-// as slices de slots são publicadas sob p.mu ao final.
-func (p *Peer) allocateSlots() error {
-	pc := p.PC()
-	if pc == nil {
-		return ErrVoiceNotFound
-	}
+// placeholder (D5), mas não os publica antes de negociar as extensões.
+func (p *Peer) allocateSlots(pc *webrtc.PeerConnection) ([]*slot, []*slot, error) {
 	n := p.m.cfg.VoiceVideoSlots
 	k := p.m.cfg.VoiceAudioSlots
 	videoCodec := p.m.api.videoCodec.RTPCodecCapability
@@ -545,12 +621,12 @@ func (p *Peer) allocateSlots() error {
 			"papo-video",
 		)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
 		sender, err := pc.AddTrack(track)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
 		s := &slot{
@@ -570,12 +646,12 @@ func (p *Peer) allocateSlots() error {
 			"papo-audio",
 		)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
 		sender, err := pc.AddTrack(track)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
 		audioSlots = append(audioSlots, &slot{
@@ -585,7 +661,15 @@ func (p *Peer) allocateSlots() error {
 		})
 	}
 
+	return videoSlots, audioSlots, nil
+}
+
+func (p *Peer) publishSlots(videoSlots, audioSlots []*slot) {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
 	p.videoSlots = videoSlots
 	p.audioSlots = audioSlots
 
@@ -596,18 +680,12 @@ func (p *Peer) allocateSlots() error {
 	p.pendingVideoSubs = make(map[string]pendingVideoSubscription)
 	p.mu.Unlock()
 
-	// O primeiro answer já pode ser emitido depois disso; processar aqui garante
-	// que subscribes recebidos cedo não sejam perdidos.
+	// Processa os subscribes que chegaram antes de publicar os slots.
 	for _, sub := range pending {
 		if err := p.assignVideoSlot(sub.pub, sub.kind); err != nil {
-			p.mu.Lock()
-			clientID := p.signalingClient
-			p.mu.Unlock()
-			p.m.sendErrorToClient(clientID, err)
+			p.sendError(err)
 		}
 	}
-
-	return nil
 }
 
 // trackOfKind retorna a track recebida do peer para o kind (video/screen/audio).
@@ -767,9 +845,13 @@ func (p *Peer) assignVideoSlot(pub *Peer, kind string) error {
 		return ErrVoiceRoomFull
 	}
 
+	before := p.slotRoutesLocked()
 	slot.assignWithFanout(pub, kind, track, fanout)
+	updates := p.routeUpdatesLocked(before)
 
 	p.mu.Unlock()
+
+	p.sendRouteUpdates(updates)
 
 	// Pion chamada com p.mu solto. Um pequeno burst melhora a recuperação
 	// quando o primeiro PLI coincide com a ativação do encoder/browser.
@@ -800,15 +882,19 @@ func (p *Peer) releaseVideoSlot(pubID, kind string) {
 	pub := p.room.peer(pubID) // resolve ANTES de p.mu (evita p.mu → r.mu)
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if pub != nil {
 		delete(p.pendingVideoSubs, videoSubscriptionKey(pub, kind))
 	}
+	before := p.slotRoutesLocked()
 	for _, s := range p.videoSlots {
 		if s.owner == pub && s.kind == kind {
 			s.release()
 		}
 	}
+	updates := p.routeUpdatesLocked(before)
+	p.mu.Unlock()
+
+	p.sendRouteUpdates(updates)
 }
 
 func (p *Peer) audioRoutesLocked() []VoiceAudioRoute {
@@ -837,15 +923,94 @@ func sameAudioRoutes(a, b []VoiceAudioRoute) bool {
 	return true
 }
 
-func (p *Peer) sendAudioRoutes(clientID string, routes []VoiceAudioRoute) {
-	if clientID == "" || p.m.signaler.SendToClient == nil {
-		return
+func (p *Peer) videoRoutesLocked() []VoiceVideoRoute {
+	routes := make([]VoiceVideoRoute, 0, len(p.videoSlots))
+	for _, s := range p.videoSlots {
+		if s == nil || s.local == nil || s.owner == nil {
+			continue
+		}
+		route := VoiceVideoRoute{
+			TrackID: s.local.ID(),
+			UserID:  s.owner.userID,
+			Kind:    s.kind,
+		}
+		if s.fwd != nil && s.fwd.routeID != 0 {
+			route.RTPRouteID = s.fwd.routeID
+			route.RTPRouteExtID = s.fwd.routeExtID
+		}
+		if s.firstSeq != nil {
+			firstSeq := *s.firstSeq
+			route.FirstSeq = &firstSeq
+		}
+		routes = append(routes, route)
 	}
-	p.m.signaler.SendToClient(clientID, VoiceAudioRoutes{
-		Type:      EventTypeVoiceAudioRoutes,
-		ChannelID: p.room.channelID,
-		Routes:    routes,
-	})
+	return routes
+}
+
+func sameVideoRoutes(a, b []VoiceVideoRoute) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].TrackID != b[i].TrackID || a[i].UserID != b[i].UserID || a[i].Kind != b[i].Kind ||
+			a[i].RTPRouteID != b[i].RTPRouteID || a[i].RTPRouteExtID != b[i].RTPRouteExtID {
+			return false
+		}
+		if (a[i].FirstSeq == nil) != (b[i].FirstSeq == nil) {
+			return false
+		}
+		if a[i].FirstSeq != nil && *a[i].FirstSeq != *b[i].FirstSeq {
+			return false
+		}
+	}
+	return true
+}
+
+// slotRoutes guarda as rotas de áudio e vídeo de antes de uma mudança de
+// slots, para routeUpdatesLocked saber o que mudou.
+type slotRoutes struct {
+	audio []VoiceAudioRoute
+	video []VoiceVideoRoute
+}
+
+func (p *Peer) slotRoutesLocked() slotRoutes {
+	return slotRoutes{audio: p.audioRoutesLocked(), video: p.videoRoutesLocked()}
+}
+
+// routeUpdatesLocked compara as rotas atuais com before e devolve os
+// snapshots a enviar, já numerados. A revision é tirada sob p.mu, na mesma
+// ordem em que as mudanças aconteceram; o envio fica para depois de soltar o
+// lock (sendRouteUpdates). Rotas iguais não geram snapshot.
+func (p *Peer) routeUpdatesLocked(before slotRoutes) []any {
+	var updates []any
+	if audio := p.audioRoutesLocked(); !sameAudioRoutes(before.audio, audio) {
+		p.routesRevision++
+		updates = append(updates, VoiceAudioRoutes{
+			Type:      EventTypeVoiceAudioRoutes,
+			ChannelID: p.room.channelID,
+			PeerID:    p.id,
+			Revision:  p.routesRevision,
+			Routes:    audio,
+		})
+	}
+	if video := p.videoRoutesLocked(); !sameVideoRoutes(before.video, video) {
+		p.routesRevision++
+		updates = append(updates, VoiceVideoRoutes{
+			Type:      EventTypeVoiceVideoRoutes,
+			ChannelID: p.room.channelID,
+			PeerID:    p.id,
+			Revision:  p.routesRevision,
+			Routes:    video,
+		})
+	}
+	return updates
+}
+
+// sendRouteUpdates envia os snapshots de routeUpdatesLocked (p.mu solto).
+func (p *Peer) sendRouteUpdates(updates []any) {
+	for _, update := range updates {
+		p.sendToOwner(update)
+	}
 }
 
 // releaseAllFrom libera todos os slots do subscriber que forwardam do
@@ -855,7 +1020,7 @@ func (p *Peer) releaseAllFrom(pub *Peer) {
 		return
 	}
 	p.mu.Lock()
-	before := p.audioRoutesLocked()
+	before := p.slotRoutesLocked()
 	for _, s := range p.videoSlots {
 		if s.owner == pub {
 			s.release()
@@ -866,13 +1031,10 @@ func (p *Peer) releaseAllFrom(pub *Peer) {
 			s.release()
 		}
 	}
-	after := p.audioRoutesLocked()
-	clientID := p.signalingClient
+	updates := p.routeUpdatesLocked(before)
 	p.mu.Unlock()
 
-	if !sameAudioRoutes(before, after) {
-		p.sendAudioRoutes(clientID, after)
-	}
+	p.sendRouteUpdates(updates)
 }
 
 func (p *Peer) releaseFrom(pub *Peer, kind string) {
@@ -881,13 +1043,16 @@ func (p *Peer) releaseFrom(pub *Peer, kind string) {
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	before := p.slotRoutesLocked()
 	for _, s := range p.videoSlots {
 		if s.owner == pub && s.kind == kind {
 			s.release()
 		}
 	}
+	updates := p.routeUpdatesLocked(before)
+	p.mu.Unlock()
+
+	p.sendRouteUpdates(updates)
 }
 
 // setAudioSet atualiza o conjunto de áudio do subscriber.
@@ -921,7 +1086,7 @@ func (p *Peer) setAudioSet(
 		p.mu.Unlock()
 		return
 	}
-	beforeRoutes := p.audioRoutesLocked()
+	before := p.slotRoutesLocked()
 
 	// Não mantenha referência à slice do caller.
 	p.audioSet = append(p.audioSet[:0], set...)
@@ -1024,13 +1189,10 @@ func (p *Peer) setAudioSet(
 		assigned[owner] = true
 	}
 
-	afterRoutes := p.audioRoutesLocked()
-	clientID := p.signalingClient
+	updates := p.routeUpdatesLocked(before)
 	p.mu.Unlock()
 
-	if !sameAudioRoutes(beforeRoutes, afterRoutes) {
-		p.sendAudioRoutes(clientID, afterRoutes)
-	}
+	p.sendRouteUpdates(updates)
 }
 
 // sendPLI pede um keyframe ao publisher na troca de conteúdo de slot de vídeo
@@ -1172,7 +1334,7 @@ func (p *Peer) close() {
 	p.stopAllFanouts()
 
 	if audioSSRC != 0 {
-		p.m.unregisterSSRC(audioSSRC)
+		p.m.unregisterSSRC(audioSSRC, p)
 	}
 	if pc != nil {
 		_ = pc.Close()

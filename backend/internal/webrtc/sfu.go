@@ -36,13 +36,16 @@ type slot struct {
 	src   *webrtc.TrackRemote
 	fwd   *forwarder
 
-	translator ssnTranslator
-}
+	// firstSeq é o primeiro SSN (já traduzido) do ocupante atual, enviado ao
+	// cliente em voice_video_routes. Nil quando o slot nunca enviou nada:
+	// sem ocupante anterior, não há pacote antigo a separar do novo.
+	firstSeq *uint16
 
-func (t *ssnTranslator) resetSource() {
-	t.mu.Lock()
-	t.owner = nil
-	t.mu.Unlock()
+	routeRequired bool   // opt-in no primeiro SDP; nunca muda
+	routeExtID    uint8  // negociado para o sender; guardado por peer.mu
+	lastRouteID   uint64 // não é zerado ao liberar o slot
+
+	translator ssnTranslator
 }
 
 // assignWithFanout faz o slot forwardar a track do publisher via o fanout
@@ -60,14 +63,17 @@ func (s *slot) assignWithFanout(
 		s.fwd = nil
 	}
 
-	// Toda nova atribuição representa uma nova fronteira RTP.
-	// O próximo pacote deve continuar a sequência do slot.
-	s.translator.resetSource()
-
 	s.owner = owner
 	s.kind = kind
 	s.src = track
 	s.fwd = newForwarder(s, owner, kind, fanout)
+
+	// Só o novo forwarder traduz pacotes daqui em diante. Um pacote do antigo
+	// que já foi traduzido ainda pode sair, mas leva a marca antiga.
+	s.firstSeq = nil
+	if firstSeq, continues := s.translator.begin(s.fwd); continues {
+		s.firstSeq = &firstSeq
+	}
 
 	// Para vídeo/screen, o fanout é criado de forma lazy. Inscreva e inicie o
 	// forwarder ANTES de liberar o reader da TrackRemote; assim o keyframe
@@ -82,7 +88,9 @@ func (s *slot) assignWithFanout(
 // forma monótona (o caller segura peer.mu).
 func (s *slot) release() {
 	s.owner = nil
+	s.firstSeq = nil
 	if s.fwd != nil {
+		s.translator.end(s.fwd)
 		s.fwd.finish()
 		s.fwd = nil
 	}
@@ -145,6 +153,10 @@ type forwarder struct {
 	kind   string
 	fanout *fanout
 
+	routeID       uint64
+	routeExtID    uint8
+	routeRequired bool
+
 	ch   chan *rtp.Packet
 	done chan struct{}
 	once sync.Once
@@ -166,7 +178,19 @@ func newForwarder(
 		bufferSize = videoForwarderBuffer
 	}
 
+	var routeID uint64
+	routeExtID := slot.routeExtID
+	if routeExtID != 0 {
+		// Ao esgotar os IDs, o forwarder deixa de enviar em vez de reutilizar um ID.
+		if slot.lastRouteID != ^uint64(0) {
+			slot.lastRouteID++
+			routeID = slot.lastRouteID
+		}
+	}
 	return &forwarder{
+		routeID:         routeID,
+		routeExtID:      routeExtID,
+		routeRequired:   slot.routeRequired,
 		slot:            slot,
 		owner:           owner,
 		kind:            kind,
@@ -208,7 +232,7 @@ func (f *forwarder) run() {
 				// o gap de SSN, continuar o frame produziria corrupção visual no
 				// decoder. Descartamos até um novo keyframe.
 				f.waitingKeyframe = true
-				f.slot.translator.resetSource()
+				f.slot.translator.restart(f)
 				f.lastKeyframePLIAt = time.Time{}
 			}
 
@@ -222,7 +246,7 @@ func (f *forwarder) run() {
 					// O SSN da fonte avançou enquanto os pacotes eram
 					// descartados. Recalcula o offset para continuar
 					// exatamente após o último SSN enviado pelo slot.
-					f.slot.translator.resetSource()
+					f.slot.translator.restart(f)
 					f.wasMuted = false
 				}
 			} else if f.waitingKeyframe {
@@ -239,12 +263,20 @@ func (f *forwarder) run() {
 				// um frame decodificável. Isso evita tela cinza quando ele entra
 				// no meio de um GOP ou perde o keyframe inicial.
 				f.waitingKeyframe = false
-				f.slot.translator.resetSource()
+				f.slot.translator.restart(f)
 			}
 
-			f.slot.translator.translate(pkt, f.owner)
+			// O slot pode ter mudado de ocupante enquanto este pacote estava em
+			// mãos: finish() só avisa o forwarder, não o interrompe. Um
+			// forwarder substituído não traduz mais nada (ver ssnTranslator).
+			switch f.slot.translator.forward(pkt, f) {
+			case forwardStop:
+				return
+			case forwardSkip:
+				continue
+			}
 
-			if err := f.slot.local.WriteRTP(pkt); err != nil {
+			if err := f.writeRTP(pkt); err != nil {
 				return
 			}
 		}
@@ -472,19 +504,99 @@ func isH264RandomAccessPacket(payload []byte) bool {
 // o SSN do publisher é remapeado para continuar a sequência do slot, de modo
 // que o subscriber veja um stream contínuo mesmo quando o ocupante do slot
 // muda. O SSRC é sobrescrito pelo sender (não traduzimos).
+//
+// Ele também decide qual forwarder pode traduzir pacotes do slot (current).
+// Trocar o ocupante chama finish() no forwarder antigo, mas a goroutine dele
+// pode ter pacotes em mãos; sem esta checagem, eles eram traduzidos depois do
+// primeiro pacote do novo publisher, com SSN maior que o dele.
+//
+// A garantia é sobre o SSN, não sobre o momento da escrita. O WriteRTP fica
+// fora do lock (o pion não é chamado com lock, e o pacer do GCC pode segurar
+// a escrita), então o forwarder antigo ainda pode escrever o pacote que já
+// tinha traduzido antes da troca. Esse pacote, e qualquer outro do ocupante
+// antigo, tem SSN menor que o firstSeq devolvido por begin; todo pacote do
+// novo tem SSN igual ou maior. É essa separação que o cliente usa para
+// descartar o que chega atrasado.
+//
+// O pion não reordena o que chega do publisher. Por isso, depois de cada
+// fronteira (begin ou restart), pacotes que chegam atrasados de antes dela
+// são descartados (base), e lastSSN guarda o maior SSN escrito, não o último:
+// sem isso, um pacote atrasado do novo ocupante receberia o SSN de um pacote
+// do antigo, e um atrasado do antigo faria o próximo firstSeq repetir SSNs já
+// enviados.
 type ssnTranslator struct {
 	mu         sync.Mutex
-	lastSSN    uint16
+	current    *forwarder
+	lastSSN    uint16 // maior SSN já escrito no slot
 	hasWritten bool
-	owner      *Peer
+	resync     bool
 	offset     uint16
+
+	// base é o SSN traduzido do primeiro pacote depois da última fronteira.
+	// Enquanto guarding vale, pacotes que cairiam antes dele são descartados.
+	base     uint16
+	guarding bool
 }
 
-func (t *ssnTranslator) translate(pkt *rtp.Packet, owner *Peer) {
+// translatorGuardWindow limita por quantos SSNs depois da fronteira a checagem
+// de base vale. A comparação é circular (16 bits): sem limite, depois de 32768
+// pacotes os pacotes novos pareceriam "antes" da base. Um pacote atrasado
+// tanto assim já teria sido descartado pelo jitter buffer do cliente.
+const translatorGuardWindow = 1 << 14
+
+// forwardResult diz ao forwarder o que fazer com o pacote traduzido.
+type forwardResult int
+
+const (
+	forwardWrite forwardResult = iota // escrever no slot
+	forwardSkip                       // de antes da fronteira atual: descartar
+	forwardStop                       // forwarder substituído: parar sem escrever
+)
+
+// begin passa o slot para fwd: só ele escreve daqui em diante. Devolve o SSN
+// que o primeiro pacote de fwd vai receber; continues é false quando o slot
+// nunca escreveu, e então o primeiro pacote mantém o SSN do publisher.
+func (t *ssnTranslator) begin(fwd *forwarder) (firstSeq uint16, continues bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.owner != owner {
-		t.owner = owner
+	t.current = fwd
+	t.resync = true
+	return t.lastSSN + 1, t.hasWritten
+}
+
+// end tira fwd do slot (slot liberado). Depois disso nenhum forwarder
+// escreve até o próximo begin.
+func (t *ssnTranslator) end(fwd *forwarder) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.current == fwd {
+		t.current = nil
+	}
+}
+
+// restart marca uma nova fronteira RTP do mesmo forwarder (keyframe depois de
+// espera, volta do mute, resync): o próximo pacote recalcula o offset para
+// continuar logo após o último SSN do slot. Ignorado para um forwarder que
+// já não é o atual.
+func (t *ssnTranslator) restart(fwd *forwarder) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.current == fwd {
+		t.resync = true
+	}
+}
+
+// forward traduz o SSN de pkt se fwd ainda for o forwarder do slot e diz se
+// o pacote deve ser escrito, descartado (anterior à fronteira atual) ou se o
+// forwarder foi substituído e deve parar.
+func (t *ssnTranslator) forward(pkt *rtp.Packet, fwd *forwarder) forwardResult {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.current != fwd {
+		return forwardStop
+	}
+	if t.resync {
+		t.resync = false
 		if !t.hasWritten {
 			// Slot novo: mantém o SSN do publisher (offset 0).
 			t.offset = 0
@@ -492,8 +604,25 @@ func (t *ssnTranslator) translate(pkt *rtp.Packet, owner *Peer) {
 			// Slot já estava enviando: continua do último SSN do slot.
 			t.offset = (t.lastSSN + 1) - pkt.Header.SequenceNumber
 		}
+		t.base = pkt.Header.SequenceNumber + t.offset
+		t.guarding = true
 	}
-	pkt.Header.SequenceNumber += t.offset
-	t.lastSSN = pkt.Header.SequenceNumber
+
+	translated := pkt.Header.SequenceNumber + t.offset
+	if t.guarding {
+		ahead := int16(translated - t.base)
+		if ahead < 0 {
+			return forwardSkip
+		}
+		if int(ahead) > translatorGuardWindow {
+			t.guarding = false
+		}
+	}
+
+	pkt.Header.SequenceNumber = translated
+	if !t.hasWritten || int16(translated-t.lastSSN) > 0 {
+		t.lastSSN = translated
+	}
 	t.hasWritten = true
+	return forwardWrite
 }

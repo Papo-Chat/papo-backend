@@ -104,6 +104,14 @@ func newSharedAPI(cfg *config.Config, m *Manager) (*webrtcAPI, error) {
 		return nil, err
 	}
 
+	// Só a direção de envio do SFU usa a marca de atribuição de vídeo.
+	if err := mediaEngine.RegisterHeaderExtension(
+		webrtc.RTPHeaderExtensionCapability{URI: videoRouteExtensionURI},
+		webrtc.RTPCodecTypeVideo, webrtc.RTPTransceiverDirectionSendonly,
+	); err != nil {
+		return nil, err
+	}
+
 	registry := &interceptor.Registry{}
 
 	// GCC: estima a banda por PC a partir do feedback TWCC do subscriber.

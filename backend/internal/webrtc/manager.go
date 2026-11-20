@@ -97,11 +97,10 @@ type Manager struct {
 	stopped atomic.Bool
 }
 
-// ssrcOwner associa o SSRC de uma track de áudio recebida à sala e ao usuário
-// que a publica (o interceptor de audio-level usa para reportar o nível).
+// ssrcOwner associa o SSRC de uma track de áudio recebida ao peer que a
+// publica (o interceptor de audio-level usa para reportar o nível à sala).
 type ssrcOwner struct {
-	room   *Room
-	userID string
+	peer *Peer
 }
 
 type userLimiters struct {
@@ -140,24 +139,6 @@ func GetManager() *Manager {
 	return manager
 }
 
-// sendErrorToClient envia um evento `error` de voz a UMA conexão (clientID) —
-// usado pelos erros de renegociação, que pertencem à conexão que originou o
-// signaling (sem fallback para SendToUser: clientID vazio não envia).
-func (m *Manager) sendErrorToClient(clientID string, err error) {
-	if clientID == "" || m.signaler.SendToClient == nil {
-		return
-	}
-	code := voiceErrorCode(err)
-	if code == "" {
-		code = CodeVoiceNotFound
-	}
-	m.signaler.SendToClient(clientID, VoiceError{
-		Type:    "error",
-		Message: err.Error(),
-		Code:    code,
-	})
-}
-
 // audience retorna a audiência autorizada do canal (usuários online com
 // permissão connect_voice — mesma regra de quem pode entrar na call).
 func (m *Manager) audience(channelID string) map[string]bool {
@@ -177,21 +158,31 @@ func (m *Manager) broadcastTo(allowed map[string]bool, event any) {
 	m.signaler.BroadcastToUsers(allowed, event)
 }
 
-// registerSSRC associa o SSRC de uma track de áudio recebida à sala/usuário
+// registerSSRC associa o SSRC de uma track de áudio recebida ao peer
 // (chamado quando a track de áudio do peer é estabelecida).
-func (m *Manager) registerSSRC(ssrc uint32, room *Room, userID string) {
+//
+// O registro é do manager inteiro, mas cada PeerConnection escolhe seus SSRCs
+// sozinha: dois peers podem usar o mesmo valor. Nesse caso o último a
+// registrar fica com o SSRC; o interceptor só conhece o SSRC e não tem como
+// separar os dois.
+func (m *Manager) registerSSRC(ssrc uint32, peer *Peer) {
 	m.ssrcMu.Lock()
-	m.ssrcOwner[ssrc] = ssrcOwner{room: room, userID: userID}
+	m.ssrcOwner[ssrc] = ssrcOwner{peer: peer}
 	m.ssrcMu.Unlock()
 }
 
-// unregisterSSRC remove o SSRC do registro (peer fechado ou track substituída).
-func (m *Manager) unregisterSSRC(ssrc uint32) {
+// unregisterSSRC remove o SSRC do registro (peer fechado ou track
+// substituída), mas só se ele ainda for de peer. Antes, a remoção era só pelo
+// SSRC: um peer saindo apagava o registro de outro que tivesse o mesmo SSRC,
+// e o nível de áudio desse outro deixava de contar para o active speaker.
+func (m *Manager) unregisterSSRC(ssrc uint32, peer *Peer) {
 	if ssrc == 0 {
 		return
 	}
 	m.ssrcMu.Lock()
-	delete(m.ssrcOwner, ssrc)
+	if m.ssrcOwner[ssrc].peer == peer {
+		delete(m.ssrcOwner, ssrc)
+	}
 	m.ssrcMu.Unlock()
 }
 
@@ -206,7 +197,7 @@ func (m *Manager) reportAudioLevel(ssrc uint32, level float64) {
 		return
 	}
 
-	o.room.noteAudioLevel(o.userID, level)
+	o.peer.room.noteAudioLevel(o.peer.userID, level)
 }
 
 // limiterFor retorna os token buckets do usuário (cria sob demanda).
