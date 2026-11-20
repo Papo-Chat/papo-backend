@@ -46,7 +46,13 @@ func videoRouteExtMaps(raw string, receive bool) map[string]uint8 {
 	}
 	result := make(map[string]uint8)
 	for _, media := range desc.MediaDescriptions {
-		if media.MediaName.Media != "video" || media.MediaName.Port.Value == 0 {
+		if media.MediaName.Media != "video" {
+			continue
+		}
+		// No offer max-bundle, porta 0 com bundle-only remete ao transporte
+		// do grupo, não rejeita o MID. Ainda exigimos um answer ativo.
+		_, bundleOnly := media.Attribute("bundle-only")
+		if media.MediaName.Port.Value == 0 && !(receive && bundleOnly) {
 			continue
 		}
 		mid, ok := media.Attribute("mid")

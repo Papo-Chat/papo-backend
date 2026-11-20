@@ -220,3 +220,20 @@ func videoRouteOffer(t *testing.T, optIn bool) string {
 	}
 	return string(out)
 }
+
+func TestVideoRouteExtensionOfferWithBundleOnlyZeroPort(t *testing.T) {
+	const desc = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n" +
+		"a=group:BUNDLE tagged-audio bundled-video\r\n" +
+		"m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:tagged-audio\r\n" +
+		"m=video 0 UDP/TLS/RTP/SAVPF 96\r\na=mid:bundled-video\r\na=bundle-only\r\n" +
+		"a=extmap:14 " + videoRouteExtensionURI + "\r\n" +
+		"m=video 0 UDP/TLS/RTP/SAVPF 96\r\na=mid:rejected-video\r\n" +
+		"a=extmap:14 " + videoRouteExtensionURI + "\r\n"
+	offer := videoRouteExtMaps(desc, true)
+	if len(offer) != 1 || offer["bundled-video"] != 14 {
+		t.Fatalf("o offer deve oferecer a extensão só para o MID bundle-only: %v", offer)
+	}
+	if answer := videoRouteExtMaps(desc, false); len(answer) != 0 {
+		t.Fatalf("porta zero no answer não pode negociar a extensão: %v", answer)
+	}
+}
