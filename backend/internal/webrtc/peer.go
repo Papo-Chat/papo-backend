@@ -7,6 +7,7 @@ import (
 
 	"papo/internal/models"
 
+	"github.com/google/uuid"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
@@ -40,6 +41,12 @@ type Peer struct {
 	m      *Manager
 	room   *Room
 	userID string
+
+	// id identifica esta entrada na call (um voice_join aceito) e nunca é
+	// reutilizado. Vai no voice_joined e em todo evento destinado só a este
+	// peer, para o cliente distinguir a call atual de uma anterior pela mesma
+	// conexão: sair e entrar de novo cria outro Peer, com outro id.
+	id string
 
 	mu     sync.Mutex
 	pc     *webrtc.PeerConnection
@@ -108,6 +115,7 @@ func newPeer(m *Manager, room *Room, userID, clientID string) *Peer {
 		m:               m,
 		room:            room,
 		userID:          userID,
+		id:              uuid.NewString(),
 		signalingClient: clientID,
 
 		muted: true,
@@ -151,11 +159,7 @@ func (p *Peer) renegWorker() {
 		case fn := <-p.renegQueue:
 			if err := fn(); err != nil {
 				// Renegociação falhou: o cliente vê o erro e pode tentar de novo.
-				// Vai à conexão dona do signaling (p.mu solto durante o send).
-				p.mu.Lock()
-				clientID := p.signalingClient
-				p.mu.Unlock()
-				p.m.sendErrorToClient(clientID, err)
+				p.sendError(err)
 			}
 		}
 	}
@@ -207,6 +211,46 @@ func (p *Peer) ownsClient(clientID string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return clientID != "" && p.signalingClient == clientID
+}
+
+// sendToOwner envia um evento unicast à conexão dona do signaling deste peer.
+// É o único caminho de envio do peer para o cliente (p.mu solto durante o
+// send, como manda a disciplina de lock).
+//
+// Depois de close() nada mais é enviado. O worker de renegociação, os
+// callbacks do pion e as trocas de slot podem terminar uma operação já
+// iniciada depois que o peer saiu, e o cliente pode já ter entrado de novo
+// pela mesma conexão: sem esta checagem, um voice_answer, um candidate ou um
+// snapshot de rotas do peer antigo chegaria no meio da call nova. Ainda resta
+// a janela entre a checagem e o envio; para ela o evento carrega o peer_id,
+// e o cliente descarta o que não for do peer atual.
+func (p *Peer) sendToOwner(event any) {
+	p.mu.Lock()
+	clientID := p.signalingClient
+	closed := p.closed
+	p.mu.Unlock()
+
+	if closed || clientID == "" || p.m.signaler.SendToClient == nil {
+		return
+	}
+	p.m.signaler.SendToClient(clientID, event)
+}
+
+// sendError envia à conexão dona um erro assíncrono deste peer (falha no
+// worker de renegociação ou num subscribe pendente). Leva canal e peer_id
+// porque chega fora de ordem em relação aos eventos que o cliente enviou.
+func (p *Peer) sendError(err error) {
+	code := voiceErrorCode(err)
+	if code == "" {
+		code = CodeVoiceNotFound
+	}
+	p.sendToOwner(VoiceError{
+		Type:      "error",
+		Message:   err.Error(),
+		Code:      code,
+		ChannelID: p.room.channelID,
+		PeerID:    p.id,
+	})
 }
 
 // ensurePC cria a PeerConnection na primeira vez (o worker de renegociação é
@@ -334,14 +378,12 @@ func (p *Peer) handleOffer(
 		return err
 	}
 
-	// voice_answer (unicast à conexão dona do signaling) — p.mu solto.
-	if p.m.signaler.SendToClient != nil {
-		p.m.signaler.SendToClient(clientID, VoiceAnswer{
-			Type:      EventTypeVoiceAnswer,
-			ChannelID: p.room.channelID,
-			SDP:       answer.SDP,
-		})
-	}
+	p.sendToOwner(VoiceAnswer{
+		Type:      EventTypeVoiceAnswer,
+		ChannelID: p.room.channelID,
+		PeerID:    p.id,
+		SDP:       answer.SDP,
+	})
 	return nil
 }
 
@@ -383,20 +425,14 @@ func (p *Peer) setupPCEvents(pc *webrtc.PeerConnection) {
 			return
 		}
 		init := candidate.ToJSON()
-		// ICE do servidor vai à conexão dona do signaling (p.mu para ler o
-		// clientID; o send é feito fora do lock).
-		p.mu.Lock()
-		clientID := p.signalingClient
-		p.mu.Unlock()
-		if clientID != "" && p.m.signaler.SendToClient != nil {
-			p.m.signaler.SendToClient(clientID, VoiceICECandidate{
-				Type:          EventTypeVoiceICECandidate,
-				ChannelID:     p.room.channelID,
-				Candidate:     init.Candidate,
-				SDPMid:        init.SDPMid,
-				SDPMLineIndex: intFromU16Ptr(init.SDPMLineIndex),
-			})
-		}
+		p.sendToOwner(VoiceICECandidate{
+			Type:          EventTypeVoiceICECandidate,
+			ChannelID:     p.room.channelID,
+			PeerID:        p.id,
+			Candidate:     init.Candidate,
+			SDPMid:        init.SDPMid,
+			SDPMLineIndex: intFromU16Ptr(init.SDPMLineIndex),
+		})
 	})
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
@@ -600,10 +636,7 @@ func (p *Peer) allocateSlots() error {
 	// que subscribes recebidos cedo não sejam perdidos.
 	for _, sub := range pending {
 		if err := p.assignVideoSlot(sub.pub, sub.kind); err != nil {
-			p.mu.Lock()
-			clientID := p.signalingClient
-			p.mu.Unlock()
-			p.m.sendErrorToClient(clientID, err)
+			p.sendError(err)
 		}
 	}
 
@@ -837,13 +870,11 @@ func sameAudioRoutes(a, b []VoiceAudioRoute) bool {
 	return true
 }
 
-func (p *Peer) sendAudioRoutes(clientID string, routes []VoiceAudioRoute) {
-	if clientID == "" || p.m.signaler.SendToClient == nil {
-		return
-	}
-	p.m.signaler.SendToClient(clientID, VoiceAudioRoutes{
+func (p *Peer) sendAudioRoutes(routes []VoiceAudioRoute) {
+	p.sendToOwner(VoiceAudioRoutes{
 		Type:      EventTypeVoiceAudioRoutes,
 		ChannelID: p.room.channelID,
+		PeerID:    p.id,
 		Routes:    routes,
 	})
 }
@@ -867,11 +898,10 @@ func (p *Peer) releaseAllFrom(pub *Peer) {
 		}
 	}
 	after := p.audioRoutesLocked()
-	clientID := p.signalingClient
 	p.mu.Unlock()
 
 	if !sameAudioRoutes(before, after) {
-		p.sendAudioRoutes(clientID, after)
+		p.sendAudioRoutes(after)
 	}
 }
 
@@ -1025,11 +1055,10 @@ func (p *Peer) setAudioSet(
 	}
 
 	afterRoutes := p.audioRoutesLocked()
-	clientID := p.signalingClient
 	p.mu.Unlock()
 
 	if !sameAudioRoutes(beforeRoutes, afterRoutes) {
-		p.sendAudioRoutes(clientID, afterRoutes)
+		p.sendAudioRoutes(afterRoutes)
 	}
 }
 

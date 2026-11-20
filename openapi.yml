@@ -2742,6 +2742,7 @@ paths:
         Os eventos de sinalização e controle dessa call devem ser enviados pela mesma conexão WebSocket.
         `voice_answer`, `voice_offer` outbound, `voice_ice_candidate` outbound e erros de sinalização são enviados somente para a conexão dona da call, não para todas as abas/dispositivos do mesmo usuário.
         Se a conexão WebSocket dona da call fechar, o Peer é removido mesmo que o mesmo usuário possua outra conexão WebSocket aberta.
+        Cada `voice_join` aceito cria um Peer com um `peer_id` novo, devolvido no `voice_joined`. Os eventos destinados só a esse Peer (`voice_answer`, `voice_offer`, `voice_ice_candidate`, `voice_audio_routes` e erros assíncronos de sinalização) carregam o mesmo `peer_id`: depois de sair e entrar de novo pela mesma conexão, o cliente descarta os que trazem o `peer_id` da call anterior. Um Peer encerrado não envia mais eventos.
 
         | Event            | Direction | Payload                                                                           |
         | ---------        | --------- | ---------------------------------------------------------------------             |
@@ -2768,7 +2769,7 @@ paths:
         | `presence_activity` | inbound | `{ type: "presence_activity" }` (atividade real do usuário; alimenta o away automático efêmero e não persiste estado) |
         | `heartbeat`      | inbound   | `{ type: "heartbeat" }`                                                                 |
         | `heartbeat_ack`  | outbound  | `{ type: "heartbeat_ack" }`                                                             |
-        | `error`          | outbound  | `{ type: "error", message, code? }`                                                     |
+        | `error`          | outbound  | `{ type: "error", message, code?, channel_id?, peer_id? }` (channel_id e peer_id presentes em erros de voz assíncronos, que não respondem diretamente a um evento do cliente) |
         | `voice_join`     | inbound   | `{ type: "voice_join", channel_id }`                                                    |
         | `voice_leave` | outbound | `{ type: "voice_leave", channel_id, user_id }` (saída explícita, conexão WebSocket dona da call caiu, sessão revogada ou sala destruída) |
         | `voice_offer`    | inbound   | `{ type: "voice_offer", channel_id, sdp }` (client-offers-first; renegociações do servidor chegam como `voice_offer` outbound) |
@@ -2780,14 +2781,14 @@ paths:
         | `voice_camera` | inbound | `{ type: "voice_camera", channel_id, on }` (deve ser enviado antes do `voice_offer` correspondente; o backend usa esse estado para identificar/validar a publicação de câmera) |
         | `screen_share_start` | inbound | `{ type: "screen_share_start", channel_id }` (deve ser enviado antes do `voice_offer` que adiciona/publica a track de screen) |
         | `screen_share_stop` | inbound | `{ type: "screen_share_stop", channel_id }` (deve ser enviado antes do `voice_offer` que remove/inativa a publicação de screen) |
-        | `voice_joined`   | unicast   | `{ type: "voice_joined", channel_id, members: (user_id, muted, camera_on, screen_sharing)[], active_speakers: user_id[] }` (estado inicial do late joiner, o peer novo começa com muted=true camera_on=false screen_sharing=false) |
-        | `voice_answer`   | unicast   | `{ type: "voice_answer", channel_id, sdp }` (resposta ao `voice_offer` do cliente)      |
-        | `voice_offer`    | unicast   | `{ type: "voice_offer", channel_id, sdp }` (renegociação iniciada pelo servidor)        |
-        | `voice_ice_candidate` | unicast | `{ type: "voice_ice_candidate", channel_id, candidate, sdp_mid?, sdp_mline_index? }`    |
+        | `voice_joined`   | unicast   | `{ type: "voice_joined", channel_id, peer_id, members: (user_id, muted, camera_on, screen_sharing)[], active_speakers: user_id[] }` (estado inicial do late joiner, o peer novo começa com muted=true camera_on=false screen_sharing=false) |
+        | `voice_answer`   | unicast   | `{ type: "voice_answer", channel_id, peer_id, sdp }` (resposta ao `voice_offer` do cliente) |
+        | `voice_offer`    | unicast   | `{ type: "voice_offer", channel_id, peer_id, sdp }` (renegociação iniciada pelo servidor) |
+        | `voice_ice_candidate` | unicast | `{ type: "voice_ice_candidate", channel_id, peer_id, candidate, sdp_mid?, sdp_mline_index? }` |
         | `voice_state_update` | outbound | `{ type: "voice_state_update", channel_id, user_id, muted, camera_on, screen_sharing }` |
         | `voice_leave`    | outbound  | `{ type: "voice_leave", channel_id, user_id }` (explícita, WS caiu, sessão revogada ou sala destruída) |
         | `active_speaker_update` | outbound | `{ type: "active_speaker_update", channel_id, user_ids: user_id[] }` (top-K active speakers) |
-        | `voice_audio_routes` | unicast | `{ type: "voice_audio_routes", channel_id, routes: { track_id, user_id }[] }` (snapshot específico do subscriber; `track_id` é o ID da track SFU `papo-audio-N`; substitui integralmente o snapshot anterior e permite volume/mute local por usuário) |
+        | `voice_audio_routes` | unicast | `{ type: "voice_audio_routes", channel_id, peer_id, routes: { track_id, user_id }[] }` (snapshot específico do subscriber; `track_id` é o ID da track SFU `papo-audio-N`; substitui integralmente o snapshot anterior e permite volume/mute local por usuário) |
       responses:
         '101':
           description: WebSocket upgrade

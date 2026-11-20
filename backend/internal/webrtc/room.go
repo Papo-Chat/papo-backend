@@ -514,6 +514,7 @@ func (r *Room) addPeer(userID, clientID string) error {
 		r.m.signaler.SendToClient(clientID, VoiceJoined{
 			Type:           EventTypeVoiceJoined,
 			ChannelID:      r.channelID,
+			PeerID:         peer.id,
 			Members:        members,
 			ActiveSpeakers: r.currentTopK(),
 		})

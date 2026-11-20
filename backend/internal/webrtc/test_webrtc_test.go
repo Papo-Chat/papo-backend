@@ -1247,3 +1247,123 @@ func TestSetMutedEvictsActiveSpeakerImmediately(t *testing.T) {
 		t.Fatal("active_speaker_update sem o usuário mutado não foi enviado")
 	}
 }
+
+// --- peer_id e envios depois do close ---
+
+// TestPeerIDIdentifiesEachJoin garante que cada voice_join aceito cria um peer
+// com um peer_id novo, devolvido no voice_joined. Sair e entrar de novo pela
+// mesma conexão precisa gerar outro id; é ele que permite ao cliente
+// descartar eventos que ainda chegam da call anterior.
+func TestPeerIDIdentifiesEachJoin(t *testing.T) {
+	cfg := &config.Config{
+		VoiceVideoCodec:         "vp8",
+		VoiceVideoSlots:         2,
+		VoiceAudioSlots:         2,
+		VoiceMaxRoomPeers:       10,
+		VoiceMaxRoomsPerUser:    1,
+		VoiceSignalRateLimit:    100,
+		VoiceSignalRateBurst:    100,
+		VoiceSubscribeRateLimit: 100,
+		VoiceSubscribeRateBurst: 100,
+		VoiceRoomCleanupGrace:   time.Hour,
+	}
+	joined := make(chan VoiceJoined, 2)
+	m := testManager(t, cfg)
+	m.signaler.SendToClient = func(clientID string, event any) {
+		if event, ok := event.(VoiceJoined); ok {
+			joined <- event
+		}
+	}
+	defer m.Shutdown()
+
+	if err := m.Join("ch", "u", "conn"); err != nil {
+		t.Fatalf("primeiro Join: %v", err)
+	}
+	first := <-joined
+	if first.PeerID == "" {
+		t.Fatal("voice_joined sem peer_id")
+	}
+	if got := m.getRoom("ch").peer("u").id; got != first.PeerID {
+		t.Fatalf("peer_id do voice_joined = %q, esperado o do peer (%q)", first.PeerID, got)
+	}
+
+	if err := m.Leave("ch", "u", "conn"); err != nil {
+		t.Fatalf("Leave: %v", err)
+	}
+	if err := m.Join("ch", "u", "conn"); err != nil {
+		t.Fatalf("segundo Join: %v", err)
+	}
+	second := <-joined
+	if second.PeerID == "" || second.PeerID == first.PeerID {
+		t.Fatalf("rejoin reutilizou o peer_id: %q e %q", first.PeerID, second.PeerID)
+	}
+}
+
+// TestAsyncErrorCarriesChannelAndPeer garante que um erro do worker de
+// renegociação leva o canal e o peer_id. Ele chega fora de ordem em relação
+// aos eventos do cliente, então sem esses campos o cliente não sabe a que
+// call o erro pertence.
+func TestAsyncErrorCarriesChannelAndPeer(t *testing.T) {
+	events := make(chan any, 1)
+	m := testManager(t, nil)
+	m.signaler.SendToClient = func(clientID string, event any) { events <- event }
+
+	room := &Room{m: m, channelID: "voice-channel"}
+	peer := newPeer(m, room, "user", "conn")
+	defer peer.close()
+
+	if err := peer.enqueue(func() error { return ErrVoiceInvalidSDP }); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	select {
+	case raw := <-events:
+		event, ok := raw.(VoiceError)
+		if !ok {
+			t.Fatalf("evento = %T, esperado VoiceError", raw)
+		}
+		if event.ChannelID != "voice-channel" || event.PeerID != peer.id {
+			t.Fatalf("erro sem identificação da call: %#v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("erro do worker não foi enviado")
+	}
+}
+
+// TestClosedPeerSendsNothing garante que um peer fechado não envia mais nada
+// à conexão. Antes, releaseAllFrom (outro membro saindo) mandava
+// voice_audio_routes mesmo para um subscriber que já tinha saído; se o
+// cliente já tivesse entrado de novo pela mesma conexão, esse snapshot antigo
+// era aplicado na call nova.
+func TestClosedPeerSendsNothing(t *testing.T) {
+	events := make(chan any, 4)
+	m := testManager(t, &config.Config{VoiceAudioSlots: 1})
+	m.signaler.SendToClient = func(clientID string, event any) { events <- event }
+
+	room := &Room{m: m, channelID: "voice-channel"}
+	pub := &Peer{userID: "publisher-user"}
+	sub := newPeer(m, room, "subscriber-user", "subscriber-client")
+	sub.audioSlots = []*slot{{peer: sub, local: mustAudioTrack(t, "papo-audio-0"), owner: pub, kind: "audio"}}
+
+	sub.close()
+
+	sub.releaseAllFrom(pub)
+	sub.sendError(ErrVoiceInvalidSDP)
+	sub.sendToOwner(VoiceAnswer{Type: EventTypeVoiceAnswer})
+
+	select {
+	case event := <-events:
+		t.Fatalf("peer fechado enviou %#v", event)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func mustAudioTrack(t *testing.T, id string) *webrtc.TrackLocalStaticRTP {
+	t.Helper()
+	opus := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}
+	track, err := webrtc.NewTrackLocalStaticRTP(opus, id, "papo-audio")
+	if err != nil {
+		t.Fatalf("NewTrackLocalStaticRTP: %v", err)
+	}
+	return track
+}

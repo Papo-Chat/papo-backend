@@ -140,24 +140,6 @@ func GetManager() *Manager {
 	return manager
 }
 
-// sendErrorToClient envia um evento `error` de voz a UMA conexão (clientID) —
-// usado pelos erros de renegociação, que pertencem à conexão que originou o
-// signaling (sem fallback para SendToUser: clientID vazio não envia).
-func (m *Manager) sendErrorToClient(clientID string, err error) {
-	if clientID == "" || m.signaler.SendToClient == nil {
-		return
-	}
-	code := voiceErrorCode(err)
-	if code == "" {
-		code = CodeVoiceNotFound
-	}
-	m.signaler.SendToClient(clientID, VoiceError{
-		Type:    "error",
-		Message: err.Error(),
-		Code:    code,
-	})
-}
-
 // audience retorna a audiência autorizada do canal (usuários online com
 // permissão connect_voice — mesma regra de quem pode entrar na call).
 func (m *Manager) audience(channelID string) map[string]bool {

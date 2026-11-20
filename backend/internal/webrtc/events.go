@@ -28,19 +28,34 @@ const (
 	CodeVoiceRoomClosed       = "voice-room-closed"
 )
 
-// VoiceError é o evento de erro de voz enviado ao cliente. O shape é
-// idêntico ao ErrorOutbound do websocket (type/message/code).
+// VoiceError é o evento de erro de voz enviado ao cliente. O shape é o do
+// ErrorOutbound do websocket (type/message/code), com dois campos opcionais
+// para o cliente saber a que call o erro pertence:
+//
+//   - ChannelID: o canal da sala (erros assíncronos e voice-room-closed);
+//   - PeerID: o peer que originou o erro (falhas do worker de renegociação).
+//
+// Os dois são omitidos nos erros que respondem diretamente a um evento do
+// cliente, porque esses chegam em ordem, logo depois do evento que os causou.
 type VoiceError struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-	Code    string `json:"code,omitempty"`
+	Type      string `json:"type"`
+	Message   string `json:"message"`
+	Code      string `json:"code,omitempty"`
+	ChannelID string `json:"channel_id,omitempty"`
+	PeerID    string `json:"peer_id,omitempty"`
 }
 
 // VoiceJoined é o estado inicial enviado em unicast ao late joiner
 // (membros da sala + active speakers atuais).
+//
+// PeerID identifica este peer (esta entrada na call). Todo evento que só
+// interessa a ele (answer, ICE, rotas de áudio e vídeo, erros do worker)
+// carrega o mesmo PeerID, para o cliente descartar o que ainda chegar de uma
+// call anterior pela mesma conexão.
 type VoiceJoined struct {
 	Type           string              `json:"type"`
 	ChannelID      string              `json:"channel_id"`
+	PeerID         string              `json:"peer_id"`
 	Members        []models.VoiceState `json:"members"`
 	ActiveSpeakers []string            `json:"active_speakers"`
 }
@@ -49,15 +64,20 @@ type VoiceJoined struct {
 type VoiceAnswer struct {
 	Type      string `json:"type"`
 	ChannelID string `json:"channel_id"`
+	PeerID    string `json:"peer_id"`
 	SDP       string `json:"sdp"`
 }
 
 // VoiceOffer é a oferta SDP de uma renegociação iniciada pelo servidor
 // (ex.: novo slot de vídeo sem slot livre), respondida pelo cliente com
 // voice_answer.
+//
+// O servidor não inicia renegociação hoje; o evento e o PeerID ficam
+// reservados para quando iniciar.
 type VoiceOffer struct {
 	Type      string `json:"type"`
 	ChannelID string `json:"channel_id"`
+	PeerID    string `json:"peer_id"`
 	SDP       string `json:"sdp"`
 }
 
@@ -67,6 +87,7 @@ type VoiceOffer struct {
 type VoiceICECandidate struct {
 	Type          string  `json:"type"`
 	ChannelID     string  `json:"channel_id"`
+	PeerID        string  `json:"peer_id"`
 	Candidate     string  `json:"candidate"`
 	SDPMid        *string `json:"sdp_mid,omitempty"`
 	SDPMLineIndex *int    `json:"sdp_mline_index,omitempty"`
@@ -115,5 +136,6 @@ type VoiceAudioRoute struct {
 type VoiceAudioRoutes struct {
 	Type      string            `json:"type"`
 	ChannelID string            `json:"channel_id"`
+	PeerID    string            `json:"peer_id"`
 	Routes    []VoiceAudioRoute `json:"routes"`
 }
