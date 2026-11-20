@@ -103,6 +103,10 @@ type Peer struct {
 
 	audioSet []string // top-K de áudio atual (p/ detecção de mudança)
 
+	// routesRevision numera os snapshots de voice_audio_routes e
+	// voice_video_routes deste peer (ver VoiceAudioRoutes.Revision).
+	routesRevision uint64
+
 	// fila de renegociação (D4): worker sequencial por PC
 	renegQueue chan func() error
 	renegStop  chan struct{}
@@ -542,6 +546,7 @@ func (p *Peer) rebindVideoSlot(pub *Peer, kind string, track *webrtc.TrackRemote
 		p.mu.Unlock()
 		return
 	}
+	before := p.slotRoutesLocked()
 	rebound := false
 	for _, s := range p.videoSlots {
 		if s.owner == pub && s.kind == kind && s.src != track {
@@ -549,7 +554,10 @@ func (p *Peer) rebindVideoSlot(pub *Peer, kind string, track *webrtc.TrackRemote
 			rebound = true
 		}
 	}
+	updates := p.routeUpdatesLocked(before)
 	p.mu.Unlock()
+
+	p.sendRouteUpdates(updates)
 
 	if rebound {
 		sendPLIBurst(pub.PC(), track)
@@ -800,9 +808,13 @@ func (p *Peer) assignVideoSlot(pub *Peer, kind string) error {
 		return ErrVoiceRoomFull
 	}
 
+	before := p.slotRoutesLocked()
 	slot.assignWithFanout(pub, kind, track, fanout)
+	updates := p.routeUpdatesLocked(before)
 
 	p.mu.Unlock()
+
+	p.sendRouteUpdates(updates)
 
 	// Pion chamada com p.mu solto. Um pequeno burst melhora a recuperação
 	// quando o primeiro PLI coincide com a ativação do encoder/browser.
@@ -833,15 +845,19 @@ func (p *Peer) releaseVideoSlot(pubID, kind string) {
 	pub := p.room.peer(pubID) // resolve ANTES de p.mu (evita p.mu → r.mu)
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if pub != nil {
 		delete(p.pendingVideoSubs, videoSubscriptionKey(pub, kind))
 	}
+	before := p.slotRoutesLocked()
 	for _, s := range p.videoSlots {
 		if s.owner == pub && s.kind == kind {
 			s.release()
 		}
 	}
+	updates := p.routeUpdatesLocked(before)
+	p.mu.Unlock()
+
+	p.sendRouteUpdates(updates)
 }
 
 func (p *Peer) audioRoutesLocked() []VoiceAudioRoute {
@@ -870,13 +886,89 @@ func sameAudioRoutes(a, b []VoiceAudioRoute) bool {
 	return true
 }
 
-func (p *Peer) sendAudioRoutes(routes []VoiceAudioRoute) {
-	p.sendToOwner(VoiceAudioRoutes{
-		Type:      EventTypeVoiceAudioRoutes,
-		ChannelID: p.room.channelID,
-		PeerID:    p.id,
-		Routes:    routes,
-	})
+func (p *Peer) videoRoutesLocked() []VoiceVideoRoute {
+	routes := make([]VoiceVideoRoute, 0, len(p.videoSlots))
+	for _, s := range p.videoSlots {
+		if s == nil || s.local == nil || s.owner == nil {
+			continue
+		}
+		route := VoiceVideoRoute{
+			TrackID: s.local.ID(),
+			UserID:  s.owner.userID,
+			Kind:    s.kind,
+		}
+		if s.firstSeq != nil {
+			firstSeq := *s.firstSeq
+			route.FirstSeq = &firstSeq
+		}
+		routes = append(routes, route)
+	}
+	return routes
+}
+
+func sameVideoRoutes(a, b []VoiceVideoRoute) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].TrackID != b[i].TrackID || a[i].UserID != b[i].UserID || a[i].Kind != b[i].Kind {
+			return false
+		}
+		if (a[i].FirstSeq == nil) != (b[i].FirstSeq == nil) {
+			return false
+		}
+		if a[i].FirstSeq != nil && *a[i].FirstSeq != *b[i].FirstSeq {
+			return false
+		}
+	}
+	return true
+}
+
+// slotRoutes guarda as rotas de áudio e vídeo de antes de uma mudança de
+// slots, para routeUpdatesLocked saber o que mudou.
+type slotRoutes struct {
+	audio []VoiceAudioRoute
+	video []VoiceVideoRoute
+}
+
+func (p *Peer) slotRoutesLocked() slotRoutes {
+	return slotRoutes{audio: p.audioRoutesLocked(), video: p.videoRoutesLocked()}
+}
+
+// routeUpdatesLocked compara as rotas atuais com before e devolve os
+// snapshots a enviar, já numerados. A revision é tirada sob p.mu, na mesma
+// ordem em que as mudanças aconteceram; o envio fica para depois de soltar o
+// lock (sendRouteUpdates). Rotas iguais não geram snapshot.
+func (p *Peer) routeUpdatesLocked(before slotRoutes) []any {
+	var updates []any
+	if audio := p.audioRoutesLocked(); !sameAudioRoutes(before.audio, audio) {
+		p.routesRevision++
+		updates = append(updates, VoiceAudioRoutes{
+			Type:      EventTypeVoiceAudioRoutes,
+			ChannelID: p.room.channelID,
+			PeerID:    p.id,
+			Revision:  p.routesRevision,
+			Routes:    audio,
+		})
+	}
+	if video := p.videoRoutesLocked(); !sameVideoRoutes(before.video, video) {
+		p.routesRevision++
+		updates = append(updates, VoiceVideoRoutes{
+			Type:      EventTypeVoiceVideoRoutes,
+			ChannelID: p.room.channelID,
+			PeerID:    p.id,
+			Revision:  p.routesRevision,
+			Routes:    video,
+		})
+	}
+	return updates
+}
+
+// sendRouteUpdates envia os snapshots de routeUpdatesLocked (p.mu solto).
+func (p *Peer) sendRouteUpdates(updates []any) {
+	for _, update := range updates {
+		p.sendToOwner(update)
+	}
 }
 
 // releaseAllFrom libera todos os slots do subscriber que forwardam do
@@ -886,7 +978,7 @@ func (p *Peer) releaseAllFrom(pub *Peer) {
 		return
 	}
 	p.mu.Lock()
-	before := p.audioRoutesLocked()
+	before := p.slotRoutesLocked()
 	for _, s := range p.videoSlots {
 		if s.owner == pub {
 			s.release()
@@ -897,12 +989,10 @@ func (p *Peer) releaseAllFrom(pub *Peer) {
 			s.release()
 		}
 	}
-	after := p.audioRoutesLocked()
+	updates := p.routeUpdatesLocked(before)
 	p.mu.Unlock()
 
-	if !sameAudioRoutes(before, after) {
-		p.sendAudioRoutes(after)
-	}
+	p.sendRouteUpdates(updates)
 }
 
 func (p *Peer) releaseFrom(pub *Peer, kind string) {
@@ -911,13 +1001,16 @@ func (p *Peer) releaseFrom(pub *Peer, kind string) {
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	before := p.slotRoutesLocked()
 	for _, s := range p.videoSlots {
 		if s.owner == pub && s.kind == kind {
 			s.release()
 		}
 	}
+	updates := p.routeUpdatesLocked(before)
+	p.mu.Unlock()
+
+	p.sendRouteUpdates(updates)
 }
 
 // setAudioSet atualiza o conjunto de áudio do subscriber.
@@ -951,7 +1044,7 @@ func (p *Peer) setAudioSet(
 		p.mu.Unlock()
 		return
 	}
-	beforeRoutes := p.audioRoutesLocked()
+	before := p.slotRoutesLocked()
 
 	// Não mantenha referência à slice do caller.
 	p.audioSet = append(p.audioSet[:0], set...)
@@ -1054,12 +1147,10 @@ func (p *Peer) setAudioSet(
 		assigned[owner] = true
 	}
 
-	afterRoutes := p.audioRoutesLocked()
+	updates := p.routeUpdatesLocked(before)
 	p.mu.Unlock()
 
-	if !sameAudioRoutes(beforeRoutes, afterRoutes) {
-		p.sendAudioRoutes(afterRoutes)
-	}
+	p.sendRouteUpdates(updates)
 }
 
 // sendPLI pede um keyframe ao publisher na troca de conteúdo de slot de vídeo

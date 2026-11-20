@@ -85,62 +85,123 @@ func TestVideoKeyframeDetection(t *testing.T) {
 
 func TestSSNTranslator(t *testing.T) {
 	tr := &ssnTranslator{}
-	ownerA := &Peer{}
-	ownerB := &Peer{}
+	fwdA := &forwarder{}
+	fwdB := &forwarder{}
 
-	// slot novo (ownerA): mantém o SSN do publisher (offset 0)
-	pkt := &rtp.Packet{
-		Header: rtp.Header{
-			SequenceNumber: 100,
-		},
+	forward := func(fwd *forwarder, seq uint16) (uint16, forwardResult) {
+		pkt := &rtp.Packet{Header: rtp.Header{SequenceNumber: seq}}
+		result := tr.forward(pkt, fwd)
+		return pkt.Header.SequenceNumber, result
 	}
 
-	tr.translate(pkt, ownerA)
-
-	if pkt.Header.SequenceNumber != 100 {
-		t.Fatalf(
-			"primeiro pacote: SSN = %d, esperado 100",
-			pkt.Header.SequenceNumber,
-		)
+	// slot novo (A): mantém o SSN do publisher (offset 0)
+	if _, continues := tr.begin(fwdA); continues {
+		t.Fatal("slot novo não deveria continuar sequência anterior")
+	}
+	if got, _ := forward(fwdA, 100); got != 100 {
+		t.Fatalf("primeiro pacote: SSN = %d, esperado 100", got)
+	}
+	if got, _ := forward(fwdA, 101); got != 101 {
+		t.Fatalf("mesmo forwarder: SSN = %d, esperado 101", got)
 	}
 
-	// mesmo owner: sequência continua
-	pkt = &rtp.Packet{Header: rtp.Header{SequenceNumber: 101}}
-	tr.translate(pkt, ownerA)
-	if pkt.Header.SequenceNumber != 101 {
-		t.Fatalf("mesmo owner: SSN = %d, esperado 101", pkt.Header.SequenceNumber)
+	// troca de ocupante (B): continua do último SSN do slot (101 → 102)
+	firstSeq, continues := tr.begin(fwdB)
+	if !continues || firstSeq != 102 {
+		t.Fatalf("begin(B) = (%d, %v), esperado (102, true)", firstSeq, continues)
+	}
+	if got, _ := forward(fwdB, 50); got != 102 {
+		t.Fatalf("troca de ocupante: SSN = %d, esperado 102", got)
+	}
+	if got, _ := forward(fwdB, 51); got != 103 {
+		t.Fatalf("mesmo forwarder (B): SSN = %d, esperado 103", got)
 	}
 
-	// troca de owner (ownerB): continua do último SSN do slot (101 → 102)
-	pkt = &rtp.Packet{Header: rtp.Header{SequenceNumber: 50}}
-	tr.translate(pkt, ownerB)
-	if pkt.Header.SequenceNumber != 102 {
-		t.Fatalf("troca de owner: SSN = %d, esperado 102", pkt.Header.SequenceNumber)
+	// mesmo forwarder, nova fronteira RTP: continua do último SSN do slot
+	tr.restart(fwdB)
+	if got, _ := forward(fwdB, 500); got != 104 {
+		t.Fatalf("restart: SSN = %d, esperado 104", got)
+	}
+}
+
+// TestReplacedForwarderCannotWrite garante que o forwarder antigo de um slot
+// não escreve mais depois da troca de ocupante. Antes, finish() só avisava a
+// goroutine, e um pacote que ela já tinha em mãos era escrito depois do
+// primeiro pacote do novo publisher, com SSN maior: o cliente via um pedaço
+// do vídeo antigo dentro do novo, sem como separar.
+func TestReplacedForwarderCannotWrite(t *testing.T) {
+	tr := &ssnTranslator{}
+	old := &forwarder{}
+	next := &forwarder{}
+
+	tr.begin(old)
+	tr.forward(&rtp.Packet{Header: rtp.Header{SequenceNumber: 10}}, old)
+
+	firstSeq, _ := tr.begin(next)
+
+	late := &rtp.Packet{Header: rtp.Header{SequenceNumber: 11}}
+	if tr.forward(late, old) != forwardStop {
+		t.Fatal("forwarder substituído conseguiu escrever no slot")
+	}
+	tr.restart(old) // não pode recalcular o offset do forwarder novo
+
+	pkt := &rtp.Packet{Header: rtp.Header{SequenceNumber: 9000}}
+	if tr.forward(pkt, next) != forwardWrite || pkt.Header.SequenceNumber != firstSeq {
+		t.Fatalf("primeiro pacote do novo ocupante: SSN = %d, esperado firstSeq %d",
+			pkt.Header.SequenceNumber, firstSeq)
 	}
 
-	// mesmo owner (ownerB): continua (51 → 103)
-	pkt = &rtp.Packet{Header: rtp.Header{SequenceNumber: 51}}
-	tr.translate(pkt, ownerB)
-	if pkt.Header.SequenceNumber != 103 {
-		t.Fatalf("mesmo owner (B): SSN = %d, esperado 103", pkt.Header.SequenceNumber)
+	tr.end(next)
+	if tr.forward(&rtp.Packet{}, next) != forwardStop {
+		t.Fatal("slot liberado ainda aceitou pacote")
+	}
+}
+
+// TestTranslatorDropsPacketsFromBeforeBoundary garante que um pacote que
+// chega atrasado de antes da fronteira (o pion não reordena) é descartado em
+// vez de receber um SSN anterior ao firstSeq. Sem isso, o pacote do frame
+// anterior ao keyframe do novo ocupante saía com firstSeq-1, o mesmo SSN do
+// último pacote do ocupante antigo.
+func TestTranslatorDropsPacketsFromBeforeBoundary(t *testing.T) {
+	tr := &ssnTranslator{}
+	old := &forwarder{}
+	next := &forwarder{}
+
+	tr.begin(old)
+	tr.forward(&rtp.Packet{Header: rtp.Header{SequenceNumber: 10}}, old)
+	firstSeq, _ := tr.begin(next)
+
+	keyframe := &rtp.Packet{Header: rtp.Header{SequenceNumber: 500}}
+	if tr.forward(keyframe, next) != forwardWrite || keyframe.Header.SequenceNumber != firstSeq {
+		t.Fatalf("keyframe: SSN = %d, esperado %d", keyframe.Header.SequenceNumber, firstSeq)
 	}
 
-	// Mesmo owner, mas nova fronteira RTP.
-	tr.resetSource()
-
-	pkt = &rtp.Packet{
-		Header: rtp.Header{
-			SequenceNumber: 500,
-		},
+	lateBeforeKeyframe := &rtp.Packet{Header: rtp.Header{SequenceNumber: 499}}
+	if tr.forward(lateBeforeKeyframe, next) != forwardSkip {
+		t.Fatalf("pacote de antes da fronteira foi escrito com SSN %d", lateBeforeKeyframe.Header.SequenceNumber)
 	}
 
-	tr.translate(pkt, ownerB)
+	after := &rtp.Packet{Header: rtp.Header{SequenceNumber: 501}}
+	if tr.forward(after, next) != forwardWrite || after.Header.SequenceNumber != firstSeq+1 {
+		t.Fatalf("pacote seguinte: SSN = %d, esperado %d", after.Header.SequenceNumber, firstSeq+1)
+	}
+}
 
-	if pkt.Header.SequenceNumber != 104 {
-		t.Fatalf(
-			"resetSource: SSN = %d, esperado 104",
-			pkt.Header.SequenceNumber,
-		)
+// TestTranslatorFirstSeqFollowsHighestSSN garante que, com pacotes fora de
+// ordem, o firstSeq do próximo ocupante continua depois do MAIOR SSN já
+// escrito. Antes, lastSSN era o último escrito: um pacote atrasado o fazia
+// voltar, e o próximo ocupante repetia SSNs já enviados pelo anterior.
+func TestTranslatorFirstSeqFollowsHighestSSN(t *testing.T) {
+	tr := &ssnTranslator{}
+	old := &forwarder{}
+
+	tr.begin(old)
+	for _, seq := range []uint16{100, 102, 101} {
+		tr.forward(&rtp.Packet{Header: rtp.Header{SequenceNumber: seq}}, old)
+	}
+
+	if firstSeq, _ := tr.begin(&forwarder{}); firstSeq != 103 {
+		t.Fatalf("firstSeq = %d, esperado 103 (depois do maior SSN escrito)", firstSeq)
 	}
 }
 
@@ -1362,6 +1423,119 @@ func mustAudioTrack(t *testing.T, id string) *webrtc.TrackLocalStaticRTP {
 	t.Helper()
 	opus := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}
 	track, err := webrtc.NewTrackLocalStaticRTP(opus, id, "papo-audio")
+	if err != nil {
+		t.Fatalf("NewTrackLocalStaticRTP: %v", err)
+	}
+	return track
+}
+
+// --- voice_video_routes ---
+
+// TestVideoRoutesFollowSlotAssignments garante que cada mudança de slot de
+// vídeo gera um voice_video_routes com o publisher real de cada slot. Antes,
+// o cliente adivinhava o slot (o primeiro livre) e, quando um slot era
+// reutilizado, não tinha como saber de quem era o vídeo nem onde começava o
+// novo ocupante. O snapshot traz o first_seq da troca e revisions crescentes.
+func TestVideoRoutesFollowSlotAssignments(t *testing.T) {
+	events := make(chan any, 8)
+	m := testManager(t, nil)
+	m.signaler.SendToClient = func(clientID string, event any) { events <- event }
+
+	room := &Room{m: m, channelID: "voice-channel", peers: make(map[string]*Peer)}
+	sub := newPeer(m, room, "sub", "sub-client")
+	defer sub.close()
+	sub.videoSlots = []*slot{
+		{peer: sub, local: mustVideoTrack(t, "papo-video-0")},
+		{peer: sub, local: mustVideoTrack(t, "papo-video-1")},
+	}
+
+	pubA := cameraPublisher(t, m, room, "user-a")
+	pubC := cameraPublisher(t, m, room, "user-c")
+	defer pubA.close()
+	defer pubC.close()
+
+	next := func() VoiceVideoRoutes {
+		t.Helper()
+		for {
+			select {
+			case raw := <-events:
+				if event, ok := raw.(VoiceVideoRoutes); ok {
+					return event
+				}
+			case <-time.After(time.Second):
+				t.Fatal("voice_video_routes não foi enviado")
+			}
+		}
+	}
+
+	if err := sub.assignVideoSlot(pubA, "video"); err != nil {
+		t.Fatalf("assign A: %v", err)
+	}
+	first := next()
+	if first.PeerID != sub.id || len(first.Routes) != 1 {
+		t.Fatalf("snapshot após A = %#v", first)
+	}
+	if r := first.Routes[0]; r.TrackID != "papo-video-0" || r.UserID != "user-a" || r.Kind != "video" || r.FirstSeq != nil {
+		t.Fatalf("rota de A = %#v (slot novo não tem first_seq)", r)
+	}
+
+	// A envia alguns pacotes pelo slot 0 e depois sai; C ocupa o mesmo slot.
+	slot0 := sub.videoSlots[0]
+	for seq := uint16(40); seq <= 42; seq++ {
+		slot0.translator.forward(&rtp.Packet{Header: rtp.Header{SequenceNumber: seq}}, slot0.fwd)
+	}
+	sub.releaseAllFrom(pubA)
+	if released := next(); len(released.Routes) != 0 || released.Revision <= first.Revision {
+		t.Fatalf("snapshot após saída de A = %#v", released)
+	}
+
+	if err := sub.assignVideoSlot(pubC, "video"); err != nil {
+		t.Fatalf("assign C: %v", err)
+	}
+	reused := next()
+	if len(reused.Routes) != 1 {
+		t.Fatalf("snapshot após C = %#v", reused)
+	}
+	r := reused.Routes[0]
+	if r.TrackID != "papo-video-0" || r.UserID != "user-c" {
+		t.Fatalf("slot reutilizado = %#v, esperado papo-video-0 com user-c", r)
+	}
+	if r.FirstSeq == nil || *r.FirstSeq != 43 {
+		t.Fatalf("first_seq do slot reutilizado = %v, esperado 43", r.FirstSeq)
+	}
+}
+
+// cameraPublisher monta um peer publicando câmera (track remota vazia, sem
+// PeerConnection), o suficiente para assignVideoSlot.
+func cameraPublisher(t *testing.T, m *Manager, room *Room, userID string) *Peer {
+	t.Helper()
+	track := &webrtc.TrackRemote{}
+
+	pub := newPeer(m, room, userID, userID+"-client")
+	pub.mu.Lock()
+	pub.videoTrack = track
+	pub.videoMID = "1"
+	pub.activeMidRole["1"] = roleCamera
+	pub.fanouts["video"] = startedFanout(track)
+	pub.mu.Unlock()
+	return pub
+}
+
+// startedFanout cria um fanout já marcado como iniciado, sem readLoop. Os
+// testes usam TrackRemote vazia, sem receiver; o readLoop real chamaria
+// ReadRTP nela e derrubaria o processo de teste (nil pointer no pion) sempre
+// que a goroutine rodasse antes do fim do teste. Os testes que usam isto só
+// precisam das trocas de slot, não dos pacotes do publisher.
+func startedFanout(track *webrtc.TrackRemote) *fanout {
+	f := newFanout(track)
+	f.startOnce.Do(func() {})
+	return f
+}
+
+func mustVideoTrack(t *testing.T, id string) *webrtc.TrackLocalStaticRTP {
+	t.Helper()
+	vp8 := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000}
+	track, err := webrtc.NewTrackLocalStaticRTP(vp8, id, "papo-video")
 	if err != nil {
 		t.Fatalf("NewTrackLocalStaticRTP: %v", err)
 	}

@@ -14,6 +14,7 @@ const (
 	EventTypeVoiceLeave          = "voice_leave"
 	EventTypeActiveSpeakerUpdate = "active_speaker_update"
 	EventTypeVoiceAudioRoutes    = "voice_audio_routes"
+	EventTypeVoiceVideoRoutes    = "voice_video_routes"
 )
 
 // Códigos de erro dos eventos de voz (evento `error` com `code`).
@@ -133,9 +134,51 @@ type VoiceAudioRoute struct {
 // rotas de áudio atualmente recebidas por sua PeerConnection. É enviado em
 // unicast apenas para a conexão dona do signaling sempre que a associação de
 // slots muda. Um snapshot vazio remove todas as associações anteriores.
+//
+// Revision cresce a cada snapshot do peer (um contador para áudio e vídeo).
+// Os snapshots são montados sob o lock do peer mas enviados depois de
+// soltá-lo, então dois deles podem chegar fora de ordem: o cliente ignora um
+// voice_audio_routes com revision menor que a do último voice_audio_routes
+// que aplicou, e o mesmo para voice_video_routes. A comparação é por tipo de
+// evento: um voice_video_routes com revision menor que a do último
+// voice_audio_routes é válido.
 type VoiceAudioRoutes struct {
 	Type      string            `json:"type"`
 	ChannelID string            `json:"channel_id"`
 	PeerID    string            `json:"peer_id"`
+	Revision  uint64            `json:"revision"`
 	Routes    []VoiceAudioRoute `json:"routes"`
+}
+
+// VoiceVideoRoute associa um slot de vídeo do SFU ao publisher e ao tipo de
+// mídia (câmera ou tela) que ele encaminha agora. TrackID é o ID da
+// TrackLocalStaticRTP ("papo-video-N"), o mesmo msid que o cliente vê.
+//
+// FirstSeq é o SSN do primeiro pacote deste ocupante no slot. Os slots são
+// reutilizados entre publishers com a sequência contínua, então pacotes do
+// ocupante anterior ainda podem chegar (rede, jitter buffer) depois da troca.
+// Todos eles têm SSN anterior a FirstSeq, e todo pacote do ocupante atual tem
+// SSN igual ou posterior. A comparação é circular (16 bits) e só vale perto
+// da troca: o cliente aplica o filtro aos pacotes que recebe até ver o
+// primeiro com SSN >= FirstSeq, ou compara sequence numbers estendidos (como
+// o jitter buffer faz), nunca como regra permanente. Ausente quando o slot
+// nunca carregou outro ocupante.
+type VoiceVideoRoute struct {
+	TrackID  string  `json:"track_id"`
+	UserID   string  `json:"user_id"`
+	Kind     string  `json:"kind"` // "video" (câmera) | "screen"
+	FirstSeq *uint16 `json:"first_seq,omitempty"`
+}
+
+// VoiceVideoRoutes é o snapshot completo das rotas de vídeo recebidas pela
+// PeerConnection do subscriber, no mesmo formato de VoiceAudioRoutes. Antes
+// dele o cliente precisava adivinhar em que slot o SFU tinha colocado cada
+// track_subscribe (o primeiro livre), e errava quando um subscribe falhava ou
+// um slot era liberado sem ele saber. Um snapshot vazio remove todas as rotas.
+type VoiceVideoRoutes struct {
+	Type      string            `json:"type"`
+	ChannelID string            `json:"channel_id"`
+	PeerID    string            `json:"peer_id"`
+	Revision  uint64            `json:"revision"`
+	Routes    []VoiceVideoRoute `json:"routes"`
 }
