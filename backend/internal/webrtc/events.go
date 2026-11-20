@@ -182,6 +182,9 @@ type VoiceVideoRoute struct {
 	UserID   string  `json:"user_id"`
 	Kind     string  `json:"kind"` // "video" (câmera) | "screen"
 	FirstSeq *uint16 `json:"first_seq,omitempty"`
+	// O par só aparece quando o MID de envio negociou a extensão de rota.
+	RTPRouteID    uint64 `json:"rtp_route_id,omitempty"`
+	RTPRouteExtID uint8  `json:"rtp_route_ext_id,omitempty"`
 }
 
 // VoiceVideoRoutes é o snapshot completo das rotas de vídeo recebidas pela

@@ -41,6 +41,10 @@ type slot struct {
 	// sem ocupante anterior, não há pacote antigo a separar do novo.
 	firstSeq *uint16
 
+	routeRequired bool   // opt-in no primeiro SDP; nunca muda
+	routeExtID    uint8  // negociado para o sender; guardado por peer.mu
+	lastRouteID   uint64 // não é zerado ao liberar o slot
+
 	translator ssnTranslator
 }
 
@@ -64,9 +68,8 @@ func (s *slot) assignWithFanout(
 	s.src = track
 	s.fwd = newForwarder(s, owner, kind, fanout)
 
-	// Toda nova atribuição é uma nova fronteira RTP: a partir daqui só o
-	// forwarder novo escreve no slot, e o primeiro pacote dele continua a
-	// sequência do slot em firstSeq.
+	// Só o novo forwarder traduz pacotes daqui em diante. Um pacote do antigo
+	// que já foi traduzido ainda pode sair, mas leva a marca antiga.
 	s.firstSeq = nil
 	if firstSeq, continues := s.translator.begin(s.fwd); continues {
 		s.firstSeq = &firstSeq
@@ -150,6 +153,10 @@ type forwarder struct {
 	kind   string
 	fanout *fanout
 
+	routeID       uint64
+	routeExtID    uint8
+	routeRequired bool
+
 	ch   chan *rtp.Packet
 	done chan struct{}
 	once sync.Once
@@ -171,7 +178,19 @@ func newForwarder(
 		bufferSize = videoForwarderBuffer
 	}
 
+	var routeID uint64
+	routeExtID := slot.routeExtID
+	if routeExtID != 0 {
+		// Ao esgotar os IDs, o forwarder deixa de enviar em vez de reutilizar um ID.
+		if slot.lastRouteID != ^uint64(0) {
+			slot.lastRouteID++
+			routeID = slot.lastRouteID
+		}
+	}
 	return &forwarder{
+		routeID:         routeID,
+		routeExtID:      routeExtID,
+		routeRequired:   slot.routeRequired,
 		slot:            slot,
 		owner:           owner,
 		kind:            kind,
@@ -257,7 +276,7 @@ func (f *forwarder) run() {
 				continue
 			}
 
-			if err := f.slot.local.WriteRTP(pkt); err != nil {
+			if err := f.writeRTP(pkt); err != nil {
 				return
 			}
 		}

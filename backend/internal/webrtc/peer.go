@@ -127,9 +127,9 @@ func newPeer(m *Manager, room *Room, userID, clientID string) *Peer {
 		fanouts:          make(map[string]*fanout),
 		pendingVideoSubs: make(map[string]pendingVideoSubscription),
 		midRole:          make(map[string]trackRole),
-		activeMidRole: make(map[string]trackRole),
-		renegQueue:    make(chan func() error, 64),
-		renegStop:     make(chan struct{}),
+		activeMidRole:    make(map[string]trackRole),
+		renegQueue:       make(chan func() error, 64),
+		renegStop:        make(chan struct{}),
 	}
 	go p.renegWorker()
 	return p
@@ -367,8 +367,10 @@ func (p *Peer) handleOffer(
 		return err
 	}
 
+	var videoSlots, audioSlots []*slot
 	if firstOffer {
-		if err := p.allocateSlots(); err != nil {
+		videoSlots, audioSlots, err = p.allocateSlots(pc)
+		if err != nil {
 			return err
 		}
 	}
@@ -391,12 +393,27 @@ func (p *Peer) handleOffer(
 		return err
 	}
 
+	negotiated := negotiatedVideoRouteExtensions(pc, sdp, answer.SDP)
+	var routeUpdates []any
+	if firstOffer {
+		for _, s := range videoSlots {
+			s.routeExtID = negotiated[s.sender]
+			s.routeRequired = s.routeExtID != 0
+		}
+	} else {
+		routeUpdates = p.updateVideoRouteExtensions(negotiated)
+	}
 	p.sendToOwner(VoiceAnswer{
 		Type:      EventTypeVoiceAnswer,
 		ChannelID: p.room.channelID,
 		PeerID:    p.id,
 		SDP:       answer.SDP,
 	})
+	if firstOffer {
+		p.publishSlots(videoSlots, audioSlots)
+	} else {
+		p.sendRouteUpdates(routeUpdates)
+	}
 	return nil
 }
 
@@ -585,13 +602,8 @@ func (p *Peer) rebindVideoSlot(pub *Peer, kind string, track *webrtc.TrackRemote
 }
 
 // allocateSlots cria os slots de envio (N vídeo + K áudio) com tracks
-// placeholder (D5). As chamadas AddTransceiverFromTrack são feitas SEM p.mu;
-// as slices de slots são publicadas sob p.mu ao final.
-func (p *Peer) allocateSlots() error {
-	pc := p.PC()
-	if pc == nil {
-		return ErrVoiceNotFound
-	}
+// placeholder (D5), mas não os publica antes de negociar as extensões.
+func (p *Peer) allocateSlots(pc *webrtc.PeerConnection) ([]*slot, []*slot, error) {
 	n := p.m.cfg.VoiceVideoSlots
 	k := p.m.cfg.VoiceAudioSlots
 	videoCodec := p.m.api.videoCodec.RTPCodecCapability
@@ -609,12 +621,12 @@ func (p *Peer) allocateSlots() error {
 			"papo-video",
 		)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
 		sender, err := pc.AddTrack(track)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
 		s := &slot{
@@ -634,12 +646,12 @@ func (p *Peer) allocateSlots() error {
 			"papo-audio",
 		)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
 		sender, err := pc.AddTrack(track)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
 		audioSlots = append(audioSlots, &slot{
@@ -649,7 +661,15 @@ func (p *Peer) allocateSlots() error {
 		})
 	}
 
+	return videoSlots, audioSlots, nil
+}
+
+func (p *Peer) publishSlots(videoSlots, audioSlots []*slot) {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
 	p.videoSlots = videoSlots
 	p.audioSlots = audioSlots
 
@@ -660,15 +680,12 @@ func (p *Peer) allocateSlots() error {
 	p.pendingVideoSubs = make(map[string]pendingVideoSubscription)
 	p.mu.Unlock()
 
-	// O primeiro answer já pode ser emitido depois disso; processar aqui garante
-	// que subscribes recebidos cedo não sejam perdidos.
+	// Processa os subscribes que chegaram antes de publicar os slots.
 	for _, sub := range pending {
 		if err := p.assignVideoSlot(sub.pub, sub.kind); err != nil {
 			p.sendError(err)
 		}
 	}
-
-	return nil
 }
 
 // trackOfKind retorna a track recebida do peer para o kind (video/screen/audio).
@@ -917,6 +934,10 @@ func (p *Peer) videoRoutesLocked() []VoiceVideoRoute {
 			UserID:  s.owner.userID,
 			Kind:    s.kind,
 		}
+		if s.fwd != nil && s.fwd.routeID != 0 {
+			route.RTPRouteID = s.fwd.routeID
+			route.RTPRouteExtID = s.fwd.routeExtID
+		}
 		if s.firstSeq != nil {
 			firstSeq := *s.firstSeq
 			route.FirstSeq = &firstSeq
@@ -931,7 +952,8 @@ func sameVideoRoutes(a, b []VoiceVideoRoute) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].TrackID != b[i].TrackID || a[i].UserID != b[i].UserID || a[i].Kind != b[i].Kind {
+		if a[i].TrackID != b[i].TrackID || a[i].UserID != b[i].UserID || a[i].Kind != b[i].Kind ||
+			a[i].RTPRouteID != b[i].RTPRouteID || a[i].RTPRouteExtID != b[i].RTPRouteExtID {
 			return false
 		}
 		if (a[i].FirstSeq == nil) != (b[i].FirstSeq == nil) {
