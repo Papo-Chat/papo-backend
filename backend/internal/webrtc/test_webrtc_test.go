@@ -1670,3 +1670,66 @@ func TestUnregisterSSRCKeepsOtherPeer(t *testing.T) {
 		t.Fatal("o próprio dono não conseguiu remover o SSRC")
 	}
 }
+
+// TestLateLeaveCarriesOldPeerID reproduz a corrida da remoção assíncrona: a
+// PeerConnection do peer falha, o pion remove o peer na goroutine dele, e o
+// usuário entra de novo antes de o voice_leave do peer antigo ser enviado. O
+// cliente recebe o voice_joined do peer novo e só depois o voice_leave do
+// antigo; sem o peer_id, esse voice_leave encerraria a call nova.
+func TestLateLeaveCarriesOldPeerID(t *testing.T) {
+	cfg := &config.Config{
+		VoiceVideoCodec:         "vp8",
+		VoiceVideoSlots:         2,
+		VoiceAudioSlots:         2,
+		VoiceMaxRoomPeers:       10,
+		VoiceMaxRoomsPerUser:    1,
+		VoiceSignalRateLimit:    100,
+		VoiceSignalRateBurst:    100,
+		VoiceSubscribeRateLimit: 100,
+		VoiceSubscribeRateBurst: 100,
+		VoiceRoomCleanupGrace:   time.Hour,
+	}
+	var received []any
+	m := testManager(t, cfg)
+	m.signaler.VoiceAudience = func(channelID string) map[string]bool { return map[string]bool{"u": true} }
+	m.signaler.SendToClient = func(clientID string, event any) { received = append(received, event) }
+
+	rejoined := false
+	m.signaler.BroadcastToUsers = func(allowed map[string]bool, event any) {
+		if leave, ok := event.(VoiceLeave); ok && !rejoined {
+			// O usuário já está livre (a reserva da sala foi liberada antes do
+			// broadcast) e entra de novo antes de este voice_leave sair.
+			rejoined = true
+			if err := m.Join("ch", "u", "conn"); err != nil {
+				t.Fatalf("rejoin durante a remoção: %v", err)
+			}
+			received = append(received, leave)
+		}
+	}
+	defer m.Shutdown()
+
+	if err := m.Join("ch", "u", "conn"); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	room := m.getRoom("ch")
+	old := room.peer("u")
+	received = nil
+
+	room.removePeer(old) // o que OnConnectionStateChange(Failed) faz
+
+	if len(received) != 2 {
+		t.Fatalf("eventos = %#v, esperado voice_joined seguido de voice_leave", received)
+	}
+	joined, ok := received[0].(VoiceJoined)
+	if !ok {
+		t.Fatalf("primeiro evento = %T, esperado VoiceJoined", received[0])
+	}
+	leave, ok := received[1].(VoiceLeave)
+	if !ok {
+		t.Fatalf("segundo evento = %T, esperado VoiceLeave", received[1])
+	}
+	if leave.PeerID != old.id || leave.PeerID == joined.PeerID {
+		t.Fatalf("voice_leave atrasado com peer_id %q; esperado o do peer antigo (%q), diferente do novo (%q)",
+			leave.PeerID, old.id, joined.PeerID)
+	}
+}

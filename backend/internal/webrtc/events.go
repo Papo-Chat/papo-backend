@@ -115,10 +115,17 @@ type VoiceStateUpdate struct {
 
 // VoiceLeave é a saída de um usuário da call (explícita, WS caiu, sessão
 // revogada ou sala destruída), distribuída aos leitores do canal de voz.
+//
+// PeerID é o peer que saiu. A remoção pode acontecer fora da ordem do socket
+// (a PeerConnection falhou e o pion remove o peer na goroutine dele): o
+// usuário fica livre para entrar de novo antes de o voice_leave ser enviado,
+// e o voice_leave do peer antigo chega depois do voice_joined do novo. Pelo
+// PeerID o cliente sabe que a saída não é da call atual.
 type VoiceLeave struct {
 	Type      string `json:"type"`
 	ChannelID string `json:"channel_id"`
 	UserID    string `json:"user_id"`
+	PeerID    string `json:"peer_id"`
 }
 
 // ActiveSpeakerUpdate é o top-K de active speakers da sala, distribuído aos

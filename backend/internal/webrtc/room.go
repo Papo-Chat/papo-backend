@@ -601,10 +601,10 @@ func (r *Room) removePeer(peer *Peer) {
 	ownerClient := peer.ownerClientID()
 	peer.close()
 
-	r.broadcastLeave(r.m.audience(r.channelID), peer.userID, ownerClient)
+	r.broadcastLeave(r.m.audience(r.channelID), peer, ownerClient)
 }
 
-// broadcastLeave distribui o voice_leave de userID à audiência do canal e
+// broadcastLeave distribui o voice_leave do peer à audiência do canal e
 // garante que ele chegue também à conexão que estava na call (ownerClient).
 //
 // A audiência é quem tem connect_voice agora. Se o usuário perdeu essa
@@ -613,14 +613,15 @@ func (r *Room) removePeer(peer *Peer) {
 // confirmação da saída até desistir por timeout. A conexão dona recebe o
 // evento em unicast nesse caso; quem continua na audiência recebe pelo
 // broadcast, sem duplicar.
-func (r *Room) broadcastLeave(allowed map[string]bool, userID, ownerClient string) {
+func (r *Room) broadcastLeave(allowed map[string]bool, peer *Peer, ownerClient string) {
 	leave := VoiceLeave{
 		Type:      EventTypeVoiceLeave,
 		ChannelID: r.channelID,
-		UserID:    userID,
+		UserID:    peer.userID,
+		PeerID:    peer.id,
 	}
 	r.m.broadcastTo(allowed, leave)
-	if !allowed[userID] && ownerClient != "" && r.m.signaler.SendToClient != nil {
+	if !allowed[peer.userID] && ownerClient != "" && r.m.signaler.SendToClient != nil {
 		r.m.signaler.SendToClient(ownerClient, leave)
 	}
 }
@@ -864,7 +865,7 @@ func (r *Room) destroyWithClosedNotice() {
 			ChannelID: r.channelID,
 		})
 		ownerClient := p.ownerClientID()
-		r.broadcastLeave(allowed, p.userID, ownerClient)
+		r.broadcastLeave(allowed, p, ownerClient)
 		r.m.trackUserRoom(p.userID, r.channelID, false)
 		p.close()
 	}
