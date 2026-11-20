@@ -249,7 +249,7 @@ func (f *forwarder) run() {
 
 			// O slot pode ter mudado de ocupante enquanto este pacote estava em
 			// mãos: finish() só avisa o forwarder, não o interrompe. Um
-			// forwarder substituído não escreve mais nada.
+			// forwarder substituído não traduz mais nada (ver ssnTranslator).
 			switch f.slot.translator.forward(pkt, f) {
 			case forwardStop:
 				return
@@ -486,13 +486,18 @@ func isH264RandomAccessPacket(payload []byte) bool {
 // que o subscriber veja um stream contínuo mesmo quando o ocupante do slot
 // muda. O SSRC é sobrescrito pelo sender (não traduzimos).
 //
-// Ele também decide qual forwarder pode escrever no slot (current). Trocar o
-// ocupante chama finish() no forwarder antigo, mas a goroutine dele pode ter
-// um pacote em mãos e escrevê-lo depois que o novo começou; sem esta
-// checagem, pacotes do publisher antigo apareciam no meio do novo, com SSN
-// maior que o primeiro pacote dele. Como a troca e a tradução acontecem sob o
-// mesmo lock, todo pacote do ocupante antigo tem SSN menor que o firstSeq
-// devolvido por begin, e todo pacote do novo tem SSN igual ou maior.
+// Ele também decide qual forwarder pode traduzir pacotes do slot (current).
+// Trocar o ocupante chama finish() no forwarder antigo, mas a goroutine dele
+// pode ter pacotes em mãos; sem esta checagem, eles eram traduzidos depois do
+// primeiro pacote do novo publisher, com SSN maior que o dele.
+//
+// A garantia é sobre o SSN, não sobre o momento da escrita. O WriteRTP fica
+// fora do lock (o pion não é chamado com lock, e o pacer do GCC pode segurar
+// a escrita), então o forwarder antigo ainda pode escrever o pacote que já
+// tinha traduzido antes da troca. Esse pacote, e qualquer outro do ocupante
+// antigo, tem SSN menor que o firstSeq devolvido por begin; todo pacote do
+// novo tem SSN igual ou maior. É essa separação que o cliente usa para
+// descartar o que chega atrasado.
 //
 // O pion não reordena o que chega do publisher. Por isso, depois de cada
 // fronteira (begin ou restart), pacotes que chegam atrasados de antes dela

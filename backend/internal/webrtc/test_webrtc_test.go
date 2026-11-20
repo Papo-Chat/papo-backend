@@ -125,10 +125,11 @@ func TestSSNTranslator(t *testing.T) {
 }
 
 // TestReplacedForwarderCannotWrite garante que o forwarder antigo de um slot
-// não escreve mais depois da troca de ocupante. Antes, finish() só avisava a
-// goroutine, e um pacote que ela já tinha em mãos era escrito depois do
-// primeiro pacote do novo publisher, com SSN maior: o cliente via um pedaço
-// do vídeo antigo dentro do novo, sem como separar.
+// não traduz mais pacotes depois da troca de ocupante, e que o pacote que ele
+// já tinha traduzido (e ainda vai escrever) fica antes do firstSeq. Antes,
+// finish() só avisava a goroutine, e os pacotes que ela tinha em mãos saíam
+// depois do primeiro pacote do novo publisher, com SSN maior: o cliente via
+// um pedaço do vídeo antigo dentro do novo, sem como separar.
 func TestReplacedForwarderCannotWrite(t *testing.T) {
 	tr := &ssnTranslator{}
 	old := &forwarder{}
@@ -137,9 +138,22 @@ func TestReplacedForwarderCannotWrite(t *testing.T) {
 	tr.begin(old)
 	tr.forward(&rtp.Packet{Header: rtp.Header{SequenceNumber: 10}}, old)
 
-	firstSeq, _ := tr.begin(next)
+	// O forwarder antigo traduz um pacote e é substituído antes de chamar
+	// WriteRTP (que fica fora do lock): esse pacote ainda vai ser escrito
+	// depois da troca. Ele precisa cair antes do firstSeq, para o cliente
+	// descartá-lo.
+	inFlight := &rtp.Packet{Header: rtp.Header{SequenceNumber: 11}}
+	if tr.forward(inFlight, old) != forwardWrite {
+		t.Fatal("pacote do ocupante atual foi recusado")
+	}
 
-	late := &rtp.Packet{Header: rtp.Header{SequenceNumber: 11}}
+	firstSeq, _ := tr.begin(next)
+	if int16(inFlight.Header.SequenceNumber-firstSeq) >= 0 {
+		t.Fatalf("pacote em voo do ocupante antigo tem SSN %d, não anterior ao firstSeq %d",
+			inFlight.Header.SequenceNumber, firstSeq)
+	}
+
+	late := &rtp.Packet{Header: rtp.Header{SequenceNumber: 12}}
 	if tr.forward(late, old) != forwardStop {
 		t.Fatal("forwarder substituído conseguiu escrever no slot")
 	}
