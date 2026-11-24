@@ -559,15 +559,26 @@ func TestValidateSDPSizeBudget(t *testing.T) {
 }
 
 func TestValidateSDPTooManyMlines(t *testing.T) {
-	cfg := &config.Config{VoiceVideoCodec: "vp8", VoiceVideoSlots: 1, VoiceAudioSlots: 1}
-	// teto = 3 + 1 + 1 = 5 m-lines; 6 m-lines excede
-	var sb strings.Builder
-	sb.WriteString("v=0\no=- 1 2 IN IP4 127.0.0.1\ns=-\nt=0 0\n")
-	for i := 0; i < 6; i++ {
-		sb.WriteString(fmt.Sprintf("m=audio 9 UDP/TLS/RTP/SAVPF 111\nc=IN IP4 127.0.0.1\na=mid:%d\n", i))
+	cfg := &config.Config{
+		VoiceVideoCodec:       "vp8",
+		VoiceVideoSlots:       1,
+		VoiceAudioSlots:       1,
+		VoiceScreenAudioSlots: 1,
 	}
-	if err := validateSDP(sb.String(), cfg, true); !errors.Is(err, ErrVoiceInvalidSDP) {
-		t.Errorf("6 m-lines: esperado ErrVoiceInvalidSDP, obtive %v", err)
+	// teto = 4 (mic + câmera + screen + áudio da tela) + 1 + 1 + 1 = 7 m-lines
+	build := func(n int) string {
+		var sb strings.Builder
+		sb.WriteString("v=0\no=- 1 2 IN IP4 127.0.0.1\ns=-\nt=0 0\n")
+		for i := 0; i < n; i++ {
+			sb.WriteString(fmt.Sprintf("m=audio 9 UDP/TLS/RTP/SAVPF 111\nc=IN IP4 127.0.0.1\na=mid:%d\n", i))
+		}
+		return sb.String()
+	}
+	if err := validateSDP(build(7), cfg, true); err != nil {
+		t.Errorf("7 m-lines (no teto): esperado nil, obtive %v", err)
+	}
+	if err := validateSDP(build(8), cfg, true); !errors.Is(err, ErrVoiceInvalidSDP) {
+		t.Errorf("8 m-lines: esperado ErrVoiceInvalidSDP, obtive %v", err)
 	}
 }
 
