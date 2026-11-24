@@ -472,8 +472,10 @@ func (m *Manager) AddICECandidate(channelID, userID, clientID, candidate, sdpMid
 	})
 }
 
-// Subscribe faz o subscriber começar a receber a track de vídeo/screen do
-// publisher em um slot de vídeo (vídeo sempre explícito, D5).
+// Subscribe faz o subscriber começar a receber uma track explícita do
+// publisher: vídeo/screen em um slot de vídeo (vídeo sempre explícito, D5) ou
+// o áudio da transmissão (screen_audio) em um slot de áudio de tela. As
+// assinaturas de screen e screen_audio são independentes.
 func (m *Manager) Subscribe(
 	channelID,
 	subscriberID,
@@ -485,7 +487,7 @@ func (m *Manager) Subscribe(
 		return err
 	}
 
-	if kind != "video" && kind != "screen" {
+	if !subscribableKind(kind) {
 		return ErrVoiceInvalidSDP
 	}
 
@@ -505,19 +507,20 @@ func (m *Manager) Subscribe(
 		return ErrVoiceNotFound
 	}
 
-	if kind == "video" && !pub.hasActiveTrack("video") {
+	if !pub.hasActiveTrack(kind) {
 		return ErrVoiceNotFound
 	}
 
-	if kind == "screen" && !pub.hasActiveTrack("screen") {
-		return ErrVoiceNotFound
-	}
-
-	return sub.subscribeVideo(pub, kind)
+	return sub.subscribeTrack(pub, kind)
 }
 
-// Unsubscribe para de forwardar a track de vídeo/screen do publisher para o
-// subscriber (o slot fica vazio, sem renegociação).
+// subscribableKind indica os kinds aceitos em track_subscribe/unsubscribe.
+func subscribableKind(kind string) bool {
+	return kind == "video" || kind == "screen" || kind == "screen_audio"
+}
+
+// Unsubscribe para de forwardar a track (video/screen/screen_audio) do
+// publisher para o subscriber (o slot fica vazio, sem renegociação).
 func (m *Manager) Unsubscribe(
 	channelID,
 	subscriberID,
@@ -534,7 +537,11 @@ func (m *Manager) Unsubscribe(
 		return err
 	}
 
-	sub.releaseVideoSlot(publisherID, kind)
+	if !subscribableKind(kind) {
+		return ErrVoiceInvalidSDP
+	}
+
+	sub.releaseSlot(publisherID, kind)
 	return nil
 }
 

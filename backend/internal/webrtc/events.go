@@ -73,8 +73,10 @@ type VoiceICECandidate struct {
 }
 
 // VoiceStateUpdate é a mudança de estado de um usuário na call (mic/câmera/
-// screen share), distribuída aos leitores do canal de voz (inclui quem está
-// fora da call).
+// screen share/áudio da tela), distribuída aos leitores do canal de voz
+// (inclui quem está fora da call). ScreenAudio=true indica que a faixa de
+// áudio da transmissão já chegou ao SFU e pode ser assinada
+// (track_subscribe kind=screen_audio).
 type VoiceStateUpdate struct {
 	Type          string `json:"type"`
 	ChannelID     string `json:"channel_id"`
@@ -82,6 +84,7 @@ type VoiceStateUpdate struct {
 	Muted         bool   `json:"muted"`
 	CameraOn      bool   `json:"camera_on"`
 	ScreenSharing bool   `json:"screen_sharing"`
+	ScreenAudio   bool   `json:"screen_audio"`
 }
 
 // VoiceLeave é a saída de um usuário da call (explícita, WS caiu, sessão
@@ -102,10 +105,13 @@ type ActiveSpeakerUpdate struct {
 
 // VoiceAudioRoute associa a track de um slot de áudio do SFU ao publisher
 // atualmente encaminhado naquele slot. TrackID é o ID da TrackLocalStaticRTP
-// ("papo-audio-N"), exposto no browser como RTCTrackEvent.track.id.
+// ("papo-audio-N" para microfone, "papo-screen-audio-N" para o áudio de uma
+// transmissão), exposto no browser como RTCTrackEvent.track.id. Kind é
+// "audio" (microfone) ou "screen_audio" (áudio da transmissão).
 type VoiceAudioRoute struct {
 	TrackID string `json:"track_id"`
 	UserID  string `json:"user_id"`
+	Kind    string `json:"kind"`
 }
 
 // VoiceAudioRoutes é um snapshot completo, específico do subscriber, das

@@ -2743,6 +2743,12 @@ paths:
         `voice_answer`, `voice_offer` outbound, `voice_ice_candidate` outbound e erros de sinalização são enviados somente para a conexão dona da call, não para todas as abas/dispositivos do mesmo usuário.
         Se a conexão WebSocket dona da call fechar, o Peer é removido mesmo que o mesmo usuário possua outra conexão WebSocket aberta.
 
+        Áudio da transmissão (screen share) em faixa separada do microfone:
+        o cliente NÃO deve mixar o áudio capturado da tela na faixa do microfone. Enquanto transmite, o cliente publica o áudio da tela em uma segunda m-line de áudio (`sendonly`), no `voice_offer` enviado depois de `screen_share_start`; a m-line do microfone vem antes no SDP e continua publicando. Uma segunda publicação de áudio fora de uma transmissão, ou uma terceira, resulta em `voice-invalid-sdp`.
+        Para receber, o primeiro `voice_offer` deve oferecer `VOICE_AUDIO_SLOTS + VOICE_SCREEN_AUDIO_SLOTS` m-lines de áudio receptoras (padrão 8 + 2): as primeiras `VOICE_AUDIO_SLOTS` recebem os microfones (`papo-audio-N`) e as seguintes o áudio das transmissões (`papo-screen-audio-N`). Um cliente que oferece só as m-lines de microfone continua funcionando e apenas não recebe áudio de transmissões.
+        O áudio da transmissão só é encaminhado a quem assina: quando `screen_audio` for `true` no estado do publicador, enviar `track_subscribe` com `kind: "screen_audio"` (independente da assinatura de `screen`). A rota aparece em `voice_audio_routes` com `kind: "screen_audio"`. Esse áudio não participa do active-speaker e não é afetado por `voice_mute`.
+        Para que os participantes não ouçam a própria voz de volta pela transmissão, o cliente transmissor deve capturar o áudio da tela sem o áudio da própria aplicação (por exemplo `restrictOwnAudio` em `getDisplayMedia`, quando o navegador suportar); o servidor apenas encaminha os pacotes e não consegue remover vozes de dentro da faixa capturada.
+
         | Event            | Direction | Payload                                                                           |
         | ---------        | --------- | ---------------------------------------------------------------------             |
         | `message`        | outbound  | `{ type: "message", id, channel_id, author_id, webhook_id?, external_author?, content, reply_to?, attachments?, created_at }` (reply_to: null quando não é resposta; sem reactions/embeds/user_reactions; webhook_id/external_author presentes somente em mensagens de webhook) |
@@ -2774,20 +2780,20 @@ paths:
         | `voice_offer`    | inbound   | `{ type: "voice_offer", channel_id, sdp }` (client-offers-first; renegociações do servidor chegam como `voice_offer` outbound) |
         | `voice_answer`   | inbound   | `{ type: "voice_answer", channel_id, sdp }`                                             |
         | `voice_ice_candidate` | inbound | `{ type: "voice_ice_candidate", channel_id, candidate, sdp_mid?, sdp_mline_index? }`    |
-        | `track_subscribe`   | inbound | `{ type: "track_subscribe", channel_id, publisher_id, kind }` (kind: video/screen; vídeo só é forwardado com subscribe explícito) |
-        | `track_unsubscribe` | inbound | `{ type: "track_unsubscribe", channel_id, publisher_id, kind }` (kind: video/screen) |
-        | `voice_mute` | inbound | `{ type: "voice_mute", channel_id, muted }` (mute autoritativo do servidor: usuário mutado não entra no active-speaker e seu áudio não é forwardado pelo SFU) |
+        | `track_subscribe`   | inbound | `{ type: "track_subscribe", channel_id, publisher_id, kind }` (kind: video/screen/screen_audio; vídeo e áudio de transmissão só são forwardados com subscribe explícito; sem a track ativa no publicador → `voice-not-found`; sem slot livre → `voice-room-full`) |
+        | `track_unsubscribe` | inbound | `{ type: "track_unsubscribe", channel_id, publisher_id, kind }` (kind: video/screen/screen_audio) |
+        | `voice_mute` | inbound | `{ type: "voice_mute", channel_id, muted }` (mute autoritativo do servidor: usuário mutado não entra no active-speaker e o áudio do seu microfone não é forwardado pelo SFU, inclusive durante uma transmissão; o áudio da tela tem faixa própria e não é afetado) |
         | `voice_camera` | inbound | `{ type: "voice_camera", channel_id, on }` (deve ser enviado antes do `voice_offer` correspondente; o backend usa esse estado para identificar/validar a publicação de câmera) |
-        | `screen_share_start` | inbound | `{ type: "screen_share_start", channel_id }` (deve ser enviado antes do `voice_offer` que adiciona/publica a track de screen) |
-        | `screen_share_stop` | inbound | `{ type: "screen_share_stop", channel_id }` (deve ser enviado antes do `voice_offer` que remove/inativa a publicação de screen) |
-        | `voice_joined`   | unicast   | `{ type: "voice_joined", channel_id, members: (user_id, muted, camera_on, screen_sharing)[], active_speakers: user_id[] }` (estado inicial do late joiner, o peer novo começa com muted=true camera_on=false screen_sharing=false) |
+        | `screen_share_start` | inbound | `{ type: "screen_share_start", channel_id }` (deve ser enviado antes do `voice_offer` que adiciona/publica a track de screen e, quando houver, a segunda m-line de áudio com o áudio da tela) |
+        | `screen_share_stop` | inbound | `{ type: "screen_share_stop", channel_id }` (deve ser enviado antes do `voice_offer` que remove/inativa a publicação de screen e do áudio da tela) |
+        | `voice_joined`   | unicast   | `{ type: "voice_joined", channel_id, members: (user_id, muted, camera_on, screen_sharing, screen_audio)[], active_speakers: user_id[] }` (estado inicial do late joiner, o peer novo começa com muted=true camera_on=false screen_sharing=false screen_audio=false) |
         | `voice_answer`   | unicast   | `{ type: "voice_answer", channel_id, sdp }` (resposta ao `voice_offer` do cliente)      |
         | `voice_offer`    | unicast   | `{ type: "voice_offer", channel_id, sdp }` (renegociação iniciada pelo servidor)        |
         | `voice_ice_candidate` | unicast | `{ type: "voice_ice_candidate", channel_id, candidate, sdp_mid?, sdp_mline_index? }`    |
-        | `voice_state_update` | outbound | `{ type: "voice_state_update", channel_id, user_id, muted, camera_on, screen_sharing }` |
+        | `voice_state_update` | outbound | `{ type: "voice_state_update", channel_id, user_id, muted, camera_on, screen_sharing, screen_audio }` (screen_audio: true quando a faixa de áudio da transmissão já chegou ao SFU e pode ser assinada) |
         | `voice_leave`    | outbound  | `{ type: "voice_leave", channel_id, user_id }` (explícita, WS caiu, sessão revogada ou sala destruída) |
         | `active_speaker_update` | outbound | `{ type: "active_speaker_update", channel_id, user_ids: user_id[] }` (top-K active speakers) |
-        | `voice_audio_routes` | unicast | `{ type: "voice_audio_routes", channel_id, routes: { track_id, user_id }[] }` (snapshot específico do subscriber; `track_id` é o ID da track SFU `papo-audio-N`; substitui integralmente o snapshot anterior e permite volume/mute local por usuário) |
+        | `voice_audio_routes` | unicast | `{ type: "voice_audio_routes", channel_id, routes: { track_id, user_id, kind }[] }` (snapshot específico do subscriber; kind: `audio` = microfone, `track_id` `papo-audio-N`; `screen_audio` = áudio da transmissão do usuário, `track_id` `papo-screen-audio-N`; substitui integralmente o snapshot anterior e permite volume/mute local por usuário e por transmissão) |
       responses:
         '101':
           description: WebSocket upgrade

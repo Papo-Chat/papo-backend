@@ -479,7 +479,7 @@ func (r *Room) rebindPublishedTrack(pub *Peer, kind string, track *webrtc.TrackR
 	r.mu.Unlock()
 
 	for _, sub := range subs {
-		sub.rebindVideoSlot(pub, kind, track)
+		sub.rebindSlot(pub, kind, track)
 	}
 }
 
@@ -760,9 +760,11 @@ func (r *Room) setPublishedKind(peer *Peer, kind string, on bool) {
 
 	switch kind {
 	case "video":
-		state, changed = peer.updatePublishedMedia(&on, nil)
+		state, changed = peer.updatePublishedMedia(&on, nil, nil)
 	case "screen":
-		state, changed = peer.updatePublishedMedia(nil, &on)
+		state, changed = peer.updatePublishedMedia(nil, &on, nil)
+	case "screen_audio":
+		state, changed = peer.updatePublishedMedia(nil, nil, &on)
 	default:
 		return
 	}
@@ -782,6 +784,7 @@ func (r *Room) broadcastState(state models.VoiceState) {
 		Muted:         state.Muted,
 		CameraOn:      state.CameraOn,
 		ScreenSharing: state.ScreenSharing,
+		ScreenAudio:   state.ScreenAudio,
 	})
 }
 

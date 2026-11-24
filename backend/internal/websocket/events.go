@@ -127,7 +127,8 @@ type VoiceICECandidateInbound struct {
 	SDPMLineIndex *int      `json:"sdp_mline_index"`
 }
 
-// TrackSubscribeInbound pede o forward da track de vídeo/screen do publisher.
+// TrackSubscribeInbound pede o forward de uma track do publisher. Kind:
+// video, screen ou screen_audio (áudio da transmissão, faixa separada do mic).
 type TrackSubscribeInbound struct {
 	Type        EventType `json:"type"`
 	ChannelID   string    `json:"channel_id"`
@@ -135,7 +136,8 @@ type TrackSubscribeInbound struct {
 	Kind        string    `json:"kind"`
 }
 
-// TrackUnsubscribeInbound para o forward da track de vídeo/screen do publisher.
+// TrackUnsubscribeInbound para o forward da track (video/screen/screen_audio)
+// do publisher.
 type TrackUnsubscribeInbound struct {
 	Type        EventType `json:"type"`
 	ChannelID   string    `json:"channel_id"`
