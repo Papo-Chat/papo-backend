@@ -13,14 +13,22 @@ import (
 
 // trackRole classifica as m-lines de vídeo/áudio do offer do cliente. A
 // primeira m-line de vídeo é a câmera; a segunda (quando existe) é o screen
-// share (seção 5.6 — determinístico, sem depender de label).
+// share (seção 5.6 — determinístico, sem depender de label). O mesmo vale
+// para áudio: a primeira publicação é o microfone e a segunda, durante a
+// transmissão, é o áudio da tela.
 type trackRole int
 
 const (
 	roleAudio trackRole = iota
 	roleCamera
 	roleScreen
+	roleScreenAudio
 )
+
+// isVideoKind indica os kinds que carregam vídeo (precisam de keyframe/PLI).
+func isVideoKind(kind string) bool {
+	return kind == "video" || kind == "screen"
+}
 
 // Peer é a PeerConnection de um usuário em uma sala (D10: 1 peer por usuário
 // por sala, não por conexão WS). A PC só existe após o primeiro voice_offer.
@@ -56,6 +64,10 @@ type Peer struct {
 	screenTrack *webrtc.TrackRemote // screen share
 	audioSSRC   uint32              // SSRC da track de áudio (registro p/ active speaker)
 
+	// Áudio da tela: faixa própria, separada do microfone. Não entra no
+	// active speaker (o SSRC não é registrado) e não é afetada pelo mute.
+	screenAudioTrack *webrtc.TrackRemote
+
 	// fanouts: 1 reader por track recebida (kind → fanout). Os subscribers
 	// forwardam via o fanout do publisher (nunca chamam ReadRTP diretamente).
 	fanouts map[string]*fanout
@@ -68,13 +80,21 @@ type Peer struct {
 	activeMidRole map[string]trackRole
 
 	// MID ao qual cada TrackRemote armazenada pertence.
-	audioMID  string
-	videoMID  string
-	screenMID string
+	audioMID       string
+	videoMID       string
+	screenMID      string
+	screenAudioMID string
 
-	// slots de envio (servidor → cliente): N vídeo + K áudio (D5)
-	videoSlots []*slot
-	audioSlots []*slot
+	// slots de envio (servidor → cliente): N vídeo + K áudio (D5) + S áudio
+	// de tela. Os slots de áudio de tela só são ocupados por assinatura
+	// explícita (track_subscribe kind=screen_audio), como os de vídeo.
+	videoSlots       []*slot
+	audioSlots       []*slot
+	screenAudioSlots []*slot
+
+	// slotsReady vira true quando allocateSlots publicou os slots. Não dá
+	// para inferir isso pelo tamanho dos pools: um pool pode ter tamanho 0.
+	slotsReady bool
 
 	// Subscribes podem chegar entre voice_joined e o primeiro voice_answer,
 	// antes de allocateSlots publicar os slots. Mantemos esses pedidos
@@ -87,6 +107,7 @@ type Peer struct {
 	muted         bool
 	cameraOn      bool
 	screenSharing bool
+	screenAudio   bool
 
 	// Intenção enviada pelo cliente ANTES do voice_offer. É separada do estado
 	// publicado para que o backend consiga classificar os MIDs sem anunciar
@@ -130,17 +151,6 @@ func (p *Peer) isMuted() bool {
 	return p.muted
 }
 
-func (p *Peer) shouldForwardAudio() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// O frontend publica uma única track mixada (mic + áudio da tela).
-	// Quando o mic está mutado, a fonte do mic é zerada localmente; durante
-	// screen share a track ainda precisa ser encaminhada por causa do áudio
-	// capturado da aba/sistema.
-	return !p.muted || p.screenSharing
-}
-
 // renegWorker processa a fila de renegociação sequencialmente (D4 — pion não
 // serializa CreateOffer/SetLocalDescription/SetRemoteDescription).
 func (p *Peer) renegWorker() {
@@ -173,7 +183,9 @@ func (p *Peer) audioRoutingSnapshot() (
 		return true, nil, nil
 	}
 
-	return p.muted && !p.screenSharing,
+	// O áudio da tela tem faixa própria; o mute vale para o microfone mesmo
+	// durante a transmissão.
+	return p.muted,
 		p.trackOfKindLocked("audio"),
 		append([]string(nil), p.audioSet...)
 }
@@ -270,7 +282,7 @@ func (p *Peer) handleOffer(
 	previousRoles := cloneTrackRoles(p.midRole)
 	previousActive := cloneTrackRoles(p.activeMidRole)
 
-	firstOffer := len(p.videoSlots) == 0 && len(p.audioSlots) == 0
+	firstOffer := !p.slotsReady
 
 	p.mu.Unlock()
 
@@ -294,6 +306,9 @@ func (p *Peer) handleOffer(
 
 	screenStopped := hasRole(previousActive, roleScreen) &&
 		!hasRole(activeRoles, roleScreen)
+
+	screenAudioStopped := hasRole(previousActive, roleScreenAudio) &&
+		!hasRole(activeRoles, roleScreenAudio)
 
 	p.mu.Unlock()
 
@@ -324,6 +339,11 @@ func (p *Peer) handleOffer(
 	if screenStopped {
 		p.room.releasePublishedKind(p, "screen")
 		p.room.setPublishedKind(p, "screen", false)
+	}
+
+	if screenAudioStopped {
+		p.room.releasePublishedKind(p, "screen_audio")
+		p.room.setPublishedKind(p, "screen_audio", false)
 	}
 
 	answer, err := pc.CreateAnswer(nil)
@@ -449,6 +469,14 @@ func (p *Peer) onIncomingTrack(track *webrtc.TrackRemote, mid string) {
 
 		p.screenTrack = track
 		p.screenMID = mid
+
+	case roleScreenAudio:
+		oldFanout = p.fanouts["screen_audio"]
+
+		// O SSRC NÃO é registrado no active speaker: som da transmissão não
+		// conta como o usuário falando.
+		p.screenAudioTrack = track
+		p.screenAudioMID = mid
 	}
 	p.mu.Unlock()
 
@@ -479,13 +507,31 @@ func (p *Peer) onIncomingTrack(track *webrtc.TrackRemote, mid string) {
 		// sinal de "track pronta", não apenas intenção de publicar.
 		p.room.setPublishedKind(p, "screen", true)
 		p.room.rebindPublishedTrack(p, "screen", track)
+	case roleScreenAudio:
+		// O reader começa já: sem ele os pacotes ficariam acumulando no
+		// receiver enquanto ninguém assina o áudio da transmissão.
+		_ = p.fanoutFor("screen_audio", track)
+		p.room.setPublishedKind(p, "screen_audio", true)
+		p.room.rebindPublishedTrack(p, "screen_audio", track)
 	}
 }
 
-func (p *Peer) rebindVideoSlot(pub *Peer, kind string, track *webrtc.TrackRemote) {
+// slotPoolLocked retorna o pool de slots usado para o kind assinável: vídeo e
+// screen dividem os slots de vídeo; o áudio da tela tem os seus. O caller
+// segura p.mu.
+func (p *Peer) slotPoolLocked(kind string) []*slot {
+	if kind == "screen_audio" {
+		return p.screenAudioSlots
+	}
+	return p.videoSlots
+}
+
+// rebindSlot troca a track de origem dos slots que já forwardam (pub, kind),
+// quando o publisher republica a track em uma renegociação.
+func (p *Peer) rebindSlot(pub *Peer, kind string, track *webrtc.TrackRemote) {
 	p.mu.Lock()
 	hasSlot := false
-	for _, s := range p.videoSlots {
+	for _, s := range p.slotPoolLocked(kind) {
 		if s.owner == pub && s.kind == kind {
 			hasSlot = true
 			break
@@ -507,7 +553,7 @@ func (p *Peer) rebindVideoSlot(pub *Peer, kind string, track *webrtc.TrackRemote
 		return
 	}
 	rebound := false
-	for _, s := range p.videoSlots {
+	for _, s := range p.slotPoolLocked(kind) {
 		if s.owner == pub && s.kind == kind && s.src != track {
 			s.assignWithFanout(pub, kind, track, fanout)
 			rebound = true
@@ -515,13 +561,17 @@ func (p *Peer) rebindVideoSlot(pub *Peer, kind string, track *webrtc.TrackRemote
 	}
 	p.mu.Unlock()
 
-	if rebound {
+	if rebound && isVideoKind(kind) {
 		sendPLIBurst(pub.PC(), track)
 	}
 }
 
-// allocateSlots cria os slots de envio (N vídeo + K áudio) com tracks
-// placeholder (D5). As chamadas AddTransceiverFromTrack são feitas SEM p.mu;
+// allocateSlots cria os slots de envio (N vídeo + K áudio + S áudio de tela)
+// com tracks placeholder (D5). A ordem importa: o AddTrack do pion reaproveita
+// os transceivers na ordem das m-lines do offer, então os K primeiros
+// transceivers de áudio do cliente ficam com o microfone dos participantes e
+// os S seguintes com o áudio das transmissões. Cliente que não oferece os S
+// extras entra normalmente e apenas não recebe esse áudio. As chamadas AddTransceiverFromTrack são feitas SEM p.mu;
 // as slices de slots são publicadas sob p.mu ao final.
 func (p *Peer) allocateSlots() error {
 	pc := p.PC()
@@ -530,6 +580,7 @@ func (p *Peer) allocateSlots() error {
 	}
 	n := p.m.cfg.VoiceVideoSlots
 	k := p.m.cfg.VoiceAudioSlots
+	sa := p.m.cfg.VoiceScreenAudioSlots
 	videoCodec := p.m.api.videoCodec.RTPCodecCapability
 	audioCodec := webrtc.RTPCodecCapability{
 		MimeType:  webrtc.MimeTypeOpus,
@@ -585,9 +636,34 @@ func (p *Peer) allocateSlots() error {
 		})
 	}
 
+	screenAudioSlots := make([]*slot, 0, sa)
+	for i := 0; i < sa; i++ {
+		track, err := webrtc.NewTrackLocalStaticRTP(
+			audioCodec,
+			fmt.Sprintf("papo-screen-audio-%d", i),
+			"papo-screen-audio",
+		)
+		if err != nil {
+			return err
+		}
+
+		sender, err := pc.AddTrack(track)
+		if err != nil {
+			return err
+		}
+
+		screenAudioSlots = append(screenAudioSlots, &slot{
+			peer:   p,
+			sender: sender,
+			local:  track,
+		})
+	}
+
 	p.mu.Lock()
 	p.videoSlots = videoSlots
 	p.audioSlots = audioSlots
+	p.screenAudioSlots = screenAudioSlots
+	p.slotsReady = true
 
 	pending := make([]pendingVideoSubscription, 0, len(p.pendingVideoSubs))
 	for _, sub := range p.pendingVideoSubs {
@@ -599,7 +675,7 @@ func (p *Peer) allocateSlots() error {
 	// O primeiro answer já pode ser emitido depois disso; processar aqui garante
 	// que subscribes recebidos cedo não sejam perdidos.
 	for _, sub := range pending {
-		if err := p.assignVideoSlot(sub.pub, sub.kind); err != nil {
+		if err := p.assignSlot(sub.pub, sub.kind); err != nil {
 			p.mu.Lock()
 			clientID := p.signalingClient
 			p.mu.Unlock()
@@ -610,7 +686,8 @@ func (p *Peer) allocateSlots() error {
 	return nil
 }
 
-// trackOfKind retorna a track recebida do peer para o kind (video/screen/audio).
+// trackOfKind retorna a track recebida do peer para o kind
+// (video/screen/audio/screen_audio).
 func (p *Peer) trackOfKind(kind string) *webrtc.TrackRemote {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -636,6 +713,15 @@ func (p *Peer) trackOfKindLocked(kind string) *webrtc.TrackRemote {
 			return nil
 		}
 		return p.screenTrack
+
+	case "screen_audio":
+		if p.screenAudioTrack == nil {
+			return nil
+		}
+		if p.activeMidRole[p.screenAudioMID] != roleScreenAudio {
+			return nil
+		}
+		return p.screenAudioTrack
 
 	case "audio":
 		if p.audioTrack == nil {
@@ -683,9 +769,10 @@ func (p *Peer) fanoutFor(kind string, track *webrtc.TrackRemote) *fanout {
 	p.fanouts[kind] = f
 
 	// Áudio precisa ser lido mesmo sem subscribers para alimentar active
-	// speaker. Vídeo/screen ficam lazy até assignWithFanout(), para não
-	// consumir o keyframe inicial antes do subscriber estar conectado.
-	if kind == "audio" {
+	// speaker; o áudio da tela também começa já, para não acumular pacotes
+	// enquanto ninguém assina. Vídeo/screen ficam lazy até assignWithFanout(),
+	// para não consumir o keyframe inicial antes do subscriber estar conectado.
+	if !isVideoKind(kind) {
 		f.start()
 	}
 
@@ -713,10 +800,10 @@ func videoSubscriptionKey(pub *Peer, kind string) string {
 	return pub.userID + ":" + kind
 }
 
-// subscribeVideo aceita também o período entre voice_joined e allocateSlots.
-// Antes, len(videoSlots)==0 era interpretado como "sala cheia", embora os
-// slots simplesmente ainda não tivessem sido criados.
-func (p *Peer) subscribeVideo(pub *Peer, kind string) error {
+// subscribeTrack assina uma track explícita do publisher (video, screen ou
+// screen_audio). Aceita também o período entre voice_joined e allocateSlots:
+// sem isso, "slots ainda não criados" era interpretado como "sala cheia".
+func (p *Peer) subscribeTrack(pub *Peer, kind string) error {
 	if pub == nil {
 		return ErrVoiceNotFound
 	}
@@ -726,7 +813,7 @@ func (p *Peer) subscribeVideo(pub *Peer, kind string) error {
 		p.mu.Unlock()
 		return ErrVoiceRoomClosed
 	}
-	if len(p.videoSlots) == 0 {
+	if !p.slotsReady {
 		p.pendingVideoSubs[videoSubscriptionKey(pub, kind)] = pendingVideoSubscription{
 			pub:  pub,
 			kind: kind,
@@ -736,12 +823,12 @@ func (p *Peer) subscribeVideo(pub *Peer, kind string) error {
 	}
 	p.mu.Unlock()
 
-	return p.assignVideoSlot(pub, kind)
+	return p.assignSlot(pub, kind)
 }
 
-// assignVideoSlot faz o subscriber começar a receber a track de vídeo/screen
-// do publisher em um slot de vídeo (D5). Sem slot livre → ErrVoiceRoomFull.
-func (p *Peer) assignVideoSlot(pub *Peer, kind string) error {
+// assignSlot faz o subscriber começar a receber a track do publisher em um
+// slot do pool do kind (D5). Sem slot livre → ErrVoiceRoomFull.
+func (p *Peer) assignSlot(pub *Peer, kind string) error {
 	track := pub.trackOfKind(kind)
 	if track == nil {
 		return ErrVoiceNotFound
@@ -761,7 +848,9 @@ func (p *Peer) assignVideoSlot(pub *Peer, kind string) error {
 		return ErrVoiceRoomClosed
 	}
 
-	slot := p.findVideoSlotFor(pub, kind)
+	beforeRoutes := p.audioRoutesLocked()
+
+	slot := p.findSlotFor(pub, kind)
 	if slot == nil {
 		p.mu.Unlock()
 		return ErrVoiceRoomFull
@@ -769,25 +858,36 @@ func (p *Peer) assignVideoSlot(pub *Peer, kind string) error {
 
 	slot.assignWithFanout(pub, kind, track, fanout)
 
+	afterRoutes := p.audioRoutesLocked()
+	clientID := p.signalingClient
+
 	p.mu.Unlock()
 
-	// Pion chamada com p.mu solto. Um pequeno burst melhora a recuperação
-	// quando o primeiro PLI coincide com a ativação do encoder/browser.
-	sendPLIBurst(pubPC, track)
+	// Só o áudio da tela aparece nas rotas; para vídeo o snapshot não muda.
+	if !sameAudioRoutes(beforeRoutes, afterRoutes) {
+		p.sendAudioRoutes(clientID, afterRoutes)
+	}
+
+	if isVideoKind(kind) {
+		// Pion chamada com p.mu solto. Um pequeno burst melhora a recuperação
+		// quando o primeiro PLI coincide com a ativação do encoder/browser.
+		sendPLIBurst(pubPC, track)
+	}
 
 	return nil
 }
 
-// findVideoSlotFor retorna o slot para (owner, kind): o slot já ocupado por
-// (owner, kind) [reassign] ou um slot livre. Nil quando não há (o caller
-// segura peer.mu).
-func (p *Peer) findVideoSlotFor(owner *Peer, kind string) *slot {
-	for _, s := range p.videoSlots {
+// findSlotFor retorna o slot para (owner, kind) no pool do kind: o slot já
+// ocupado por (owner, kind) [reassign] ou um slot livre. Nil quando não há (o
+// caller segura peer.mu).
+func (p *Peer) findSlotFor(owner *Peer, kind string) *slot {
+	pool := p.slotPoolLocked(kind)
+	for _, s := range pool {
 		if s.owner == owner && s.kind == kind {
 			return s
 		}
 	}
-	for _, s := range p.videoSlots {
+	for _, s := range pool {
 		if s.owner == nil {
 			return s
 		}
@@ -795,24 +895,34 @@ func (p *Peer) findVideoSlotFor(owner *Peer, kind string) *slot {
 	return nil
 }
 
-// releaseVideoSlot para de forwardar a track do publisher (o slot fica vazio).
-func (p *Peer) releaseVideoSlot(pubID, kind string) {
+// releaseSlot para de forwardar a track do publisher (o slot fica vazio).
+func (p *Peer) releaseSlot(pubID, kind string) {
 	pub := p.room.peer(pubID) // resolve ANTES de p.mu (evita p.mu → r.mu)
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	before := p.audioRoutesLocked()
 	if pub != nil {
 		delete(p.pendingVideoSubs, videoSubscriptionKey(pub, kind))
-	}
-	for _, s := range p.videoSlots {
-		if s.owner == pub && s.kind == kind {
-			s.release()
+		for _, s := range p.slotPoolLocked(kind) {
+			if s.owner == pub && s.kind == kind {
+				s.release()
+			}
 		}
+	}
+	after := p.audioRoutesLocked()
+	clientID := p.signalingClient
+	p.mu.Unlock()
+
+	if !sameAudioRoutes(before, after) {
+		p.sendAudioRoutes(clientID, after)
 	}
 }
 
+// audioRoutesLocked lista as rotas de áudio do subscriber: os slots de
+// microfone (kind "audio") e os de áudio de transmissão (kind
+// "screen_audio"). O caller segura p.mu.
 func (p *Peer) audioRoutesLocked() []VoiceAudioRoute {
-	routes := make([]VoiceAudioRoute, 0, len(p.audioSlots))
+	routes := make([]VoiceAudioRoute, 0, len(p.audioSlots)+len(p.screenAudioSlots))
 	for _, s := range p.audioSlots {
 		if s == nil || s.local == nil || s.owner == nil {
 			continue
@@ -820,6 +930,17 @@ func (p *Peer) audioRoutesLocked() []VoiceAudioRoute {
 		routes = append(routes, VoiceAudioRoute{
 			TrackID: s.local.ID(),
 			UserID:  s.owner.userID,
+			Kind:    "audio",
+		})
+	}
+	for _, s := range p.screenAudioSlots {
+		if s == nil || s.local == nil || s.owner == nil {
+			continue
+		}
+		routes = append(routes, VoiceAudioRoute{
+			TrackID: s.local.ID(),
+			UserID:  s.owner.userID,
+			Kind:    "screen_audio",
 		})
 	}
 	return routes
@@ -866,6 +987,11 @@ func (p *Peer) releaseAllFrom(pub *Peer) {
 			s.release()
 		}
 	}
+	for _, s := range p.screenAudioSlots {
+		if s.owner == pub {
+			s.release()
+		}
+	}
 	after := p.audioRoutesLocked()
 	clientID := p.signalingClient
 	p.mu.Unlock()
@@ -875,18 +1001,27 @@ func (p *Peer) releaseAllFrom(pub *Peer) {
 	}
 }
 
+// releaseFrom libera os slots do subscriber que forwardam (pub, kind) — usado
+// quando o publisher para de publicar aquele kind.
 func (p *Peer) releaseFrom(pub *Peer, kind string) {
 	if pub == nil {
 		return
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	for _, s := range p.videoSlots {
+	before := p.audioRoutesLocked()
+	delete(p.pendingVideoSubs, videoSubscriptionKey(pub, kind))
+	for _, s := range p.slotPoolLocked(kind) {
 		if s.owner == pub && s.kind == kind {
 			s.release()
 		}
+	}
+	after := p.audioRoutesLocked()
+	clientID := p.signalingClient
+	p.mu.Unlock()
+
+	if !sameAudioRoutes(before, after) {
+		p.sendAudioRoutes(clientID, after)
 	}
 }
 
@@ -1095,7 +1230,8 @@ func (p *Peer) updateMediaIntent(cameraOn, screenSharing *bool) {
 
 func (p *Peer) updatePublishedMedia(
 	cameraOn,
-	screenSharing *bool,
+	screenSharing,
+	screenAudio *bool,
 ) (models.VoiceState, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1109,25 +1245,30 @@ func (p *Peer) updatePublishedMedia(
 		p.screenSharing = *screenSharing
 		changed = true
 	}
+	if screenAudio != nil && p.screenAudio != *screenAudio {
+		p.screenAudio = *screenAudio
+		changed = true
+	}
 
+	return p.stateLocked(), changed
+}
+
+// stateLocked monta o estado de voz do peer (o caller segura p.mu).
+func (p *Peer) stateLocked() models.VoiceState {
 	return models.VoiceState{
 		UserID:        p.userID,
 		Muted:         p.muted,
 		CameraOn:      p.cameraOn,
 		ScreenSharing: p.screenSharing,
-	}, changed
+		ScreenAudio:   p.screenAudio,
+	}
 }
 
 // state retorna o estado de voz do peer (p/ voice_joined e voice_state_update).
 func (p *Peer) state() models.VoiceState {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return models.VoiceState{
-		UserID:        p.userID,
-		Muted:         p.muted,
-		CameraOn:      p.cameraOn,
-		ScreenSharing: p.screenSharing,
-	}
+	return p.stateLocked()
 }
 
 // updateState atualiza o estado de voz (campos nil não mudam) e retorna o
@@ -1144,12 +1285,7 @@ func (p *Peer) updateState(muted, cameraOn, screenSharing *bool) models.VoiceSta
 	if screenSharing != nil {
 		p.screenSharing = *screenSharing
 	}
-	return models.VoiceState{
-		UserID:        p.userID,
-		Muted:         p.muted,
-		CameraOn:      p.cameraOn,
-		ScreenSharing: p.screenSharing,
-	}
+	return p.stateLocked()
 }
 
 // close fecha a PeerConnection e para o worker de renegociação (idempotente).

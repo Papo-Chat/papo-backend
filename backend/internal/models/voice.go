@@ -7,6 +7,9 @@ type VoiceState struct {
 	Muted         bool   `json:"muted"`
 	CameraOn      bool   `json:"camera_on"`
 	ScreenSharing bool   `json:"screen_sharing"`
+	// ScreenAudio indica que o usuário publica o áudio da transmissão em uma
+	// faixa própria (separada do microfone).
+	ScreenAudio bool `json:"screen_audio"`
 }
 
 // ICEServer é o formato do browser (RTCIceServer): o frontend passa direto

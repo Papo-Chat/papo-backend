@@ -65,6 +65,7 @@ type Config struct {
 	VoiceVideoCodec         string
 	VoiceVideoSlots         int
 	VoiceAudioSlots         int
+	VoiceScreenAudioSlots   int // slots de áudio de transmissão por subscriber (0 desliga)
 	VoiceMaxRoomPeers       int
 	VoiceMaxRoomsPerUser    int
 	VoiceRoomCleanupGrace   time.Duration
@@ -179,6 +180,7 @@ func LoadConfig() *Config {
 		VoiceVideoCodec:         getEnv("VOICE_VIDEO_CODEC", "vp8"),
 		VoiceVideoSlots:         getEnvInt("VOICE_VIDEO_SLOTS", 6),
 		VoiceAudioSlots:         getEnvInt("VOICE_AUDIO_SLOTS", 8),
+		VoiceScreenAudioSlots:   getEnvNonNegativeInt("VOICE_SCREEN_AUDIO_SLOTS", 2),
 		VoiceMaxRoomPeers:       getEnvInt("VOICE_MAX_ROOM_PEERS", 25),
 		VoiceMaxRoomsPerUser:    getEnvInt("VOICE_MAX_ROOMS_PER_USER", 1),
 		VoiceRoomCleanupGrace:   time.Duration(getEnvInt("VOICE_ROOM_CLEANUP_GRACE", 30)) * time.Second,

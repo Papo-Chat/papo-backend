@@ -32,7 +32,7 @@ type slot struct {
 
 	// ocupação — guardados por peer.mu
 	owner *Peer
-	kind  string // "video" | "screen" | "audio"
+	kind  string // "video" | "screen" | "audio" | "screen_audio"
 	src   *webrtc.TrackRemote
 	fwd   *forwarder
 
@@ -126,7 +126,7 @@ func (s *slot) startRTCPFeedback() {
 			kind := s.kind
 			s.peer.mu.Unlock()
 
-			if owner == nil || src == nil || (kind != "video" && kind != "screen") {
+			if owner == nil || src == nil || !isVideoKind(kind) {
 				continue
 			}
 
@@ -162,7 +162,7 @@ func newForwarder(
 	fanout *fanout,
 ) *forwarder {
 	bufferSize := audioForwarderBuffer
-	if kind == "video" || kind == "screen" {
+	if isVideoKind(kind) {
 		bufferSize = videoForwarderBuffer
 	}
 
@@ -173,7 +173,7 @@ func newForwarder(
 		fanout:          fanout,
 		ch:              make(chan *rtp.Packet, bufferSize),
 		done:            make(chan struct{}),
-		waitingKeyframe: kind == "video" || kind == "screen",
+		waitingKeyframe: isVideoKind(kind),
 	}
 }
 
@@ -203,7 +203,7 @@ func (f *forwarder) run() {
 				return
 			}
 
-			if f.resyncNeeded.Swap(false) && f.kind != "audio" {
+			if f.resyncNeeded.Swap(false) && isVideoKind(f.kind) {
 				// Houve overflow local antes do envio. Como o translator esconde
 				// o gap de SSN, continuar o frame produziria corrupção visual no
 				// decoder. Descartamos até um novo keyframe.
@@ -212,8 +212,10 @@ func (f *forwarder) run() {
 				f.lastKeyframePLIAt = time.Time{}
 			}
 
+			// O mute vale só para o microfone. O áudio da tela ("screen_audio")
+			// tem faixa própria e segue sendo encaminhado com o mic mutado.
 			if f.kind == "audio" {
-				if !f.owner.shouldForwardAudio() {
+				if f.owner.isMuted() {
 					f.wasMuted = true
 					continue
 				}
@@ -372,7 +374,7 @@ func (f *fanout) distribute(pkt *rtp.Packet) {
 		default:
 		}
 
-		if s.kind == "video" || s.kind == "screen" {
+		if isVideoKind(s.kind) {
 			s.resyncNeeded.Store(true)
 		}
 

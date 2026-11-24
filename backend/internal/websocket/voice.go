@@ -144,12 +144,18 @@ func (c *Client) handleVoiceICECandidate(raw []byte) {
 	}
 }
 
+// validTrackKind indica os kinds aceitos em track_subscribe/track_unsubscribe:
+// câmera, tela e o áudio da tela (faixa separada do microfone).
+func validTrackKind(kind string) bool {
+	return kind == "video" || kind == "screen" || kind == "screen_audio"
+}
+
 // handleTrackSubscribe faz o subscriber começar a receber a track de
-// vídeo/screen do publisher (vídeo sempre explícito, D5).
+// vídeo/screen/screen_audio do publisher (sempre explícito, D5).
 func (c *Client) handleTrackSubscribe(raw []byte) {
 	var event TrackSubscribeInbound
 	if err := json.Unmarshal(raw, &event); err != nil || event.ChannelID == "" ||
-		event.PublisherID == "" || (event.Kind != "video" && event.Kind != "screen") {
+		event.PublisherID == "" || !validTrackKind(event.Kind) {
 		c.sendEvent(ErrorOutbound{Type: EventTypeError, Message: "evento inválido"})
 		return
 	}
@@ -162,12 +168,12 @@ func (c *Client) handleTrackSubscribe(raw []byte) {
 	}
 }
 
-// handleTrackUnsubscribe para de forwardar a track de vídeo/screen do
-// publisher para o subscriber.
+// handleTrackUnsubscribe para de forwardar a track de vídeo/screen/screen_audio
+// do publisher para o subscriber.
 func (c *Client) handleTrackUnsubscribe(raw []byte) {
 	var event TrackUnsubscribeInbound
 	if err := json.Unmarshal(raw, &event); err != nil || event.ChannelID == "" ||
-		event.PublisherID == "" || (event.Kind != "video" && event.Kind != "screen") {
+		event.PublisherID == "" || !validTrackKind(event.Kind) {
 		c.sendEvent(ErrorOutbound{Type: EventTypeError, Message: "evento inválido"})
 		return
 	}

@@ -31,10 +31,10 @@ func validateSDP(sdpStr string, cfg *config.Config, checkCodec bool) error {
 		return ErrVoiceInvalidSDP
 	}
 
-	// Teto de m-lines: as m-lines do peer (áudio + vídeo + screen, no máx. 3)
-	// + os slots pré-alocados (N vídeo + K áudio). Mais que isso é injeção de
-	// m-lines extras.
-	maxMlines := 3 + cfg.VoiceVideoSlots + cfg.VoiceAudioSlots
+	// Teto de m-lines: as m-lines do peer (áudio + vídeo + screen + áudio da
+	// tela, no máx. 4) + os slots pré-alocados (N vídeo + K áudio + S áudio de
+	// tela). Mais que isso é injeção de m-lines extras.
+	maxMlines := 4 + cfg.VoiceVideoSlots + cfg.VoiceAudioSlots + cfg.VoiceScreenAudioSlots
 	if len(desc.MediaDescriptions) > maxMlines {
 		return ErrVoiceInvalidSDP
 	}
@@ -179,8 +179,9 @@ func mediaMID(media *sdp.MediaDescription) string {
 }
 
 // parseMidRoles mapeia o mid de cada m-line do offer para o papel da track
-// (audio / primeira vídeo = câmera / segunda vídeo = screen share). Seção 5.6:
-// determinístico, sem depender de label.
+// (primeiro áudio = microfone / segundo áudio = áudio da tela / primeira vídeo
+// = câmera / segunda vídeo = screen share). Seção 5.6: determinístico, sem
+// depender de label.
 func parseMidRoles(
 	sdpStr string,
 	previous map[string]trackRole,
@@ -196,6 +197,7 @@ func parseMidRoles(
 	}
 
 	audioActive := false
+	screenAudioActive := false
 	cameraActive := false
 	screenActive := false
 
@@ -216,7 +218,7 @@ func parseMidRoles(
 
 		// Um MID não pode mudar de media kind durante a vida da PC.
 		switch role {
-		case roleAudio:
+		case roleAudio, roleScreenAudio:
 			if media.MediaName.Media != "audio" {
 				return roles, active, ErrVoiceInvalidSDP
 			}
@@ -242,6 +244,19 @@ func parseMidRoles(
 
 			audioActive = true
 			active[mid] = role
+
+		case roleScreenAudio:
+			// Mesma regra do vídeo da tela: só publica enquanto a
+			// transmissão está ligada.
+			if screenOn {
+				if screenAudioActive {
+					return roles, active, ErrVoiceInvalidSDP
+				}
+
+				screenAudioActive = true
+				active[mid] = role
+			}
+
 		case roleCamera:
 			if cameraOn {
 				if cameraActive {
@@ -284,14 +299,24 @@ func parseMidRoles(
 
 		switch media.MediaName.Media {
 		case "audio":
-			// Apenas uma publicação de áudio por Peer.
-			if audioActive {
+			switch {
+			// A primeira publicação de áudio é sempre o microfone.
+			case !audioActive:
+				roles[mid] = roleAudio
+				active[mid] = roleAudio
+				audioActive = true
+
+			// Com o microfone já publicando, uma segunda publicação só é
+			// aceita durante a transmissão e é o áudio da tela.
+			case screenOn && !screenAudioActive:
+				roles[mid] = roleScreenAudio
+				active[mid] = roleScreenAudio
+				screenAudioActive = true
+
+			default:
+				// Segundo áudio sem transmissão, ou terceiro áudio.
 				return roles, active, ErrVoiceInvalidSDP
 			}
-
-			roles[mid] = roleAudio
-			active[mid] = roleAudio
-			audioActive = true
 
 		case "video":
 			switch {
