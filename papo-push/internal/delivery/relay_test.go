@@ -29,7 +29,7 @@ func testMsg() Message {
 
 // newTestRelay cria o RelayDelivery para os testes.
 func newTestRelay(t *testing.T, cfg *config.Config) Delivery {
-	d, err := NewRelay(cfg)
+	d, err := NewRelay(cfg.FCMRelayURL, cfg.FCMRelayToken, cfg.PushRequestTimeout)
 	t.Helper()
 	if err != nil {
 		t.Fatalf("falha em NewRelay: %v", err)

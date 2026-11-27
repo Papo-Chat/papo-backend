@@ -1,6 +1,8 @@
 // Package worker consome a push_outbox: reserva jobs vencidos, resolve os
 // dispositivos do usuário, delega a entrega (FCM direto ou relay) e finaliza os
-// jobs (sucesso: DELETE; retry: UPDATE com backoff; limite: descarta).
+// jobs (sucesso: DELETE; retry: UPDATE com backoff; limite: descarta). Com
+// PUSH_PROVIDERS, cada dispositivo é entregue pelo provider em que foi
+// registrado.
 package worker
 
 import (
@@ -19,19 +21,33 @@ import (
 	"papo/push/internal/store"
 )
 
+// jobStore é o que o worker usa da outbox e dos dispositivos (*store.Store; os
+// testes usam um fake).
+type jobStore interface {
+	ClaimDueJobs(ctx context.Context, limit int) ([]store.PushJob, error)
+	ListEnabledPushDevices(ctx context.Context, userID string) ([]store.PushDevice, error)
+	CompletePushJob(ctx context.Context, jobID string) error
+	ReschedulePushJob(ctx context.Context, jobID string, attempts int, nextAttemptAt time.Time, lastError string) error
+	MergeDeliveredTokens(ctx context.Context, jobID string, tokens []string) error
+	DisablePushDeviceByToken(ctx context.Context, token string) (int64, error)
+}
+
 // Worker processa jobs da outbox.
 type Worker struct {
-	cfg      *config.Config
-	store    *store.Store
-	delivery delivery.Delivery
+	cfg   *config.Config
+	store jobStore
+	// deliverers mapeia o nome do provider à sua entrega. No modo legado
+	// (cfg.LegacyProviders) tem só config.LegacyProviderName e recebe todos os
+	// dispositivos.
+	deliverers map[string]delivery.Delivery
 }
 
 // New cria um Worker.
-func New(cfg *config.Config, s *store.Store, d delivery.Delivery) *Worker {
+func New(cfg *config.Config, s jobStore, deliverers map[string]delivery.Delivery) *Worker {
 	return &Worker{
-		cfg:      cfg,
-		store:    s,
-		delivery: d,
+		cfg:        cfg,
+		store:      s,
+		deliverers: deliverers,
 	}
 }
 
@@ -107,16 +123,16 @@ func (w *Worker) processJob(ctx context.Context, job store.PushJob) error {
 		delivered[token] = struct{}{}
 	}
 
-	targets := make([]delivery.Target, 0, len(devices))
-	for _, d := range devices {
-		if _, ok := delivered[d.Token]; ok {
-			continue
-		}
-		targets = append(targets, delivery.Target{Token: d.Token, Platform: d.Platform})
+	// Agrupa os alvos por provider. Dispositivos sem provider configurado são
+	// ignorados (não é falha nem motivo de retry): o servidor não consegue
+	// enviar a eles.
+	groups, skipped := w.groupTargets(devices, delivered)
+	if skipped > 0 {
+		slog.Info("dispositivos ignorados: provider de push não configurado", "job", job.ID, "devices", skipped)
 	}
 
-	// Todos os dispositivos já entregues (ou nenhum não-entregue): completo.
-	if len(targets) == 0 {
+	// Todos os dispositivos já entregues ou ignorados: completo.
+	if len(groups) == 0 {
 		return w.store.CompletePushJob(ctx, job.ID)
 	}
 
@@ -129,11 +145,58 @@ func (w *Worker) processJob(ctx context.Context, job store.PushJob) error {
 	}
 	message := buildMessage(payload, w.cfg.PushPreview)
 
-	res, err := w.delivery.Send(ctx, message, targets)
-	if err != nil {
-		slog.Error("falha na entrega push", "job", job.ID, "err", err)
-	}
+	res, err := w.sendGroups(ctx, job.ID, message, groups)
 	return w.rescheduleOrDiscard(ctx, job, res, err)
+}
+
+// providerGroup são os alvos de um provider.
+type providerGroup struct {
+	provider string
+	targets  []delivery.Target
+}
+
+// groupTargets separa os dispositivos ainda não entregues por provider, na
+// ordem em que cada provider aparece. skipped conta os dispositivos sem
+// provider configurado. No modo legado todos vão ao provider único.
+func (w *Worker) groupTargets(devices []store.PushDevice, delivered map[string]struct{}) (groups []providerGroup, skipped int) {
+	index := make(map[string]int)
+	for _, d := range devices {
+		if _, ok := delivered[d.Token]; ok {
+			continue
+		}
+		provider := d.Provider
+		if w.cfg.LegacyProviders() {
+			provider = config.LegacyProviderName
+		}
+		if _, ok := w.deliverers[provider]; !ok {
+			skipped++
+			continue
+		}
+		i, ok := index[provider]
+		if !ok {
+			i = len(groups)
+			index[provider] = i
+			groups = append(groups, providerGroup{provider: provider})
+		}
+		groups[i].targets = append(groups[i].targets, delivery.Target{Token: d.Token, Platform: d.Platform})
+	}
+	return groups, skipped
+}
+
+// sendGroups envia cada grupo pelo seu provider e junta os resultados. Um
+// erro em um grupo não impede o envio dos demais; os erros são unidos.
+func (w *Worker) sendGroups(ctx context.Context, jobID string, message delivery.Message, groups []providerGroup) (delivery.Result, error) {
+	results := make([]delivery.Result, 0, len(groups))
+	var errs []error
+	for _, g := range groups {
+		res, err := w.deliverers[g.provider].Send(ctx, message, g.targets)
+		if err != nil {
+			slog.Error("falha na entrega push", "job", jobID, "provider", g.provider, "err", err)
+			errs = append(errs, fmt.Errorf("provider %s: %w", g.provider, err))
+		}
+		results = append(results, res)
+	}
+	return delivery.MergeResults(results...), errors.Join(errs...)
 }
 
 // rescheduleOrDiscard decide o destino do job: complete (delete), reschedule

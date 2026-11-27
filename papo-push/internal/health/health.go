@@ -27,7 +27,7 @@ type Health struct {
 	delivery string
 }
 
-// New cria um Health. deliveryMode é "fcm" ou "relay".
+// New cria um Health. deliveryMode é "fcm" ou "relay" (modo legado) ou "providers" (PUSH_PROVIDERS).
 func New(cfg *config.Config, dbPing func(ctx context.Context) error, deliveryMode string) *Health {
 	return &Health{
 		cfg:      cfg,

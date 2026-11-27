@@ -7,24 +7,23 @@ import (
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/messaging"
 	"google.golang.org/api/option"
-
-	"papo/push/internal/config"
 )
 
 // FCMDelivery envia push diretamente ao FCM via Admin SDK (firebase.google.com/go/v4).
-// Usada quando FCM_RELAY_URL está vazio; exige GOOGLE_APPLICATION_CREDENTIALS.
+// Usada quando o provider não tem relay; exige o arquivo de credenciais do
+// service account (GOOGLE_APPLICATION_CREDENTIALS ou PUSH_PROVIDER_<NOME>_CREDENTIALS).
 type FCMDelivery struct {
 	client *messaging.Client
 }
 
-// NewFCM cria um FCMDelivery carregando as credenciais do app do
-// GOOGLE_APPLICATION_CREDENTIALS (o project_id vem do próprio service account).
-func NewFCM(cfg *config.Config) (*FCMDelivery, error) {
+// NewFCM cria um FCMDelivery carregando o service account de credentialsFile
+// (o project_id vem do próprio service account).
+func NewFCM(credentialsFile string) (*FCMDelivery, error) {
 	ctx := context.Background()
 	app, err := firebase.NewApp(
 		ctx,
 		nil,
-		option.WithAuthCredentialsFile(option.ServiceAccount, cfg.GoogleApplicationCreds),
+		option.WithAuthCredentialsFile(option.ServiceAccount, credentialsFile),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao inicializar o Admin SDK do Firebase: %w", err)

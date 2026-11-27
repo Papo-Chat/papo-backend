@@ -263,6 +263,16 @@ VOICE_ICE_UDP_PORT=50000
 USE_FCM_RELAY=false
 FCM_RELAY_URL=
 GOOGLE_APPLICATION_CREDENTIALS=credenciais
+
+#Vários provedores de push (opcional). Sem PUSH_PROVIDERS vale o modo acima: um único provedor "fcm"
+#que recebe todos os dispositivos, e o backend aceita qualquer "provider" em PUT /users/me/push-device.
+#Com PUSH_PROVIDERS, cada nome precisa de PUSH_PROVIDER_<NOME>_CREDENTIALS (FCM direto) ou de
+#PUSH_PROVIDER_<NOME>_RELAY_URL + PUSH_PROVIDER_<NOME>_RELAY_TOKEN (relay); <NOME> em maiúsculas, "-" vira "_".
+#Dispositivos de provedores fora da lista não recebem push, e o backend rejeita o registro com 400.
+#PUSH_PROVIDERS=fcm,meu-fork
+#PUSH_PROVIDER_FCM_CREDENTIALS=/etc/papo/fcm-oficial.json
+#PUSH_PROVIDER_MEU_FORK_RELAY_URL=https://relay.example.com
+#PUSH_PROVIDER_MEU_FORK_RELAY_TOKEN=troque-este-token
 ```
 
 ## API

@@ -12,8 +12,8 @@ import (
 )
 
 // pushDeviceRequest é o corpo de PUT/DELETE /users/me/push-device.
-// `provider` é opcional e padrão "fcm" (apenas FCM, que é o único provedor
-// suportado pelo papo-push).
+// `provider` é opcional e padrão "fcm"; com PUSH_PROVIDERS definido precisa ser
+// um dos provedores configurados no servidor (senão 400 push-provider-unsupported).
 type pushDeviceRequest struct {
 	Token      string `json:"token"`
 	Platform   string `json:"platform"`
@@ -49,6 +49,10 @@ func RegisterPushDeviceHandler(baseURL string, c echo.Context) error {
 	case errors.Is(err, services.ErrPushDeviceNameInvalid):
 		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
 			"invalid-param", "Parâmetro inválido", "campo 'device_name' excede o tamanho máximo")
+	case errors.Is(err, services.ErrPushProviderUnsupported):
+		return utils.SendProblem(c, baseURL, http.StatusBadRequest,
+			"push-provider-unsupported", "Provedor de push não suportado",
+			"provedor de push não suportado por este servidor")
 	case err != nil:
 		utils.Errorf("request_id=%s falha ao registrar o dispositivo de push do usuário %s: %v",
 			c.Request().Header.Get(echo.HeaderXRequestID), userID, err)

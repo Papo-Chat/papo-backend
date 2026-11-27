@@ -113,6 +113,10 @@ type Config struct {
 	PushMaxAttempts    int
 	PushRequestTimeout time.Duration
 	PushPreview        string
+	// PushProviders são os nomes de PUSH_PROVIDERS (mesma variável do
+	// papo-push). Vazio = modo legado: PUT /users/me/push-device aceita
+	// qualquer provider. Definido: só os nomes listados são aceitos.
+	PushProviders []string
 }
 
 var (
@@ -215,6 +219,7 @@ func LoadConfig() *Config {
 		PushMaxAttempts:    getEnvInt("PUSH_MAX_ATTEMPTS", 8),
 		PushRequestTimeout: time.Duration(getEnvInt("PUSH_REQUEST_TIMEOUT", 5)) * time.Second,
 		PushPreview:        getEnv("PUSH_PREVIEW", "full"),
+		PushProviders:      getEnvList("PUSH_PROVIDERS", nil),
 	})
 
 	return configInstance.Load()
