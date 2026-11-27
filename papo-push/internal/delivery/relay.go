@@ -6,17 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-
-	"papo/push/internal/config"
+	"time"
 )
 
 // RelayDelivery envia push via o relay remoto (POST {FCM_RELAY_URL}/v1/push).
 // O worker autentica com FCM_RELAY_TOKEN (Bearer). O relay é o único responsável
 // por falar com o FCM; não conhece usuários nem o PostgreSQL.
 type RelayDelivery struct {
-	url      string
-	token    string
-	client   *http.Client
+	url    string
+	token  string
+	client *http.Client
 }
 
 type relayTarget struct {
@@ -25,7 +24,7 @@ type relayTarget struct {
 }
 
 type relayRequest struct {
-	Targets      []relayTarget   `json:"targets"`
+	Targets      []relayTarget     `json:"targets"`
 	Notification map[string]string `json:"notification"`
 	Data         map[string]string `json:"data"`
 }
@@ -39,12 +38,12 @@ type relayResponse struct {
 	Results []relayResult `json:"results"`
 }
 
-// NewRelay cria um RelayDelivery.
-func NewRelay(cfg *config.Config) (*RelayDelivery, error) {
+// NewRelay cria um RelayDelivery para o relay em url, autenticado por token.
+func NewRelay(url, token string, timeout time.Duration) (*RelayDelivery, error) {
 	return &RelayDelivery{
-		url:    cfg.FCMRelayURL,
-		token:  cfg.FCMRelayToken,
-		client: &http.Client{Timeout: cfg.PushRequestTimeout},
+		url:    url,
+		token:  token,
+		client: &http.Client{Timeout: timeout},
 	}, nil
 }
 

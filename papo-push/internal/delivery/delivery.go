@@ -26,8 +26,8 @@ type Target struct {
 type Status string
 
 const (
-	StatusSent          Status = "sent"
-	StatusInvalidToken  Status = "invalid_token"
+	StatusSent           Status = "sent"
+	StatusInvalidToken   Status = "invalid_token"
 	StatusRetryableError Status = "retryable_error"
 	StatusPermanentError Status = "permanent_error"
 )
@@ -112,6 +112,20 @@ func NewTestResult(results ...TargetResult) Result {
 		}
 	}
 	return r
+}
+
+// MergeResults junta os resultados de vários envios (um por provider) em um
+// único Result: os resultados por target são concatenados e os flags
+// (retryable/permanent) e tokens inválidos são a união dos de cada parte.
+func MergeResults(parts ...Result) Result {
+	var merged Result
+	for _, r := range parts {
+		merged.results = append(merged.results, r.results...)
+		merged.invalidTokens = append(merged.invalidTokens, r.invalidTokens...)
+		merged.retryable = merged.retryable || r.retryable
+		merged.permanent = merged.permanent || r.permanent
+	}
+	return merged
 }
 
 // Delivery entrega push para uma lista de targets.
