@@ -895,7 +895,12 @@ paths:
       description: |
         Upsert do dispositivo de push do usuário autenticado (cookie `Auth`).
         O `user_id` nunca vem do cliente. `platform` deve ser `android` ou
-        `ios`; `provider` é opcional (padrão `fcm`).
+        `ios`; `provider` é opcional (padrão `fcm`) e nomeia um provedor de
+        push configurado no servidor (`PUSH_PROVIDERS`). Se o servidor define
+        `PUSH_PROVIDERS` e o provedor não está na lista, responde 400
+        (`push-provider-unsupported`): o servidor não consegue enviar push a
+        esse dispositivo. Sem `PUSH_PROVIDERS`, qualquer valor é aceito. O
+        `DELETE` não valida o provedor.
       requestBody:
         required: true
         content:
@@ -906,7 +911,9 @@ paths:
         '204':
           $ref: '#/components/responses/NoContent'
         '400':
-          description: Campo ausente ou inválido
+          description: |
+            Campo ausente ou inválido, ou `provider` não suportado por este
+            servidor (type `.../errors/push-provider-unsupported`).
           content:
             application/problem+json:
               schema:
@@ -2986,6 +2993,10 @@ components:
         provider:
           type: string
           default: fcm
+          description: |
+            Nome de um provedor de push configurado no servidor
+            (`PUSH_PROVIDERS`). O token só vale para o provedor informado.
+            Ignorado pelo DELETE.
 
     OpenDirectMessageRequest:
       type: object
