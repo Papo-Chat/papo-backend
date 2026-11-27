@@ -34,6 +34,40 @@ func TestThumbnailEnabled(t *testing.T) {
 	}
 }
 
+func TestPushProviders(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		set   bool
+		want  []string
+	}{
+		{"ausente é legado", "", false, nil},
+		{"vazio é legado", "", true, nil},
+		{"só vírgulas é legado", " , ", true, nil},
+		{"um provider", "fcm", true, []string{"fcm"}},
+		{"dois providers com espaços", " fcm , meu-fork ", true, []string{"fcm", "meu-fork"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.set {
+				t.Setenv("PUSH_PROVIDERS", tc.value)
+			} else {
+				t.Setenv("PUSH_PROVIDERS", "")
+				os.Unsetenv("PUSH_PROVIDERS")
+			}
+			got := LoadConfig().PushProviders
+			if len(got) != len(tc.want) {
+				t.Fatalf("PushProviders = %v, esperado %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("PushProviders = %v, esperado %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestGetEnvNonNegativeIntAllowsZero(t *testing.T) {
 	t.Setenv("VOICE_ICE_UDP_PORT", "0")
 	if got := getEnvNonNegativeInt("VOICE_ICE_UDP_PORT", 50000); got != 0 {
